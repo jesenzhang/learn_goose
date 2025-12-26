@@ -1,0 +1,33 @@
+---
+
+### 3. 创建 YAML 模板：`src/goose/prompts/templates/system.yaml`
+
+YAML 格式适合需要**严格结构化输出**的场景，或者当你希望 Prompt 本身就是一个配置文件时。
+
+```yaml
+meta:
+  agent_name: Goose
+  version: 1.0.0
+  timestamp: "{{ current_date }}"
+
+environment:
+  os: "{{ os_name }}"
+  cwd: "{{ working_dir }}"
+
+instructions: |
+  You are a helpful AI assistant.
+  Please follow the steps below to solve the user's problem.
+
+tools_enabled: {{ tools | length > 0 }}
+
+{% if tools %}
+available_tools:
+{% for tool in tools %}
+  - name: "{{ tool.name }}"
+    description: "{{ tool.description }}"
+    # Jinja2 的 tojson 过滤器在这里非常有用
+    parameters: {{ tool.parameters | tojson }}
+{% endfor %}
+{% else %}
+available_tools: []
+{% endif %}

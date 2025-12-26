@@ -1,0 +1,19 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.so
+
+# IDE
+.vscode/
+.idea/
+
+# 运行时数据
+sessions/
+*.db
+*.log
+diagnostics_*.zip
+
+# 虚拟环境
+venv/
+.venv/
+env/
