@@ -155,14 +155,30 @@ class SlotFillingPromptBuilder:
         
         part_role = """
 # Role
-你是一个智能意图识别与槽位填充专家。你的任务是：
-1. 识别用户意图。
-2. 基于“已知信息”和“用户新输入”，提取并合并参数。
-3. 判断是否还缺少“必填参数”。
+你是一个智能意图识别与槽位填(slot filling)充专家。
+
+# 你的目标是：准确识别用户意图，从对话中提取参数，并输出标准 JSON。
+
 """
 
         part_constraints = """
-# Constraints
+# Instructions (Think Step-by-Step)
+请按照以下步骤思考（在输出的 "_thought" 字段中体现）：
+1. **意图分析**：分析用户属于 Intent List 中的哪一个意图。
+2. **信息检索**：
+- 检查 "Current Context" 中已有的参数。
+- 从 "User Input" 中提取新的参数。
+- **合并策略**：如果用户提供了新值，覆盖旧值；否则保留 Context 中的旧值。
+3. **高级推理**（仅针对特定情况）：
+- 如果是 `recommend` 且用户描述模糊（如“能响的”），请查阅 "Background Information" 找到对应的 ID。
+- 如果参数缺失但能通过 "Background Information" 唯一确定（如已知名字查ID），则自动补全。
+4. **状态检查**：检查该意图所需的必填参数是否齐全。
+- 齐全 -> status: "ready"
+- 缺失 -> status: "incomplete" -> 生成 reply_to_user 追问。
+5. **格式化**：将提取的数字转换为 integer/float，去除单位（如 "5个" -> 5）。
+
+
+ Constraints
 1. 只能从提供的意图列表中选择。
 2. 输出必须是严格的 JSON 格式。
 3. **状态判断**：
@@ -173,9 +189,24 @@ class SlotFillingPromptBuilder:
 6. **类型转换**：请根据 intent 定义中的类型提示（如 integer, boolean）转换提取的值。例如不要返回 "5个"，而是返回 5。
 7. 如果参数缺失，但可以通过 Background Information 推断出来（例如通过名称查到ID），则视为参数已就绪 (status: ready)，并自动填充推断出的值。
 8. 提取用户感兴趣的特征形容词作为 tags
-9. **推荐逻辑**：当意图是 `recommend_items` 时，请仔细阅读 # Background Information。利用你的常识理解用户的模糊描述（例如用户说“能响的东西” -> 对应“军号”；“由于细菌引起的” -> 对应“细菌弹”），找出所有语义相关的项，提取其 ID 填入 `recommended_ids`。
+9. **推荐逻辑**：当意图是 `recommend` 时，请仔细阅读 # Background Information。利用你的常识理解用户的模糊描述（例如用户说“能响的东西” -> 对应“军号”；“由于细菌引起的” -> 对应“细菌弹”），找出所有语义相关的项，提取其 ID 填入 `recommended_ids`。
+
+
+# Search & Quantity Policy
+
+1. **相关性绝对优先 (Relevance > Quantity)**：
+   - 必须先根据语义筛选出真正匹配的项目。
+   - **严禁凑数**：如果用户要求 N 个（如“两把枪”），但只有 M 个符合描述（M < N），**只返回这 M 个**。如果没有任何符合的项目，`recommended_ids` 必须返回空列表 `[]`。
+   - 不要为了满足数量 N 而塞入不相关的项目。
+
+2. **数量不足时的反馈逻辑**：
+   - 如果 `找到的数量 < 用户要求的数量`，必须在 **`reply_to_user`** 字段中向用户解释。
+   - 话术模版：“为您找到了 [M] 个相关文物（虽然您想看 [N] 个，但目前符合条件的只有这些）...”
+   
 """
 
+        part_examples = ''
+        
         part_data = f"""
 # Background Information
 {background_info}
@@ -189,28 +220,129 @@ class SlotFillingPromptBuilder:
 # User Input
 {user_query}
 """
+
         part_format = """
 # Output Format
-请仅返回如下 JSON 格式，不要包含 Markdown 代码块标记,
-如果用户表达了多个独立需求（例如"帮我订票，顺便查下厕所"），请在 `intents` 列表中返回多个对象。
+请仅返回如下 JSON 格式，不要包含 Markdown 代码块标记：
 {
-    "intents": [
-        {
-            "intent": "意图名称",
-            "confidence": 0.95,
-            "status": "ready/incomplete", 
-            "entities": {
-               "key": "value (合并后的最终结果)"
-            },
-            "missing_slots": ["缺失参数1", "缺失参数2"],
-            "reply_to_user": "追问话术 或 确认话术""
-        }
-    ]
+    "_thought": "思考过程",
+    "intent": "意图名称",
+    "confidence": 0.95,
+    "status": "ready/incomplete", 
+    "entities": {
+        "key": "value (合并后的最终结果)"
+    },
+    "missing_slots": ["缺失参数1", "缺失参数2"],
+    "reply_to_user": "追问话术 或 确认话术"
 }
 """
 
-        final_prompt = f"{part_role}\n{part_constraints}\n{part_data}\n{part_format}"
+
+        # part_role = """
+        # # Role
+        # 你是一个专业的意图识别与参数提取助手。
+        # 你的目标是：准确识别用户意图，从对话中提取参数，并输出标准 JSON。
+        # """
+
+        # part_constraints = """
+        # # Instructions (Think Step-by-Step)
+        # 请按照以下步骤思考（在输出的 "_thought" 字段中体现）：
+        # 1. **意图分析**：分析用户属于 Intent List 中的哪一个意图。
+        # 2. **信息检索**：
+        # - 检查 "Current Context" 中已有的参数。
+        # - 从 "User Input" 中提取新的参数。
+        # - **合并策略**：如果用户提供了新值，覆盖旧值；否则保留 Context 中的旧值。
+        # 3. **高级推理**（仅针对特定情况）：
+        # - 如果是 `recommend` 且用户描述模糊（如“能响的”），请查阅 "Background Information" 找到对应的 ID。
+        # - 如果参数缺失但能通过 "Background Information" 唯一确定（如已知名字查ID），则自动补全。
+        # 4. **状态检查**：检查该意图所需的必填参数是否齐全。
+        # - 齐全 -> status: "ready"
+        # - 缺失 -> status: "incomplete" -> 生成 reply_to_user 追问。
+        # 5. **格式化**：将提取的数字转换为 integer/float，去除单位（如 "5个" -> 5）。
+
+        # # Constraints
+        # 1. 必须输出且仅输出 JSON 格式，不要使用 Markdown 代码块。
+        # 2. JSON 必须包含 `_thought` 字段，用于展示你的思考过程（这有助于提高准确率）。
+        # 3. 始终使用中文回复用户。
+        # """
+
+        # part_examples = """
+        # # Examples (参考样例)
+
+        # ## Example 1 (参数提取与合并)
+        # Context: {"city": "北京"}
+        # User Input: "帮我订明天的票"
+        # Intent Definition: book_ticket (slots: city, date)
+        # Output:
+        # {
+        #     "_thought": "用户想订票。Context已有city=北京。用户输入提及'明天'，转换为日期。city和date都齐了。",
+        #     "intent": "book_ticket",
+        #     "confidence": 0.98,
+        #     "status": "ready",
+        #     "entities": {
+        #         "city": "北京",
+        #         "date": "2025-12-26"
+        #     },
+        #     "missing_slots": [],
+        #     "reply_to_user": "好的，这就为您预订明天北京的票。"
+        # }
+
+        # ## Example 2 (模糊推荐与背景知识推理)
+        # Background Info: {"item_101": {"name": "军号", "desc": "可以吹响的声音洪亮的乐器"}}
+        # Context: {}
+        # User Input: "我想看那个能吹响的东西"
+        # Intent Definition: recommend (slots: recommended_ids)
+        # Output:
+        # {
+        #     "_thought": "用户意图是推荐物品。描述是'能吹响'。查阅背景信息，'军号(item_101)'符合描述。提取ID。",
+        #     "intent": "recommend",
+        #     "confidence": 0.95,
+        #     "status": "ready",
+        #     "entities": {
+        #         "recommended_ids": ["item_101"]
+        #     },
+        #     "missing_slots": [],
+        #     "reply_to_user": "您是指军号吗？它确实可以发出嘹亮的声音。"
+        # }
+
+        # ## Example 3 (缺失参数追问)
+        # Context: {}
+        # User Input: "我要买票"
+        # Intent Definition: buy_ticket (slots: count, type)
+        # Output:
+        # {
+        #     "_thought": "用户想买票，但未提供数量和类型。参数缺失。",
+        #     "intent": "buy_ticket",
+        #     "confidence": 0.90,
+        #     "status": "incomplete",
+        #     "entities": {},
+        #     "missing_slots": ["count", "type"],
+        #     "reply_to_user": "好的，请问您需要购买哪种类型的票？需要几张？"
+        # }
+        # """
+
+        # part_data = f"""
+        # # Background Information
+        # {background_info}
+
+        # # Intent List (定义)
+        # {intents_str}
+
+        # # Current Context
+        # {context_str}
+
+        # # User Input
+        # {user_query}
+        # """
+
+        # part_format = """
+        # # Output Requirement
+        # 请基于以上逻辑和样例，处理 User Input。
+        # """
+
+        final_prompt = f"{part_role}\n{part_constraints}\n{part_examples}\n{part_data}\n{part_format}"
         return final_prompt.strip()
+
 
 # --- 数据模型 (DTO) ---
 class DialogueSession(BaseModel):
