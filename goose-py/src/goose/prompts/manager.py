@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
 
-from ..conversation import Message, Role
+from ..conversation import Message, Role, ToolResponse, ToolRequest
 from .base import PromptEngine
 from ..utils.token_counter import TokenCounter
 

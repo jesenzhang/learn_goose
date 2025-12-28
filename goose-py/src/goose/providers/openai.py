@@ -1,146 +1,129 @@
 import os
 import json
-import time
-from typing import List, Tuple, Any, AsyncGenerator, Optional, Dict
-from openai import AsyncOpenAI
+import logging
+from typing import List, Tuple, Optional, Dict, Any, AsyncGenerator, Union
 
-from goose.conversation import (
-    Message, Role, 
-    TextContent, ImageContent, 
-    ToolRequest, ToolResponse, # 使用正确的类名
-    ToolCallResult, CallToolRequestParam # 引入必要的泛型结构
+from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError, 
+    RateLimitError, 
+    APITimeoutError, 
+    AuthenticationError as OpenAIAuthError,
+    BadRequestError as OpenAIBadRequestError,
+    APIError as OpenAIAPIError
 )
-from goose.model import ModelConfig
+from openai.types.chat import ChatCompletionChunk
+
+from ..model import ModelConfig
+from ..conversation import (
+    Message, Role, TextContent, ToolRequest, ToolResponse, 
+    ToolCall, CallToolResult, CallToolRequestParam, RawContent
+)
 from .base import Provider, ProviderUsage, Usage
 from .usage_estimator import ensure_usage_tokens
+from .errors import (
+    ProviderError, 
+    AuthenticationError, 
+    RequestFailedError, 
+    ContextLengthExceededError,
+    UsageError,
+    ExecutionError
+)
+from ..utils.json_repair import repair_and_parse_json
+
+logger = logging.getLogger(__name__)
+
+# --- Constants aligned with Rust implementation ---
+
+OPEN_AI_DEFAULT_MODEL = "gpt-4o"
+OPEN_AI_DEFAULT_FAST_MODEL = "gpt-4o-mini"
+
+# Known models and their context limits
+OPEN_AI_KNOWN_MODELS = {
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4.1": 128_000,
+    "gpt-4.1-mini": 128_000,
+    "o1": 200_000,
+    "o3": 200_000,
+    "gpt-3.5-turbo": 16_385,
+    "gpt-4-turbo": 128_000,
+    "o4-mini": 128_000,
+    "gpt-5.1-codex": 400_000,
+    "gpt-5-codex": 400_000,
+    "qwen": 32_000, # Fallback generic
+}
 
 class OpenAIProvider(Provider):
     def __init__(
         self, 
-        model_config: ModelConfig, 
-        api_key: Optional[str] = None, 
-        base_url: Optional[str] = None
+        model_config: ModelConfig,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        organization: Optional[str] = None,
+        project: Optional[str] = None,
+        timeout: float = 600.0,
+        extra_headers: Optional[Dict[str, str]] = None
     ):
         self.model_config = model_config
+        self.name = "openai"
         
-        # 1. 确定 API Key
-        final_api_key = api_key or os.getenv("OPENAI_API_KEY")
-        if not final_api_key:
-            final_api_key = "EMPTY" 
-            
-        # 2. 确定 Base URL
-        final_base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        if not self.model_config.fast_model:
+            self.model_config.fast_model = OPEN_AI_DEFAULT_FAST_MODEL
 
-        # 初始化客户端
         self.client = AsyncOpenAI(
-            api_key=final_api_key, 
-            base_url=final_base_url.rstrip("/") if final_base_url else None
+            api_key=api_key or os.getenv("OPENAI_API_KEY"),
+            base_url=base_url,
+            organization=organization,
+            project=project,
+            timeout=timeout,
+            default_headers=extra_headers
         )
+
+    @classmethod
+    def from_env(cls, model_config: ModelConfig) -> "OpenAIProvider":
+        api_key = os.getenv("OPENAI_API_KEY")
+        # Rust logic: default host
+        host = os.getenv("OPENAI_HOST", "https://api.openai.com")
+        # Rust logic: default base path
+        base_path = os.getenv("OPENAI_BASE_PATH", "v1")
+        
+        # Normalize URL construction
+        if "chat/completions" in base_path:
+            base_path = base_path.split("chat/completions")[0]
+        base_url = f"{host.rstrip('/')}/{base_path.strip('/')}"
+
+        organization = os.getenv("OPENAI_ORGANIZATION")
+        project = os.getenv("OPENAI_PROJECT")
+        
+        try:
+            timeout = float(os.getenv("OPENAI_TIMEOUT", "600"))
+        except ValueError:
+            timeout = 600.0
+
+        custom_headers = {}
+        headers_str = os.getenv("OPENAI_CUSTOM_HEADERS")
+        if headers_str:
+            for item in headers_str.split(","):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    custom_headers[k.strip()] = v.strip()
+
+        return cls(
+            model_config=model_config,
+            api_key=api_key,
+            base_url=base_url,
+            organization=organization,
+            project=project,
+            timeout=timeout,
+            extra_headers=custom_headers
+        )
+
+    def get_name(self) -> str:
+        return self.name
 
     def get_model_config(self) -> ModelConfig:
         return self.model_config
-
-    def _prepare_messages(self, system: str, messages: List[Message]) -> List[dict]:
-        """
-        将 Goose Message 转换为 OpenAI 格式。
-        策略：包含图片的用 List[Dict]，纯文本的用 String (兼容 vLLM/Qwen)。
-        """
-        openai_msgs = []
-        
-        # 1. System Prompt
-        if system:
-            role = "developer" if self.model_config.model_name.startswith("o") else "system"
-            openai_msgs.append({"role": role, "content": system})
-
-        for m in messages:
-            if not m.metadata.agent_visible:
-                continue
-
-            current_msg_obj = {"role": m.role.value}
-            
-            # 临时容器
-            text_parts = []
-            content_list = []
-            has_image = False
-            
-            tool_calls = []
-            tool_output_msgs = []
-
-            for content in m.content:
-                # A. 文本
-                if isinstance(content, TextContent):
-                    if content.text:
-                        text_parts.append(content.text)
-                        content_list.append({"type": "text", "text": content.text})
-                
-                # B. 图片
-                elif isinstance(content, ImageContent):
-                    has_image = True
-                    data_uri = f"data:{content.mime_type};base64,{content.data}"
-                    content_list.append({
-                        "type": "image_url",
-                        "image_url": {"url": data_uri}
-                    })
-
-                # C. 工具请求 (ToolRequest)
-                elif isinstance(content, ToolRequest):
-                    # 检查 Result 状态，只有 success 才能发给 OpenAI
-                    if content.tool_call.status == "success" and content.tool_call.value:
-                        # 提取内部的 CallToolRequestParam
-                        param = content.tool_call.value
-                        tool_calls.append({
-                            "id": content.id,
-                            "type": "function",
-                            "function": {
-                                "name": param.name,
-                                "arguments": json.dumps(param.arguments or {})
-                            }
-                        })
-                    else:
-                        # 如果是 error 状态，通常不应该发给 OpenAI，或者作为纯文本展示错误
-                        # 这里暂略，视业务逻辑而定
-                        pass
-
-                # D. 工具结果 (ToolResponse)
-                elif isinstance(content, ToolResponse):
-                    result_text = ""
-                    if content.tool_result.status == "success" and content.tool_result.value:
-                        for item in content.tool_result.value.content:
-                            if item.text:
-                                result_text += item.text
-                    else:
-                        # 错误情况
-                        result_text = content.tool_result.error or "Unknown Error"
-
-                    tool_output_msgs.append({
-                        "role": "tool",
-                        "content": result_text,
-                        "tool_call_id": content.id
-                    })
-
-            # --- 组装消息体 ---
-            
-            # 只有当消息包含实际内容或工具调用时才添加
-            if text_parts or has_image or tool_calls:
-                if has_image:
-                    # 强制使用 List[Dict] 格式以支持图片
-                    current_msg_obj["content"] = content_list
-                elif text_parts:
-                    # 只有文本时，回退到 String 格式（解决 vLLM 兼容性）
-                    current_msg_obj["content"] = "\n".join(text_parts)
-                else:
-                    # 仅有 tool_calls 的情况
-                    current_msg_obj["content"] = None
-
-                if tool_calls:
-                    current_msg_obj["tool_calls"] = tool_calls
-                
-                openai_msgs.append(current_msg_obj)
-
-            # 追加工具结果消息
-            openai_msgs.extend(tool_output_msgs)
-
-        return openai_msgs
 
     async def complete(
         self, 
@@ -148,70 +131,69 @@ class OpenAIProvider(Provider):
         messages: List[Message], 
         tools: List[Any] = []
     ) -> Tuple[Message, ProviderUsage]:
-        
         openai_msgs = self._prepare_messages(system, messages)
-        openai_tools = tools if tools else None
+        openai_tools = self._prepare_tools(tools)
 
-        response = await self.client.chat.completions.create(
-            model=self.model_config.model_name,
-            messages=openai_msgs,
-            tools=openai_tools,
-            temperature=self.model_config.temperature or 0.7,
-        )
-
-        choice = response.choices[0]
-        # 注意：这里 content 是 List[MessageContent]，需要实例化具体的子类
-        msg_content_list = []
-
-        # 1. 处理文本回复
-        if choice.message.content:
-            msg_content_list.append(TextContent(text=choice.message.content))
-        
-        # 2. 处理工具调用
-        if choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    args = {}
-                
-                # 构造载荷
-                param = CallToolRequestParam(name=tc.function.name, arguments=args)
-                
-                # 构造消息内容，包裹 success
-                msg_content_list.append(ToolRequest(
-                    id=tc.id,
-                    toolCall=ToolCallResult.success(param)
-                ))
-
-        result_message = Message(
-            role=Role.ASSISTANT,
-            created=int(time.time()),
-            content=msg_content_list
-        )
-
-        usage = Usage()
-        if response.usage:
-            usage = Usage(
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-                total_tokens=response.usage.total_tokens
+        try:
+            # Tool Monitor: Log what we are sending
+            if openai_tools:
+                logger.debug(f"Sending request with {len(openai_tools)} tools")
+            
+            response = await self.client.chat.completions.create(
+                model=self.model_config.model_name,
+                messages=openai_msgs,
+                tools=openai_tools,
+                stream=False
             )
             
+            choice = response.choices[0]
+            msg_data = choice.message
             
-        provider_usage = ProviderUsage(model=self.model_config.model_name, usage=usage)
-        
-        # [集成] 调用估算逻辑进行兜底
-        # 如果 OpenAI 返回了 usage，这里什么都不会做
-        # 如果是本地模型或者某些兼容层没返回 usage，这里会补全
-        await ensure_usage_tokens(
-            provider_usage,
-            system,
-            messages,
-            result_message,
-            tools
-        )
-        return result_message, provider_usage
+            content_list = []
+            # DeepSeek support (reasoning_content)
+            reasoning = getattr(msg_data, "reasoning_content", None)
+            content_str = msg_data.content or ""
+            
+            if reasoning:
+                content_str = f"[Thinking]\n{reasoning}\n\n[Answer]\n{content_str}"
+            
+            if content_str:
+                content_list.append(TextContent(text=content_str))
+            
+            # Extract Tool Calls
+            if msg_data.tool_calls:
+                for tc in msg_data.tool_calls:
+                    try:
+                        # [优化] 使用 repair_and_parse_json 替代 json.loads
+                        args = repair_and_parse_json(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse JSON args for tool {tc.function.name}: {tc.function.arguments}")
+                        # [优化] 如果实在解析不了，将原始内容放入 'raw' 字段，让 Agent 有机会看到错误并重试
+                        args = {"error": "json_parse_error", "raw": tc.function.arguments}
+                        
+                    req = CallToolRequestParam(name=tc.function.name, arguments=args)
+                    content_list.append(ToolRequest(
+                        id=tc.id,
+                        toolCall=ToolCall.success(req)
+                    ))
+
+            result_message = Message(role=Role.ASSISTANT, content=content_list)
+            
+            usage = Usage()
+            if response.usage:
+                usage = Usage(
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens,
+                    total_tokens=response.usage.total_tokens
+                )
+
+            provider_usage = ProviderUsage(model=self.model_config.model_name, usage=usage)
+            await ensure_usage_tokens(provider_usage, system, messages, result_message, tools)
+
+            return result_message, provider_usage
+
+        except Exception as e:
+            self._handle_error(e)
 
     async def stream(
         self,
@@ -221,130 +203,314 @@ class OpenAIProvider(Provider):
     ) -> AsyncGenerator[Tuple[Optional[Message], Optional[ProviderUsage]], None]:
         
         openai_msgs = self._prepare_messages(system, messages)
-        openai_tools = tools if tools else None
+        openai_tools = self._prepare_tools(tools)
         
-        # 尝试开启 usage 统计 (OpenAI 特性)
-        extra_body = {}
-        # if "openai.com" in str(self.client.base_url):
-        #     extra_body = {"stream_options": {"include_usage": True}}
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model_config.model_name,
+                messages=openai_msgs,
+                tools=openai_tools,
+                stream=True
+            )
+        except Exception as e:
+            self._handle_error(e)
+            return
 
-        stream = await self.client.chat.completions.create(
-            model=self.model_config.model_name,
-            messages=openai_msgs,
-            tools=openai_tools,
-            stream=True,
-            **extra_body
-        )
-
-        # --- [新增] 状态追踪 ---
         final_usage: Optional[ProviderUsage] = None
         accumulated_text: str = ""
+        
+        # Buffer for parallel tool calling (OpenAI sends chunks by index)
+        # Structure: { index: { "id": str, "name": str, "args_parts": [] } }
         tool_call_buffer: Dict[int, Dict[str, Any]] = {}
-        # --------------------
 
-        async for chunk in stream:
-            # 1. 优先处理 API 原生返回的 Usage
-            if hasattr(chunk, "usage") and chunk.usage:
-                usage = Usage(
-                    input_tokens=chunk.usage.prompt_tokens,
-                    output_tokens=chunk.usage.completion_tokens,
-                    total_tokens=chunk.usage.total_tokens
-                )
-                final_usage = ProviderUsage(model=chunk.model, usage=usage)
-                yield None, final_usage
-                continue
+        try:
+            async for chunk in stream:
+                # 1. Handle Usage
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage = Usage(
+                        input_tokens=chunk.usage.prompt_tokens,
+                        output_tokens=chunk.usage.completion_tokens,
+                        total_tokens=chunk.usage.total_tokens
+                    )
+                    final_usage = ProviderUsage(model=chunk.model, usage=usage)
+                    yield None, final_usage
 
-            if not chunk.choices: continue
-            delta = chunk.choices[0].delta
-            
-            # 2. 处理文本流
-            if delta.content:
-                # [新增] 累积文本用于后续估算
-                accumulated_text += delta.content
+                if not chunk.choices: 
+                    continue
                 
-                partial = Message(
-                    role=Role.ASSISTANT, 
-                    content=[TextContent(text=delta.content)]
-                )
-                yield partial, None
-            
-            # 3. 处理工具流 (缓冲逻辑)
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_call_buffer:
-                        tool_call_buffer[idx] = {"id": "", "name": "", "args": ""}
+                delta = chunk.choices[0].delta
+                
+                # 2. Extract Text & Reasoning
+                content_text = ""
+                # Standard content
+                if hasattr(delta, "content") and delta.content:
+                    content_text = delta.content
+                elif isinstance(delta, dict) and "content" in delta:
+                    content_text = delta["content"]
+                
+                # DeepSeek/R1 Reasoning
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    # In a real GUI, we might want to separate this. 
+                    # For now, we prepend it or stream it as text.
+                    content_text = delta.reasoning_content + content_text
+
+                if content_text:
+                    accumulated_text += content_text
+                    partial = Message(
+                        role=Role.ASSISTANT, 
+                        content=[TextContent(text=content_text)]
+                    )
+                    yield partial, None
+                
+                # 3. Handle Streaming Tool Calls
+                tool_calls = getattr(delta, "tool_calls", None)
+                if not tool_calls and isinstance(delta, dict):
+                    tool_calls = delta.get("tool_calls")
+
+                if tool_calls:
+                    for tc in tool_calls:
+                        idx = tc.index
+                        if idx not in tool_call_buffer:
+                            tool_call_buffer[idx] = {"id": "", "name": "", "args_parts": []}
+                        
+                        # ID usually comes in the first chunk for that index
+                        if hasattr(tc, "id") and tc.id: 
+                            tool_call_buffer[idx]["id"] = tc.id
+                        
+                        if hasattr(tc, "function"):
+                            fn = tc.function
+                            if hasattr(fn, "name") and fn.name: 
+                                tool_call_buffer[idx]["name"] = fn.name
+                            if hasattr(fn, "arguments") and fn.arguments: 
+                                tool_call_buffer[idx]["args_parts"].append(fn.arguments)
+
+                # 4. Finalize Tool Calls on Stop
+                finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+                if finish_reason in ["tool_calls", "stop", "function_call"] and tool_call_buffer:
+                    tool_contents = []
                     
-                    if tc.id: tool_call_buffer[idx]["id"] = tc.id
-                    if tc.function.name: tool_call_buffer[idx]["name"] = tc.function.name
-                    if tc.function.arguments: tool_call_buffer[idx]["args"] += tc.function.arguments
-
-            # 4. 检测流结束时的工具输出
-            if chunk.choices[0].finish_reason in ["tool_calls", "stop"] and tool_call_buffer:
-                tool_contents = []
-                for _, data in tool_call_buffer.items():
-                    try:
-                        args_obj = json.loads(data["args"])
-                    except:
-                        args_obj = {}
+                    # Sort by index to maintain order
+                    sorted_indexes = sorted(tool_call_buffer.keys())
+                    for idx in sorted_indexes:
+                        data = tool_call_buffer[idx]
+                        full_args_str = "".join(data["args_parts"])
+                        
+                        try:
+                            # [优化] 使用 repair_and_parse_json
+                            if not full_args_str:
+                                args_obj = {}
+                            else:
+                                args_obj = repair_and_parse_json(full_args_str)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"JSON Parse Error for tool {data['name']}: {e} | Raw: {full_args_str}")
+                            # Fallback: expose raw string
+                            args_obj = {"error": "json_parse_error", "raw": full_args_str}
+                        param = CallToolRequestParam(name=data["name"], arguments=args_obj)
+                        
+                        # Generate ID if missing (some local models omit ID)
+                        call_id = data["id"] or f"call_{idx}_{os.urandom(4).hex()}"
+                        
+                        tool_contents.append(ToolRequest(
+                            id=call_id,
+                            toolCall=ToolCall.success(param)
+                        ))
                     
-                    param = CallToolRequestParam(name=data["name"], arguments=args_obj)
-                    tool_contents.append(ToolRequest(
-                        id=data["id"],
-                        toolCall=ToolCallResult.success(param)
-                    ))
-                
-                if tool_contents:
-                    # 工具调用的消息也需要 yield 出去
-                    yield Message(role=Role.ASSISTANT, content=tool_contents), None
-                
-                # 注意：tool_call_buffer 不清空，或者我们应该另存一份副本用于 full_message 构建
-                # 这里为了简单，假设 tool_call_buffer 里的数据就是完整的工具调用
+                    if tool_contents:
+                        yield Message(role=Role.ASSISTANT, content=tool_contents), None
 
-        # ==========================================================
-        # [核心修改] 循环结束后的兜底逻辑 (Fallback)
-        # 如果 API 没给 usage (final_usage 为 None)，我们必须自己算
-        # ==========================================================
+        except Exception as e:
+            self._handle_error(e)
+
+        # 5. Usage Fallback
         if final_usage is None:
-            # 1. 重构完整的回复消息 (用于计算 output tokens)
             full_content_list = []
-            
-            # 添加累积的文本
             if accumulated_text:
                 full_content_list.append(TextContent(text=accumulated_text))
             
-            # 添加累积的工具调用
+            # Reconstruct tool calls for token counting
             if tool_call_buffer:
-                for _, data in tool_call_buffer.items():
-                    try:
-                        args_obj = json.loads(data["args"])
-                    except:
-                        args_obj = {}
-                    param = CallToolRequestParam(name=data["name"], arguments=args_obj)
+                 for idx in sorted(tool_call_buffer.keys()):
+                    data = tool_call_buffer[idx]
+                    full_args = "".join(data["args_parts"])
+                    param = CallToolRequestParam(name=data["name"], arguments={"raw": full_args})
                     full_content_list.append(ToolRequest(
-                        id=data["id"],
-                        toolCall=ToolCallResult.success(param)
+                        id=data["id"] or "unknown",
+                        toolCall=ToolCall.success(param)
                     ))
 
-            full_response_message = Message(
-                role=Role.ASSISTANT,
-                content=full_content_list
-            )
-
-            # 2. 创建一个空的 Usage 对象
+            full_response_message = Message(role=Role.ASSISTANT, content=full_content_list)
             estimated_usage = ProviderUsage(
                 model=self.model_config.model_name, 
                 usage=Usage(input_tokens=0, output_tokens=0, total_tokens=0)
             )
-
-            # 3. 调用估算器 (它会自动计算 input 和 output)
             await ensure_usage_tokens(
-                estimated_usage,
-                system,
-                messages,
-                full_response_message, # 传入我们拼凑出的完整消息
-                tools
+                estimated_usage, system, messages, full_response_message, tools
             )
-            
-            # 4. 发送最后的补全 Usage
             yield None, estimated_usage
+
+    async def get_models(self) -> List[str]:
+        try:
+            models_page = await self.client.models.list()
+            return sorted([model.id for model in models_page.data])
+        except Exception as e:
+            logger.warning(f"Failed to fetch models: {e}")
+            return []
+
+    async def create_embeddings(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        embedding_model = os.getenv("GOOSE_EMBEDDING_MODEL", "text-embedding-3-small")
+        try:
+            response = await self.client.embeddings.create(
+                input=texts,
+                model=embedding_model
+            )
+            return [data.embedding for data in response.data]
+        except Exception as e:
+            self._handle_error(e)
+            return []
+
+    def _prepare_tools(self, tools: List[Any]) -> Optional[List[Dict[str, Any]]]:
+        """
+        Convert tools to OpenAI format.
+        Supports: Dict, Pydantic objects, and MCP-like Tool objects.
+        """
+        if not tools:
+            return None
+        
+        openai_tools = []
+        for tool in tools:
+            # 1. Already a Dict (likely pre-formatted)
+            if isinstance(tool, dict):
+                if "type" in tool and "function" in tool:
+                    openai_tools.append(tool)
+                else:
+                    # Wrap raw function definition
+                    openai_tools.append({
+                        "type": "function",
+                        "function": tool
+                    })
+            
+            # 2. Goose/MCP Tool Object (has to_openai_tool method)
+            elif hasattr(tool, "to_openai_tool"):
+                openai_tools.append(tool.to_openai_tool())
+                
+            # 3. Pydantic Model / Generic Object (has model_dump)
+            elif hasattr(tool, "model_dump"):
+                tool_dump = tool.model_dump(exclude_none=True)
+                if "type" in tool_dump and "function" in tool_dump:
+                    openai_tools.append(tool_dump)
+                else:
+                    openai_tools.append({
+                        "type": "function",
+                        "function": tool_dump
+                    })
+            else:
+                logger.warning(f"Skipping unknown tool format: {type(tool)}")
+        
+        return openai_tools
+
+    def _prepare_messages(self, system: str, history: List[Message]) -> List[Dict[str, Any]]:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        
+        for msg in history:
+            if not msg.metadata.agent_visible:
+                continue
+
+            # --- Assistant Role (Text + Tool Requests) ---
+            if msg.role == Role.ASSISTANT:
+                openai_msg = {"role": "assistant"}
+                
+                content_text = ""
+                tool_calls = []
+                
+                for c in msg.content:
+                    if isinstance(c, TextContent):
+                        content_text += c.text
+                    elif isinstance(c, ToolRequest):
+                        if c.tool_call.status == "success" and c.tool_call.value:
+                            tc = c.tool_call.value
+                            tool_calls.append({
+                                "id": c.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments or {})
+                                }
+                            })
+                
+                if content_text: openai_msg["content"] = content_text
+                if tool_calls: openai_msg["tool_calls"] = tool_calls
+                messages.append(openai_msg)
+
+            # --- User or Tool Role ---
+            # Goose 可能会把 ToolResponse 放在 User Role 下，也可能放在 Tool Role 下
+            # 我们需要把它们拆开
+            elif msg.role == Role.USER or msg.role == Role.TOOL:
+                text_parts = []
+                tool_responses = []
+                
+                for c in msg.content:
+                    if isinstance(c, TextContent):
+                        text_parts.append(c.text)
+                    elif isinstance(c, ToolResponse):
+                        tool_responses.append(c)
+                
+                # 发送纯文本部分 (作为 User 消息)
+                if text_parts:
+                    messages.append({
+                        "role": "user", 
+                        "content": "\n".join(text_parts)
+                    })
+                
+                # 发送工具结果部分 (作为 Tool 消息)
+                for tr in tool_responses:
+                    content_str = ""
+                    # [修复] 适配 CallToolResult 的结构
+                    if tr.tool_result.is_error:
+                        # 错误情况提取文本
+                        texts = [rc.text for rc in tr.tool_result.content if rc.text]
+                        content_str = f"Error: {', '.join(texts)}"
+                    else:
+                        # 成功情况提取文本
+                        texts = [rc.text for rc in tr.tool_result.content if rc.text]
+                        content_str = "".join(texts)
+                        # 如果有二进制数据，OpenAI 暂不支持，忽略或标记
+                    
+                    if not content_str:
+                        content_str = "Success" 
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tr.id,
+                        "content": content_str
+                    })
+
+        return messages
+
+    def _handle_error(self, e: Exception):
+        """Map OpenAI exceptions to Goose ProviderError hierarchy"""
+        error_msg = str(e)
+        logger.error(f"OpenAI API Error: {error_msg}")
+        
+        if isinstance(e, OpenAIAuthError):
+            raise AuthenticationError(f"OpenAI Authentication Failed: {error_msg}")
+        
+        elif isinstance(e, OpenAIBadRequestError):
+            if "context_length_exceeded" in error_msg:
+                raise ContextLengthExceededError(error_msg)
+            raise UsageError(f"Bad Request: {error_msg}")
+            
+        elif isinstance(e, (APIConnectionError, APITimeoutError)):
+            raise RequestFailedError(f"Connection Failed: {error_msg}")
+            
+        elif isinstance(e, RateLimitError):
+            raise RequestFailedError(f"Rate Limit Exceeded: {error_msg}")
+            
+        elif isinstance(e, OpenAIAPIError):
+            raise ExecutionError(f"OpenAI Server Error: {error_msg}")
+            
+        else:
+            raise ExecutionError(f"Unexpected Error: {error_msg}")

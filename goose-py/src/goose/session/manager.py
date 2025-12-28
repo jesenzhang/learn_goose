@@ -1,17 +1,21 @@
-import json
-from typing import List, Any,Optional
+import logging
+from typing import List, Optional, Any
 from ..conversation import Message, Conversation
 from .types import Session, SessionType
 from .storage import SessionStorage
 from .chat_history_search import ChatHistorySearch
 from .diagnostics import generate_diagnostics
 
+logger = logging.getLogger(__name__)
+
 class SessionManager:
     _storage: Optional[SessionStorage] = None
 
     @classmethod
     async def get_storage(cls) -> SessionStorage:
+        """单例获取存储"""
         if cls._storage is None:
+            # 确保目录存在等初始化工作在 create 中完成
             cls._storage = await SessionStorage.create()
         return cls._storage
 
@@ -24,6 +28,7 @@ class SessionManager:
     @classmethod
     async def create_session(cls, working_dir: str = ".", name: str = "New Session") -> Session:
         storage = await cls.get_storage()
+        # 默认创建 USER 类型的 Session
         return await storage.create_session(working_dir, name, SessionType.USER)
 
     @classmethod
@@ -53,8 +58,12 @@ class SessionManager:
 
     @classmethod
     async def get_conversation(cls, session_id: str) -> Conversation:
+        """
+        [新增] 获取 Conversation 对象
+        Agent 依赖此方法来构造 Conversation 以进行 Context Truncation 检查。
+        """
         msgs = await cls.get_messages(session_id)
-        return Conversation(msgs)
+        return Conversation(messages=msgs)
 
     @classmethod
     async def search_history(cls, query: str, limit: int = 10) -> Any:
@@ -64,7 +73,6 @@ class SessionManager:
 
     @classmethod
     async def create_diagnostics(cls, session_id: str) -> str:
-        # 注意：generate_diagnostics 现在需要接收 cls (SessionManager 类本身)
         data = await generate_diagnostics(cls, session_id)
         filename = f"diagnostics_{session_id}.zip"
         with open(filename, "wb") as f:
@@ -73,9 +81,13 @@ class SessionManager:
 
     @classmethod
     async def update_extension_state(cls, session_id: str, ext_name: str, state: Any):
+        # 1. 获取 Session 读取当前 Extension Data
         session = await cls.get_session(session_id)
+        
+        # 2. 修改内存状态
         session.extension_data.set_state(ext_name, state)
         
+        # 3. 持久化
         storage = await cls.get_storage()
         await storage.update_session_metadata(
             session_id, 

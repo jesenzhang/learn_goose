@@ -1,0 +1,10 @@
+pydantic>=2.0.0
+aiosqlite>=0.19.0
+openai>=1.0.0
+minijinja>=1.0.0
+
+[dev]
+pytest
+pytest-asyncio
+black
+isort

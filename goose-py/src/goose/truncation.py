@@ -32,6 +32,15 @@ async def check_if_compaction_needed(
     检查是否需要进行消息压缩
     Rust: pub async fn check_if_compaction_needed(...)
     """
+    # 确保 conversation 是 Conversation 对象
+    if not hasattr(conversation, "messages"):
+        # 兼容性处理：如果传进来的是 List[Message]，临时包装一下
+        if isinstance(conversation, list):
+             from .conversation import Conversation
+             conversation = Conversation(messages=conversation)
+        else:
+             raise AttributeError(f"Expected Conversation object, got {type(conversation)}")
+
     messages = conversation.messages
     threshold = threshold_override or DEFAULT_COMPACTION_THRESHOLD
     

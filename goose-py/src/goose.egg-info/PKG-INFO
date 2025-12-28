@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: goose
+Version: 0.1.0
+Summary: An open-source, extensible AI agent that goes beyond code suggestions (Python Port).
+Author-email: Your Name <your.email@example.com>
+License: Apache-2.0
+Classifier: Programming Language :: Python :: 3
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: aiosqlite>=0.19.0
+Requires-Dist: openai>=1.0.0
+Requires-Dist: minijinja>=1.0.0
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: isort; extra == "dev"

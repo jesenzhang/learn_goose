@@ -19,7 +19,11 @@ class ModelConfig(BaseModel):
     context_limit: Optional[int] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
-    
+    fast_model: Optional[str] = None
+     
+    toolshim: bool = False
+    toolshim_model: Optional[str] = None
+   
     def context_window(self) -> int:
         if self.context_limit:
             return self.context_limit

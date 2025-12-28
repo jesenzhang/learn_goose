@@ -13,16 +13,18 @@ print(f"📂 Added source path: {src_path}")
 
 # --- 导入模块 (基于最新的 goose 包结构) ---
 from goose.session import SessionManager
-from goose.conversation import Message, Role, TextContent
+from goose.conversation.message import Message, TextContent
 from goose.model import ModelConfig
 from goose.providers import OpenAIProvider
 
 # --- 配置区域 (请根据实际情况修改) ---
 # vLLM / Qwen / Ollama 配置
-API_BASE = "http://192.168.10.180:8088/v1/" 
-API_KEY = "vllm"
-# 注意：模型名称必须与 vLLM 启动参数或 list_models 返回的一致
-MODEL_NAME = "qwen3_vl" 
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+API_KEY = "sk-climzomnsicqdepumaymoshvgviaggcgounvovaqglltepkd"
+API_BASE = "https://api.siliconflow.cn/v1"
+# API_BASE = "http://192.168.10.180:8088/v1/" 
+# API_KEY = "vllm"
+# MODEL_NAME = "qwen3_vl" 
 
 async def main():
     print("\n🚀 Starting Goose-Py LLM Integration Test (Src Layout)\n")
@@ -70,28 +72,65 @@ async def main():
     
     full_response_text = ""
     token_usage = None
+    first_token_received = False
 
     try:
+        # 记录开始时间，用于检查是否是模型太慢
+        import time
+        start_time = time.time()
+
         async for msg, usage in provider.stream(system_prompt, history):
-            # 处理文本增量
+            # [调试] 如果超过5秒没反应，打印等待提示
+            if not first_token_received and (time.time() - start_time > 5):
+                print("(Waiting for model prefill...)...", end="\n", flush=True)
+                start_time = time.time() # 重置避免重复打印
+
+            # 1. 处理 Token 统计 (通常在最后，但也可能伴随消息)
+            if usage:
+                token_usage = usage
+                # 如果是纯 Usage 消息，继续下一次循环
+                if not msg: 
+                    continue
+
+            # 2. 处理消息内容
             if msg and msg.content:
-                # 注意：MessageContent 列表中的第一个元素通常是 TextContent
+                # 标记已收到首字
+                first_token_received = True
+                
+                # 获取第一个内容块
                 content_item = msg.content[0]
-                if isinstance(content_item, TextContent):
-                    chunk = content_item.text
+                
+                # [调试] 如果类型不对，打印类型名以便排查
+                if not isinstance(content_item, TextContent):
+                    # 可能是 ToolRequest 或 Thinking，打印出来看看
+                    print(f"\n[Debug: Non-Text Content: {type(content_item).__name__}]", end="\n", flush=True)
+                    continue
+
+                # 正常打印文本
+                chunk = content_item.text
+                if chunk:
+                    # ✅ 修复：只保留这一个 print，去掉原来的第二个 print(chunk, flush=True)
                     print(chunk, end="", flush=True)
                     full_response_text += chunk
             
-            # 处理 Token 统计 (通常在最后返回)
-            if usage:
-                token_usage = usage
     except Exception as e:
-        print(f"\n❌ Error during streaming: {e}")
-        # 如果是连接错误，打印提示
+        import traceback
+        print(f"\n\n❌ Error during streaming: {e}")
+        traceback.print_exc() # 打印完整堆栈
+        
         if "Connection" in str(e):
             print("Tip: Check if your vLLM server URL is correct and accessible.")
+        
         await SessionManager.shutdown()
         return
+
+    # 如果循环结束了 full_response_text 还是空的
+    if not full_response_text:
+        print("\n⚠️ Warning: Stream finished but no text was collected.")
+        if token_usage:
+            print(f"   (But Usage was received: {token_usage.usage})")
+        else:
+            print("   (No data received from provider)")
 
     print("\n" + "-" * 50)
 

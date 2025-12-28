@@ -1,39 +1,71 @@
-# 这相当于 Rust 的: pub use message::Message;
+# Auto-generated __init__.py
+
+from .conversation import (
+    Conversation,
+    InvalidConversation,
+    fix_conversation,
+    fix_lead_trail,
+    fix_messages,
+    fix_tool_calling,
+    merge_consecutive_messages,
+    merge_text_content_items,
+    populate_if_empty,
+    remove_empty_messages,
+    trim_assistant_text_whitespace,
+)
 from .message import (
-    Message, 
-    MessageContent, 
-    Role, 
+    ActionRequired,
+    ActionRequiredData,
+    CallToolRequestParam,
+    CallToolResult,
+    FrontendToolRequest,
+    ImageContent,
+    Message,
     MessageMetadata,
+    RawContent,
+    RedactedThinkingContent,
+    Role,
+    SystemNotification,
+    SystemNotificationType,
     TextContent,
+    ThinkingContent,
+    ToolCall,
+    ToolConfirmationRequest,
     ToolRequest,
     ToolResponse,
-    ImageContent,
-    ToolCallResult,
-    ToolResultContent,
-    CallToolResult,
-    CallToolRequestParam
+    MessageContent
 )
 
-# 这相当于 Rust 的: pub use conversation::Conversation;
-from .conversation import (
-    Conversation, 
-    fix_conversation
-)
-
-# 定义当使用 from conversation import * 时导出哪些内容
 __all__ = [
-    "Message",
-    "MessageContent",
-    "Role",
-    "MessageMetadata",
-    "TextContent",
-    "ToolRequest",
-    "ToolResponse",
-    "Conversation",
-    "fix_conversation",
-    "ImageContent",
-    "ToolCallResult",
-    "ToolResultContent",
-    "CallToolResult",
-    "CallToolRequestParam"
+    'ActionRequired',
+    'ActionRequiredData',
+    'CallToolRequestParam',
+    'CallToolResult',
+    'Conversation',
+    'FrontendToolRequest',
+    'ImageContent',
+    'InvalidConversation',
+    'Message',
+    'MessageMetadata',
+    'RawContent',
+    'RedactedThinkingContent',
+    'Role',
+    'SystemNotification',
+    'SystemNotificationType',
+    'TextContent',
+    'ThinkingContent',
+    'ToolCall',
+    'ToolConfirmationRequest',
+    'ToolRequest',
+    'ToolResponse',
+    'fix_conversation',
+    'fix_lead_trail',
+    'fix_messages',
+    'fix_tool_calling',
+    'merge_consecutive_messages',
+    'merge_text_content_items',
+    'populate_if_empty',
+    'remove_empty_messages',
+    'trim_assistant_text_whitespace',
+    'MessageContent'
 ]

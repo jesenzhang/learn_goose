@@ -4,5 +4,8 @@ from .model import ModelConfig
 from .session import SessionManager, Session
 from .conversation import Message, Conversation
 from .providers import Provider, ProviderUsage, Usage,OpenAIProvider
+from .agent import Agent
+from .tools import Tool, ToolError, ToolRegistry
+from .prompts import PromptManager
 
 __version__ = "0.1.0"
