@@ -182,3 +182,39 @@ class TokenCounter:
 # Factory function
 def create_token_counter(model_name: str = "gpt-4o") -> TokenCounter:
     return TokenCounter(model_name)
+
+
+def estimate_tokens(text: str) -> int:
+    """
+    粗略估算 Token 数。
+    对于英文，约 4 字符 = 1 Token。
+    对于中文，约 0.7 字符 = 1 Token。
+    这里使用保守的加权平均。
+    """
+    if not text:
+        return 0
+    return len(text) // 3  # 简单粗暴但有效的估算
+
+def count_message_tokens(msg: Message) -> int:
+    """计算单条消息的 Token"""
+    count = 0
+    # 估算 Role 开销
+    count += 5 
+    
+    for content in msg.content:
+        if isinstance(content, TextContent):
+            count += estimate_tokens(content.text)
+        elif isinstance(content, ToolRequest):
+            # 工具调用的 JSON 开销
+            if content.tool_call.value:
+                count += estimate_tokens(str(content.tool_call.value.arguments))
+                count += estimate_tokens(content.tool_call.value.name)
+        elif isinstance(content, ToolResponse):
+            # 工具结果通常很大，是压缩的重点
+            for raw in content.tool_result.content:
+                if raw.text:
+                    count += estimate_tokens(raw.text)
+    return count
+
+def count_history_tokens(messages: List[Message]) -> int:
+    return sum(count_message_tokens(m) for m in messages)
