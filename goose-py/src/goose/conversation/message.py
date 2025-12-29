@@ -154,6 +154,13 @@ class Message(BaseModel):
             msg.content.append(TextContent(text=text))
         return msg
 
+    @classmethod
+    def tool(cls, text: str = "", tool_call_id: str = "") -> "Message":
+        msg = cls(role=Role.TOOL)
+        if text:
+            msg.content.append(ToolResponse(id=tool_call_id, content=[RawContent(text=text)]))
+        return msg
+
     def with_text(self, text: str) -> "Message":
         self.content.append(TextContent(text=text))
         return self
@@ -167,7 +174,6 @@ class Message(BaseModel):
         return self
 
     def with_tool_response(self, id: str, output: str) -> "Message":
-        # [修复] 修正这里的逻辑
         res = CallToolResult(content=[RawContent(text=output)])
         self.content.append(ToolResponse(
             id=id,
