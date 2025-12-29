@@ -20,6 +20,7 @@ from ..conversation import (
     ToolCall, CallToolResult, CallToolRequestParam, RawContent
 )
 from .base import Provider, ProviderUsage, Usage
+from .factory import ProviderFactory
 from .usage_estimator import ensure_usage_tokens
 from .errors import (
     ProviderError, 
@@ -54,30 +55,89 @@ OPEN_AI_KNOWN_MODELS = {
     "qwen": 32_000, # Fallback generic
 }
 
+@ProviderFactory.register("openai")
 class OpenAIProvider(Provider):
-    def __init__(
-        self, 
-        model_config: ModelConfig,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        organization: Optional[str] = None,
-        project: Optional[str] = None,
-        timeout: float = 600.0,
-        extra_headers: Optional[Dict[str, str]] = None
-    ):
-        self.model_config = model_config
+    """
+    OpenAI Provider Implementation.
+    Supports factory creation via config dict.
+    """
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Factory-compatible init.
+        Config keys expected:
+        - model_name (or model)
+        - api_key
+        - base_url
+        - organization
+        - project
+        - timeout
+        - extra_headers
+        - temperature, max_tokens (for ModelConfig)
+        """
+        super().__init__(config)
         self.name = "openai"
+
+        # 1. 解析基础配置 (Config > Env > Default)
+        api_key = config.get("api_key") or os.getenv("OPENAI_API_KEY")
         
-        if not self.model_config.fast_model:
-            self.model_config.fast_model = OPEN_AI_DEFAULT_FAST_MODEL
+        # Base URL Logic (Refactored from from_env)
+        base_url = config.get("base_url")
+        if not base_url:
+            host = os.getenv("OPENAI_HOST", "https://api.openai.com")
+            base_path = os.getenv("OPENAI_BASE_PATH", "v1")
+            
+            # Normalize URL construction
+            if "chat/completions" in base_path:
+                base_path = base_path.split("chat/completions")[0]
+            base_url = f"{host.rstrip('/')}/{base_path.strip('/')}"
+
+        organization = config.get("organization") or os.getenv("OPENAI_ORGANIZATION")
+        project = config.get("project") or os.getenv("OPENAI_PROJECT")
+        
+        # Timeout
+        try:
+            timeout = config.get("timeout") or float(os.getenv("OPENAI_TIMEOUT", "600"))
+        except ValueError:
+            timeout = 600.0
+
+        # Headers
+        extra_headers = config.get("extra_headers", {})
+        # Merge env headers if provided
+        headers_str = os.getenv("OPENAI_CUSTOM_HEADERS")
+        if headers_str and not extra_headers:
+            for item in headers_str.split(","):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    extra_headers[k.strip()] = v.strip()
+
+        # 2. 构造 ModelConfig (保留原有逻辑结构)
+        # 支持从 config 中读取，或者使用默认值
+        model_name = config.get("model_name") or config.get("model") or OPEN_AI_DEFAULT_MODEL
+        fast_model = config.get("fast_model") or OPEN_AI_DEFAULT_FAST_MODEL
+        
+        # 兼容处理：如果传入的 config 已经是 ModelConfig 对象（不太可能走 Factory，但为了健壮性）
+        if "model_config" in config and isinstance(config["model_config"], ModelConfig):
+            self.model_config = config["model_config"]
+        else:
+            self.model_config = ModelConfig(
+                model_name=model_name,
+                fast_model=fast_model,
+                temperature=config.get("temperature"),
+                max_tokens=config.get("max_tokens")
+            )
+
+        # 3. 初始化客户端
+        if not api_key:
+            # 允许部分场景下延迟报错，但在初始化时最好检查
+            logger.warning("OpenAI API Key not found in config or environment.")
 
         self.client = AsyncOpenAI(
-            api_key=api_key or os.getenv("OPENAI_API_KEY"),
+            api_key=api_key,
             base_url=base_url,
             organization=organization,
             project=project,
             timeout=timeout,
-            default_headers=extra_headers
+            default_headers=extra_headers or None
         )
 
     @classmethod

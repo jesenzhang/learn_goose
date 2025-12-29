@@ -7,12 +7,12 @@ from pathlib import Path
 from ..conversation import Message, Role, ToolResponse, ToolRequest
 from .base import PromptEngine
 from ..utils.token_counter import TokenCounter
-
+from ..utils.template import TemplateRenderer
 
 class PromptManager:
     def __init__(self, template_dir: Optional[Path] = None):
-        self.engine = PromptEngine(template_dir) if template_dir else PromptEngine()
         # [新增] 全局上下文缓存 (例如 OS 信息不需要每次都获取)
+        self.template_dir = template_dir
         self._global_context = {
             "os_name": platform.system(),
             "os_version": platform.release(),
@@ -29,24 +29,30 @@ class PromptManager:
         ctx.update(overrides)
         return ctx
 
-    def render(self, template_name: str, **kwargs) -> str:
-        """通用渲染入口"""
-        context = self._get_context(kwargs)
-        return self.engine.render(template_name, context)
+    def render(self, template_content: str, **kwargs) -> str:
+        """
+        Prompt 专用的渲染入口，自动注入全局上下文 (OS, Time 等)
+        """
+        # 1. 合并上下文
+        full_context = self._global_context.copy()
+        full_context.update(kwargs)
+        
+        # 2. 调用底层工具渲染
+        return TemplateRenderer.render(template_content, full_context)
 
     # --- 高级功能：消息构建器 (Chat Builder) ---
 
-    def build_system_message(self, tools: List[Dict] = [], template: str = "system.md") -> Message:
-        """构建 System Message 对象"""
-        content = self.render(template, tools=tools)
-        return Message(role=Role.SYSTEM, content=[{"type": "text", "text": content}])
+    def build_system_message(self, content_template: str, tools: List[Dict] = []) -> Message:
+        """构建系统消息"""
+        rendered_content = self.render(content_template, tools=tools)
+        return Message(role=Role.SYSTEM, content=rendered_content)
 
-    def build_user_message(self, template_name: str, **kwargs) -> Message:
+    def build_user_message(self, template_content: str, **kwargs) -> Message:
         """
         根据模板构建 User Message
         例如：render('task.md', task="Fix bugs") -> Message.user(...)
         """
-        content = self.render(template_name, **kwargs)
+        content = self.render(template_content, **kwargs)
         return Message.user(content)
 
     def _is_tool_request(self, msg: Message) -> bool:
@@ -142,17 +148,29 @@ class PromptManager:
         user_template: str,
         history: List[Message],
         variables: Dict[str, Any],
-        max_tokens: int = 4000 # [新增] Token 限制参数
+        max_tokens: int = 4000
     ) -> List[Message]:
         """
         构建完整的消息载荷 (含截断逻辑)
         """
-        # 1. 构建 System Message (这是必须保留的)
+        # 1. 构建 System Message
         tools = variables.get("tools", [])
-        system_msg = self.build_system_message(tools, system_template)
         
-        # 2. 构建 User Message (这是必须保留的)
+        # [修复] 显式传参，防止位置错误
+        system_msg = self.build_system_message(
+            content_template=system_template, 
+            tools=tools
+        )
+        
+        # 2. 构建 User Message
         user_vars = {k: v for k, v in variables.items() if k != "tools"}
+        
+        # render 可能会用到 user_template 里的变量，这里 user_vars 应该展开
+        # build_user_message 定义为 (template_name, **kwargs)
+        # 但这里 user_template 是内容字符串，不是文件名
+        # 所以 build_user_message 的实现可能需要微调，或者这里直接调用 render
+        
+        # 假设 build_user_message 内部调用的是 self.render(template_name, **kwargs)
         user_msg = self.build_user_message(user_template, **user_vars)
 
         # 3. 计算预留空间

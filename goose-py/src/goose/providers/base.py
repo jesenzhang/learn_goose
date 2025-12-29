@@ -1,6 +1,6 @@
 # providers/base.py
 from abc import ABC, abstractmethod
-from typing import List, Tuple, Any, AsyncGenerator, Optional
+from typing import List, Tuple, Any, AsyncGenerator, Optional,Dict
 from pydantic import BaseModel
 from goose.conversation import Message
 from goose.model import ModelConfig
@@ -30,6 +30,13 @@ class Provider(ABC):
     """
     对应 Rust: pub trait Provider
     """
+    name: str = "base"
+
+    def __init__(self, model_config: Dict[str, Any]):
+        """
+        :param model_config: 包含 api_key, base_url, model_name 等配置的字典
+        """
+        self.config = model_config
 
     @abstractmethod
     def get_model_config(self) -> ModelConfig:

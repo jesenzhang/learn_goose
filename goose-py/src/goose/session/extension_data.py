@@ -1,26 +1,35 @@
 # goose-py/extension_data.py
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Type, TypeVar
 from pydantic import BaseModel, Field
+
+T = TypeVar("T", bound=BaseModel)
+
+# src/goose/session/extension_data.py
+
+from typing import Dict, Any, Optional, Type, TypeVar
+from pydantic import BaseModel, Field
+
+T = TypeVar("T", bound=BaseModel)
 
 class ExtensionData(BaseModel):
     """
-    对应 Rust: ExtensionData
-    管理扩展的状态数据，键名为 'extension_name.version' 格式。
+    专门用于存储扩展/插件的状态数据。
+    核心作用是提供命名空间隔离，防止不同插件的数据冲突。
     """
-    # 使用 flatten 风格，直接存储所有 kv
-    extension_states: Dict[str, Any] = Field(default_factory=dict)
+    # 底层存储：Key 是 Extension 的名字，Value 是它的状态字典
+    data: Dict[str, Any] = Field(default_factory=dict)
 
-    def get_state(self, extension_name: str, version: str = "v0") -> Optional[Any]:
-        """获取特定扩展版本的状态"""
-        key = f"{extension_name}.{version}"
-        return self.extension_states.get(key)
+    def get(self, ext_name: str, default: Any = None) -> Any:
+        return self.data.get(ext_name, default)
 
-    def set_state(self, extension_name: str, data: Any, version: str = "v0"):
-        """设置特定扩展版本的状态"""
-        key = f"{extension_name}.{version}"
-        self.extension_states[key] = data
+    def set(self, ext_name: str, value: Any):
+        self.data[ext_name] = value
 
-    def remove_state(self, extension_name: str, version: str = "v0"):
-        key = f"{extension_name}.{version}"
-        if key in self.extension_states:
-            del self.extension_states[key]
+    def get_as_model(self, ext_name: str, model_cls: Type[T]) -> Optional[T]:
+        """
+        高级功能：尝试将存储的字典转换为具体的 Pydantic 模型
+        """
+        raw = self.data.get(ext_name)
+        if raw is None:
+            return None
+        return model_cls.model_validate(raw)

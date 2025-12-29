@@ -12,6 +12,8 @@ from ..events import (
     TextEvent, ToolCallEvent, ToolResultEvent, StateEvent, ErrorEvent
 )
 from ..utils.concurrency import run_blocking
+from ..truncation.truncator import ContextTruncator
+
 
 logger = logging.getLogger("goose.agent")
 
@@ -42,6 +44,8 @@ class Agent:
         self._status = AgentStatus.IDLE
         self._running_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
+        
+        self.truncator = ContextTruncator(max_tokens=16000, keep_last_messages=10)
 
     # --- 公共 API ---
     async def reply(
@@ -132,12 +136,19 @@ class Agent:
                 if not pending_tools:
                     await self._set_state(AgentStatus.THINKING)
                     
+                    # [关键修改]
+                    # 1. 构建视图 (Agent 可见的消息)
+                    visible_msgs = Conversation(messages=full_history).agent_visible_messages()
+                    
+                    # 2. 应用截断
+                    truncated_msgs = self.truncator.truncate(visible_msgs, self.system_prompt)
+                    
                     tool_defs = self.tools.list_definitions()
                     ai_message = Message.assistant()
                     
                     try:
                         async for partial, _ in self.provider.stream(
-                            self.system_prompt, conversation_view, tool_defs
+                            self.system_prompt, truncated_msgs, tool_defs
                         ):
                             # 流式合并 & 分发
                             if partial:

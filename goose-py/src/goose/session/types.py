@@ -13,6 +13,7 @@ class SessionType(str, Enum):
     SUB_AGENT = "sub_agent"
     HIDDEN = "hidden"
     TERMINAL = "terminal"
+    WORKFLOW = "workflow"
 
 class Session(BaseModel):
     """
@@ -25,7 +26,8 @@ class Session(BaseModel):
     session_type: SessionType = SessionType.USER
     created_at: str
     updated_at: str
-    
+    # 1. 通用元数据：存放 working_dir, user_id 等
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     # 扩展数据 (ExtensionData)
     extension_data: ExtensionData = Field(default_factory=ExtensionData)
     
