@@ -1,7 +1,7 @@
 import inspect
 import re
 import functools
-from typing import Any, Dict, List, Optional, Type, Union, Callable, get_origin, get_args
+from typing import Any, Dict, List, Optional, Type, Union, Callable, get_origin, get_args,Mapping
 from pydantic import BaseModel, Field, create_model, ValidationError, ConfigDict
 import jsonschema
 
@@ -225,8 +225,16 @@ class TypeConverter:
         explicit_model = cls._get_input_model(func)
         if explicit_model:
             return cls.from_pydantic(explicit_model)
-        return cls._from_function(func)
+        return cls._infer_inputs_from_function(func)
     
+    @classmethod
+    def infer_config_schema(cls, func: Callable) -> TypeInfo:
+        """推断函数配置 Schema"""
+        explicit_model = cls._get_config_model(func)
+        if explicit_model:
+            return cls.from_pydantic(explicit_model)
+        return cls._infer_config_from_function(func)
+
     @classmethod
     def infer_output_schema(cls, func: Callable) -> Optional[TypeInfo]:
         """推断函数返回值 Schema"""
@@ -245,7 +253,7 @@ class TypeConverter:
     # Helpers
     # ==========================================
     @classmethod
-    def _from_function(cls, func: Callable) -> TypeInfo:
+    def _infer_inputs_from_function(cls, func: Callable) -> TypeInfo:
         """从普通函数签名动态生成 Schema"""
         try:
             sig = inspect.signature(func)
@@ -256,8 +264,32 @@ class TypeConverter:
         for name, param in sig.parameters.items():
             if name in ('self', 'cls', 'ctx', 'config'): 
                 continue
-            
+
+            # 2. [关键] 过滤掉 Config 参数 (即 Keyword-Only 参数)
+            # 如果参数在 '*' 之后定义，它就不属于 Inputs
+            # 没有 * 号，所有参数都是 Inputs
+            # def execute(self, query: str, context: str):
+            # 使用 * 号分隔
+            # def execute(self, query: str, *, model: str = "gpt-4", temperature: float = 0.7):
+            #     # Inputs: {query}  <-- 左侧连线桩
+            #     # Config: {model, temperature} <-- 右侧配置面板
+            # 第一个参数就是 *，表示后面全是 Config
+            # def execute(self, *, api_key: str, base_url: str):
+            #     # Inputs: {}
+            #     # Config: {api_key, base_url}
+            #     pass
+            if param.kind == inspect.Parameter.KEYWORD_ONLY:
+                continue
+
             annotation = param.annotation
+            origin_type = getattr(annotation, "__origin__", annotation)
+
+            if name == "inputs" and origin_type in (dict, Dict, Mapping, Any, inspect.Parameter.empty):
+                # 开发者意图是：execute(self, inputs) -> 给我原始数据
+                # 我们不需要为它生成 schema 字段，因为它是全集
+                has_inputs_dict_arg = True
+                continue
+
             if annotation == inspect.Parameter.empty:
                 annotation = str
             
@@ -267,12 +299,98 @@ class TypeConverter:
             
             fields[name] = (annotation, default)
 
-        DynamicModel = create_model(
-            f"{func.__name__}Args", 
-            __config__=ConfigDict(extra='allow'), 
-            **fields
-        )
-        return cls.from_pydantic(DynamicModel)
+        # 情况 A: 函数签名里包含 inputs: Dict
+        # def execute(self, inputs: Dict, config)
+        # 这意味着函数想要所有东西。如果没有其他参数，我们应该返回 None (无 Schema) 或者一个允许任意字段的 Schema
+        if has_inputs_dict_arg and not fields:
+            # 这是一个“通吃”的函数，没有具体的 Schema 约束
+            # 我们可以返回一个允许任意 extra 字段的空模型
+            DynamicModel = create_model(
+                f"{func.__name__}Args",
+                __config__=ConfigDict(extra='allow') # 允许任意字段
+            )
+            return cls.from_pydantic(DynamicModel)
+
+        # 情况 B: 混合参数 (极其少见，建议禁止)
+        # def execute(self, inputs: Dict, other: str) -> 不推荐，逻辑会混乱
+
+        # 情况 C: 普通参数
+        # def execute(self, query: str, age: int)
+        if fields:
+            DynamicModel = create_model(
+                f"{func.__name__}Args", 
+                __config__=ConfigDict(extra='ignore'), # 仅允许定义的字段
+                **fields
+            )
+            return cls.from_pydantic(DynamicModel)
+            
+        # 没有任何有效参数
+        return None
+
+    @classmethod
+    def _infer_config_from_function(cls, func: Callable) -> TypeInfo:
+        """
+        从函数签名动态生成 Config Schema
+        逻辑：收集所有非 inputs、非 system 的参数作为配置项
+        """
+        try:
+            sig = inspect.signature(func)
+        except ValueError:
+            return TypeInfo(type=DataType.OBJECT)
+
+        fields = {}
+        has_config_dict_arg = False
+
+        for name, param in sig.parameters.items():
+            # [关键] 过滤掉系统参数 和 inputs 参数
+            if name in ('self', 'cls', 'ctx', 'inputs'): 
+                continue
+            
+            annotation = param.annotation
+            origin_type = getattr(annotation, "__origin__", annotation)
+            
+            # Case A: 遇到 config: Dict
+            # 意图：execute(self, inputs, config: Dict)
+            if name == "config" and origin_type in (dict, Dict, Mapping, Any, inspect.Parameter.empty):
+                has_config_dict_arg = True
+                continue
+
+            # 3. [关键] 只捕获 Keyword-Only 参数作为 Config
+            # 或者是显式命名为 'config' 的 Pydantic 模型(已在外部逻辑处理)
+            if param.kind != inspect.Parameter.KEYWORD_ONLY:
+                continue
+
+            # Case B: 普通配置参数
+            # 意图：execute(self, inputs, model: str, temperature: float)
+            if annotation == inspect.Parameter.empty:
+                annotation = str # 默认类型
+            
+            default = param.default
+            if default == inspect.Parameter.empty:
+                default = ... 
+            
+            fields[name] = (annotation, default)
+
+        # 场景 1: 函数包含 config: Dict，且没有其他具体参数
+        # 含义：允许任意配置项
+        if has_config_dict_arg and not fields:
+            DynamicModel = create_model(
+                f"{func.__name__}Config",
+                __config__=ConfigDict(extra='allow') # 允许任意 extra 字段
+            )
+            return cls.from_pydantic(DynamicModel)
+
+        # 场景 2: 提取到了具体的配置参数 (model, temperature 等)
+        if fields:
+            DynamicModel = create_model(
+                f"{func.__name__}Config", 
+                __config__=ConfigDict(extra='ignore'), # 仅允许定义的配置
+                **fields
+            )
+            return cls.from_pydantic(DynamicModel)
+            
+        # 场景 3: 没有任何配置参数
+        return TypeInfo(type=DataType.OBJECT) # 空配置
 
     @classmethod
     def _get_input_model(cls, func: Any) -> Type[BaseModel] | None:
@@ -288,17 +406,63 @@ class TypeConverter:
             if isinstance(arg_type, type) and issubclass(arg_type, BaseModel):
                 return arg_type
 
+            # Case B: 是字典类型 (Dict, dict, Mapping) -> 返回 None (表示无特定模型)
+            origin = getattr(arg_type, "__origin__", arg_type)
+            if origin in (dict, Dict, Mapping):
+                 # 这里是一个设计决策点：
+                 # 选项 1: 返回 None，让 _from_function 处理 (但会导致嵌套 inputs 字段)
+                 # 选项 2: 返回一个特殊的标记，告诉调用者“不需要校验，直接传参”
+                 return None
         # 扫描参数类型
         try:
             sig = inspect.signature(func)
             for name, param in sig.parameters.items():
                 if name in ('self', 'cls', 'ctx', 'config'): continue
-                if isinstance(param.annotation, type) and issubclass(param.annotation, BaseModel):
-                    return param.annotation
+                # 检查参数类型是否为 Pydantic Model
+                annotation = annotations.get(name, param.annotation)
+                if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                    return annotation
         except ValueError:
             pass
         return None
 
+    @classmethod
+    def _get_config_model(cls, func: Any) -> Type[BaseModel] | None:
+        """查找显式的 Pydantic Config Model"""
+        try:
+            annotations = inspect.get_annotations(func)
+        except (ValueError, AttributeError):
+            return None
+
+        # 1. 优先查找名为 'config' 的参数
+        if "config" in annotations:
+            arg_type = annotations["config"]
+            
+            # Case A: 是 Pydantic 模型 -> 直接返回
+            if isinstance(arg_type, type) and issubclass(arg_type, BaseModel):
+                return arg_type
+            
+            # Case B: 是字典类型 (Dict, dict, Mapping) -> 返回 None
+            # 这表示用户想要一个“允许任意配置”的字典，交给 _from_function 生成 permissive model
+            origin = getattr(arg_type, "__origin__", arg_type)
+            if origin in (dict, Dict, Mapping):
+                 return None 
+
+        # 2. 扫描其他参数 (寻找 Pydantic Model)
+        # 注意：这里我们要跳过 'inputs'，因为那是数据流
+        try:
+            sig = inspect.signature(func)
+            for name, param in sig.parameters.items():
+                if name in ('self', 'cls', 'ctx', 'inputs'): continue
+                
+                annotation = annotations.get(name, param.annotation)
+                if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                    return annotation
+        except ValueError:
+            pass
+            
+        return None
+        
     @staticmethod
     def _get_py_type(info: TypeInfo) -> Any:
         """Internal: TypeInfo -> Python Type"""

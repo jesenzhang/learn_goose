@@ -76,7 +76,7 @@ def register_component(
         final_config_model = resolve_model(
             config_model,
             config_schema,
-            lambda _: None,  # Config 无法从 execute 推断，通常只能显式传
+            TypeConverter.infer_config_schema,
             "Config",
         )
 
@@ -94,6 +94,10 @@ def register_component(
             "Output",
         )
         
+        cls.config_model = final_config_model
+        cls.input_model = final_input_model
+        cls.output_model = final_output_model
+
         definition = DefinitionBuilder.build(
             label=label,
             description=description,

@@ -25,7 +25,17 @@ class ComponentNode(BaseCozeNode, ABC):
 
     def __init__(self, inputs: Dict[str, Any] = None, node_id: str = None, raw_config: Dict[str, Any] = None):
         super().__init__(inputs, node_id, raw_config)
-        
+        self.context = None
+    
+    def set_config_model(self, config_model: Type[BaseModel]):
+        self.config_model = config_model
+    def set_input_model(self, input_model: Type[BaseModel]):
+        self.input_model = input_model
+    def set_output_model(self, output_model: Type[BaseModel]):
+        self.output_model = output_model
+    def set_context(self, context: WorkflowContext):
+        self.context = context
+
     async def invoke(self, inputs: Any, context: WorkflowContext) -> Dict[str, Any]:
         """
         [Template Method] 标准执行流
@@ -37,9 +47,6 @@ class ComponentNode(BaseCozeNode, ABC):
             # 1. 解析动态引用 (Resolution)
             # context -> raw_inputs (dict)
             resolved_inputs = self.resolve_inputs(context)
-            
-            if inputs and isinstance(inputs, dict):
-                resolved_inputs.update(inputs)
             
             # 2. 校验配置 (Validation - Config)
             validated_config = self._validate_model(
@@ -76,7 +83,17 @@ class ComponentNode(BaseCozeNode, ABC):
         if model is None:
             return data # 如果没定义模型，透传字典
         try:
-            return model.model_validate(data or {})
+            # 2. 校验
+            validated = model.model_validate(data or {})
+            # 如果模型是动态生成的“允许任意字段”的空模型 (对应 inputs: Dict)
+            # 我们应该返回它的 model_dump() (即字典)，而不是对象
+            # 否则 execute(self, inputs: Dict) 接收到的是一个 BaseModel 实例，会报错
+            if hasattr(model, "model_config") and model.model_config.get("extra") == "allow":
+                # 检查是否是那个仅用于占位的空模型
+                if not model.model_fields: 
+                    return validated.model_dump()
+            
+            return validated
         except ValidationError as e:
             raise ValueError(f"{label} Validation Error: {e}")
 

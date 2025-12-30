@@ -141,6 +141,13 @@ class Message(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
+    def system(cls, text: str = "") -> "Message":
+        msg = cls(role=Role.SYSTEM)
+        if text:
+            msg.content.append(TextContent(text=text))
+        return msg
+
+    @classmethod
     def user(cls, text: str = "") -> "Message":
         msg = cls(role=Role.USER)
         if text:

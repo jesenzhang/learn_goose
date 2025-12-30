@@ -214,7 +214,7 @@ class BatchComponent(Component):
     version="1.0.0"
 )
 class BreakComponent(Component):
-    async def execute(self, inputs: Dict, config: BaseModel) -> Dict:
+    async def execute(self, inputs: Dict, config: Dict) -> Dict:
         # 发送信号，Loop 组件会捕获这个 Key
         return {"_control_signal": "BREAK"}
 
@@ -228,5 +228,5 @@ class BreakComponent(Component):
     version="1.0.0"
 )
 class ContinueComponent(Component):
-    async def execute(self, inputs: Dict, config: BaseModel) -> Dict:
+    async def execute(self, inputs: Dict, config: Dict) -> Dict:
         return {"_control_signal": "CONTINUE"}

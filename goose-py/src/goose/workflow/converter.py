@@ -15,12 +15,13 @@ class WorkflowConverter:
         # 1. 创建节点实例
         for node_def in definition.nodes:
             # 从注册中心获取组件类 (Class)
-            component_cls = sys_registry.components.get(node_def.type)
+            entry = sys_registry.components.get_entry(node_def.type)
+            component_cls, meta = entry.body,entry.meta
             
             if not component_cls:
                 logger.error(f"❌ Component type '{node_def.type}' not found in registry!")
                 continue
-                
+            
             instance = component_cls()
             instance.raw_config = node_def.config
             # 注入配置 (Runtime State)
@@ -30,6 +31,7 @@ class WorkflowConverter:
             
             # 元数据注入 (可选，用于调试)
             instance.node_id = node_def.id
+            instance.type = node_def.type
             
             graph.add_node(node_def.id, instance)
             logger.info(f"🔨 Built node: {node_def.id} ({node_def.type})")

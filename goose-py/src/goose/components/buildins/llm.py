@@ -81,7 +81,7 @@ class LLMComponent(Component):
         if config.tools:
             for tool_id in config.tools:
                 # 从 Goose 的 ToolRegistry 获取
-                t_def = tool_registry.get(tool_id).meta
+                t_def = tool_registry.get_meta(tool_id)
                 if t_def:
                     tool_defs.append(t_def)
                     # 转换为 OpenAI 格式 (假设 ToolDefinition 实现了 to_openai_format)
@@ -125,10 +125,9 @@ class LLMComponent(Component):
         # 使用 TemplateRenderer 渲染变量
         system_content = TemplateRenderer.render(system_instruction, inputs)
         user_content = TemplateRenderer.render(config.prompt, inputs)
-        
+        system_prompt=Message.system(system_content if system_content else '') 
         messages = []
-        if system_content:
-            messages.append(Message.system(system_content))
+        
         messages.append(Message.user(user_content))
 
         # 4. [执行] ReAct Loop
@@ -141,7 +140,7 @@ class LLMComponent(Component):
             
             # --- 调用 LLM ---
             # 注意：Goose 的 Provider 接口通常返回 Message 对象
-            response_msg = await provider.generate(messages, tools=openai_tools if openai_tools else None)
+            response_msg = await provider.complete(system_prompt,messages, tools=openai_tools if openai_tools else None)
             
             # 累积推理内容 (DeepSeek/O1)
             if response_msg.reasoning_content:
