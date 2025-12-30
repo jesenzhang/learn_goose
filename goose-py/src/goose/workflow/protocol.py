@@ -25,9 +25,15 @@ class NodeConfig(BaseModel):
     
     # 节点特有配置 (例如 LLM 的 model_config, Loop 的 count 等)
     config: Dict[str, Any] = Field(default_factory=dict)
+    # 2. 类型契约 (校验依据: 是什么)
+    # [新增] 存储解析后的 TypeInfo，用于 DynamicModelFactory
+    schema_info: Dict[str, Any] = Field(default_factory=dict)
     
-    # UI 信息 (坐标等，后端通常忽略，但在保存时需要)
-    position: Dict[str, float] = Field(default_factory=dict)
+    raw_data: Dict[str, Any] = Field(default_factory=dict)
+
+    # 3. 错误策略
+    error_policy: Dict[str, Any] = Field(default_factory=dict)
+
 
 class EdgeConfig(BaseModel):
     """连线定义"""

@@ -6,12 +6,14 @@ from pydantic import BaseModel, Field
 from ..base import Tool, ToolError
 from ...conversation.message import CallToolResult, RawContent
 from ..utils import decode_output, truncate_output
+from ..registry import register_tool
 
 class ShellArgs(BaseModel):
     command: str = Field(..., description="The shell command to execute. Non-interactive commands only.")
     working_dir: Optional[str] = Field(None, description="Directory to execute command in.")
     timeout: int = Field(60, description="Max execution time in seconds. Default 60s.")
 
+@register_tool()
 class ShellTool(Tool):
     name = "developer__shell"
     description = (

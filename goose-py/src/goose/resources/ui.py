@@ -830,32 +830,6 @@ class UI:
             **ui_props,
         )
 
-    @staticmethod
-    def List(
-        dtype: Type[T],
-        model_class: Type[BaseModel] = None,
-        description: str = "",
-        group: str = "",
-    ):
-        """
-        【通用】对象列表组件 (Repeater / Array Editor)
-        前端渲染为：一个可增删的列表，列表的每一项是一个子表单（根据 model_class 生成）。
-        适用于：复杂嵌套对象的数组。
-        """
-        # 如果传入了 model_class，提取其 Schema 传给前端，方便前端递归渲染
-        items_schema = {}
-        if model_class:
-            items_schema = model_class.model_json_schema()
-
-        # 复用 factory
-        return UI._factory(
-            "ListEditor",  # 前端需要实现一个通用的 ListEditor 组件
-            dtype,
-            description,
-            group,
-            # 告诉前端：列表里的每一项长什么样
-            items_schema=items_schema,
-        )
 
     @staticmethod
     def OutputMap(raw_model: Type[BaseModel], description: str = "", group: str = ""):
@@ -900,4 +874,31 @@ class UI:
             group,
             allowed_types=allowed_root_types,
             **ui_props
+        )
+        
+    @staticmethod
+    def Combo(
+        dtype: Type[T]=None,
+        model_class: Type[BaseModel] = None,
+        description: str = "",
+        group: str = "",
+    ):
+        """
+        【通用】对象列表组件 (Repeater / Array Editor)
+        前端渲染为：一个可增删的列表，列表的每一项是一个子表单（根据 model_class 生成）。
+        适用于：复杂嵌套对象的数组。
+        """
+        # 如果传入了 model_class，提取其 Schema 传给前端，方便前端递归渲染
+        items_schema = {}
+        if model_class:
+            items_schema = model_class.model_json_schema()
+
+        # 复用 factory
+        return UI._factory(
+            "ListEditor",  # 前端需要实现一个通用的 ListEditor 组件
+            dtype,
+            description,
+            group,
+            # 告诉前端：列表里的每一项长什么样
+            items_schema=items_schema,
         )

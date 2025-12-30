@@ -9,7 +9,7 @@ import sys
 # 确保导入路径正确
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.goose.model import ModelConfig
+from goose.providers import ModelConfig
 from src.goose.providers.openai import OpenAIProvider
 from src.goose.session import SessionManager
 from src.goose.tools import ToolRegistry, ShellTool, WriteFileTool, ReadFileTool, PatchFileTool

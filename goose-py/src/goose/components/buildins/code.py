@@ -1,16 +1,15 @@
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 
-from goose.component.base import Component
-from goose.component.registry import register_component
+from goose.components.base import Component
 from goose.sandbox import ICodeSandbox,NativeSandboxAdapter
 from goose.utils.template import TemplateRenderer
-from goose.resources.tool import ToolDefinitionRegistry, ToolSourceType
+from goose.toolkit import tool_registry, ToolSourceType
 from goose.types import InputMapping
+from goose.components.registry import register_component
+from goose.types import NodeTypes
+
 # --- CodeRunner Config ---
-
-
-
 class CodeConfig(BaseModel):
     # 输入参数列表 (对应 Coze 的 input parameters)
     input_parameters: List[InputMapping] = Field(default_factory=list, alias="inputParameters")
@@ -21,15 +20,18 @@ class CodeConfig(BaseModel):
     # 超时设置
     timeout: int = Field(30, description="超时时间(秒)")
 
-@register_component
+@register_component(
+    name=NodeTypes.CODE_RUNNER,
+    group="Code",
+    label="代码执行 (Python)",
+    description="编写 Python 代码处理变量",
+    icon="code",
+    author="System",
+    version="1.0.0",
+    config_model=CodeConfig,
+    input_model=None
+)
 class CodeRunner(Component):
-    name = "code_runner"
-    label = "代码执行 (Python)"
-    description = "编写 Python 代码处理变量"
-    icon = "code"
-    group = "Code"
-    config_model = CodeConfig
-
     # 默认使用本地沙箱，生产环境应注入 DockerSandbox
     _sandbox: ICodeSandbox = NativeSandboxAdapter()
 
@@ -76,22 +78,24 @@ class LambdaConfig(BaseModel):
     function_name: str = Field(..., description="预注册的函数名")
     args: Dict[str, Any] = Field(default_factory=dict, description="固定参数")
 
-@register_component
+@register_component(
+    name=NodeTypes.LAMBDA,
+    group="Code",
+    label="Lambda 函数",
+    description="调用系统预置的 Python 函数",
+    icon="function",
+    author="System",
+    version="1.0.0",
+    config_model=LambdaConfig
+)
 class Lambda(Component):
-    name = "lambda"
-    label = "Lambda 函数"
-    description = "调用系统预置的 Python 函数"
-    icon = "function"
-    group = "Code"
-    config_model = LambdaConfig
-
     async def execute(self, inputs: Dict[str, Any], config: LambdaConfig) -> Dict[str, Any]:
         # 需要一个 Lambda 注册表。
         # 这里为了演示，我们假设存在一个全局注册表，或者通过 SystemRegistry 获取
 
         # 1. 查找函数定义
         # 我们复用 ToolDefinitionRegistry，假设 Lambda 被注册为 BUILTIN 工具
-        tool_def = ToolDefinitionRegistry.get(config.function_name)
+        tool_def = tool_registry.get(config.function_name)
         
         if not tool_def or tool_def.source_type != ToolSourceType.BUILTIN:
              # 回退：尝试直接查找 Python 内存对象 (如果有一个简单的 dict 注册表)

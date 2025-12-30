@@ -7,8 +7,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from goose.agent import Agent, AgentStatus
 from goose.events import EventType
 from goose.session import SessionManager
-from goose.tools import ToolRegistry, ShellTool
-from goose.model import ModelConfig
+from goose.toolkit import ToolRegistry, ShellTool
+from goose.providers import ModelConfig
 from goose.providers.openai import OpenAIProvider
 
 # 配置

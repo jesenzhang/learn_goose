@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
-from ..model import ModelConfig
+from goose.providers import ModelConfig
 from .extension_data import ExtensionData
 
 # --- 数据模型 ---

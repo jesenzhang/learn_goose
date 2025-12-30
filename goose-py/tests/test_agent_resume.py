@@ -10,7 +10,7 @@ from src.goose.agent import Agent, AgentStatus
 from src.goose.events import EventType
 from src.goose.session import SessionManager
 from src.goose.tools import ToolRegistry, ShellTool, WriteFileTool
-from src.goose.model import ModelConfig
+from goose.providers import ModelConfig
 from src.goose.providers.openai import OpenAIProvider
 
 # 配置

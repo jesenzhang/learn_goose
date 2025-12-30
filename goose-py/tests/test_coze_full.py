@@ -17,13 +17,13 @@ from goose.workflow.graph import Graph
 from goose.workflow.scheduler import WorkflowScheduler
 from goose.workflow.repository import WorkflowRepository, register_workflow_schemas
 from goose.session.repository import register_session_schemas
-from goose.core.registry import register_component, ComponentRegistry
+from goose.components.registry import component_registry
 
 # 组件依赖
-from goose.component.buildins.llm import LLMComponent, LLMConfig, OutputDefinition
-from goose.component.buildins.code import CodeRunner, CodeConfig, InputMapping
-from goose.component.buildins.control import SelectorComponent, SelectorConfig, ConditionBranch
-from goose.component.buildins.basic import StartComponent,EndComponent,StartConfig,EndConfig
+from goose.components.buildins.llm import LLMComponent, LLMConfig, OutputDefinition
+from goose.components.buildins.code import CodeRunner, CodeConfig, InputMapping
+from goose.components.buildins.control import SelectorComponent, SelectorConfig, ConditionBranch
+from goose.components.buildins.basic import StartComponent,EndComponent,StartConfig,EndConfig
 from goose.providers.base import Provider,ProviderUsage,ProviderFactory
 from goose.conversation import Message
 

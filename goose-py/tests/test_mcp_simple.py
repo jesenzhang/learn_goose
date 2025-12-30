@@ -6,11 +6,11 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.goose.mcp.client import McpClient
-from src.goose.tools.mcp_adapter import McpToolAdapter
-from src.goose.tools.registry import ToolRegistry
+from src.goose.toolkit.mcp_adapter import McpTool
+from src.goose.toolkit.registry import ToolRegistry
 from src.goose.agent import Agent
 from src.goose.providers.openai import OpenAIProvider
-from src.goose.model import ModelConfig
+from goose.providers import ModelConfig
 from src.goose.session import SessionManager
 
 # 配置
@@ -38,7 +38,7 @@ async def main():
         
         registry = ToolRegistry()
         for tool_def in mcp_tools:
-            adapter = McpToolAdapter(client, tool_def)
+            adapter = McpTool(client, tool_def)
             registry.register(adapter)
             
         # 3. 启动 Agent

@@ -8,9 +8,9 @@ from goose.utils.template import TemplateRenderer
 from goose.utils.type_converter import DataValidator
 
 # --- 组件架构 ---
-from goose.component.base import Component
-from goose.component.registry import register_component
-
+from goose.components.base import Component
+from goose.components.registry import register_component
+from goose.types import NodeTypes
 # ==========================================
 # 1. Start Component (开始节点)
 # ==========================================
@@ -31,28 +31,27 @@ class StartConfig(BaseModel):
         }
     )
 
-@register_component
+@register_component(
+    name=NodeTypes.ENTRY, 
+    group="Basic", 
+    label="开始", 
+    description="工作流入口，定义和校验初始参数", 
+    icon="play-circle", 
+    author="System", 
+    version="1.0.0",
+    config_model=StartConfig,
+    input_model = None)
 class StartComponent(Component):
-    name = "start"
-    label = "开始"
-    description = "工作流入口，定义和校验初始参数"
-    icon = "play-circle" 
-    group = "Basic"
-    
-    # 绑定配置模型
-    config_model = StartConfig
-    
-    # Start 节点的输入来自 Scheduler 启动时的参数，结构不定，不做预校验
-    input_model = None 
-
-    async def execute(self, inputs: Dict[str, Any], config: StartConfig) -> Dict[str, Any]:
+    async def execute(self, inputs: Dict[str, Any], config: StartConfig|Dict) -> Dict[str, Any]:
         """
         执行逻辑：
         1. 接收外部传入的 inputs (dict)。
         2. 根据 config.variables 定义的 Schema (TypeInfo) 进行严格校验和清洗。
         """
         validated_data = {}
-        
+        if isinstance(config,dict):
+            config = StartConfig.model_validate(config)
+            
         # 1. 遍历定义的参数进行清洗
         for param in config.variables:
             key = param.key
@@ -104,19 +103,18 @@ class EndConfig(BaseModel):
         )
     )
 
-@register_component
+@register_component(
+    name=NodeTypes.EXIT, 
+    group="Basic", 
+    label="结束", 
+    description="工作流出口，格式化最终结果", 
+    icon="stop-circle", 
+    author="System", 
+    version="1.0.0",
+    config_model=EndConfig,
+    input_model=None)
 class EndComponent(Component):
-    name = "end"
-    label = "结束"
-    description = "工作流出口，格式化最终结果"
-    icon = "stop-circle"
-    group = "Basic"
-    
-    config_model = EndConfig
-    input_model = None # 接受任意上游输入
-    
     async def execute(self, inputs: Dict[str, Any], config: EndConfig) -> Dict[str, Any]:
-        
         final_output = {}
 
         # 模式 1: 构造特定的回答内容 (模板渲染)
@@ -158,17 +156,17 @@ class OutputConfig(BaseModel):
         json_schema_extra=UI.Switch()
     )
 
-@register_component
+@register_component(
+    name=NodeTypes.OUTPUT_EMITTER, 
+    group="Basic", 
+    label="中间输出", 
+    description="在工作流运行过程中向用户发送消息", 
+    icon="message-square", 
+    author="System", 
+    version="1.0.0",
+    config_model=OutputConfig,
+    input_model=None)
 class OutputComponent(Component):
-    name = "output"
-    label = "中间输出"
-    description = "在工作流运行过程中向用户发送消息"
-    icon = "message-square"
-    group = "Basic"
-    
-    config_model = OutputConfig
-    input_model = None
-
     async def execute(self, inputs: Dict[str, Any], config: OutputConfig) -> Dict[str, Any]:
         # 1. 渲染内容
         rendered_content = TemplateRenderer.render(config.content, inputs)

@@ -11,12 +11,12 @@ from unittest.mock import MagicMock, AsyncMock
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # 导入 Goose 组件
-from goose.core.tool import ToolDefinitionRegistry, ToolDefinition, ToolSourceType
+from goose.toolkit.protocol import ToolDefinitionRegistry, ToolDefinition, ToolSourceType
 from goose.workflow.context import WorkflowContext
-from goose.component.code import CodeRunner, CodeConfig, InputMapping
-from goose.component.http import HttpRequester, HttpConfig
-from goose.component.control import SelectorComponent, SelectorConfig, ConditionBranch, LoopComponent, LoopConfig
-from goose.component.plugin import PluginComponent, PluginConfig, ApiParam
+from goose.components.code import CodeRunner, CodeConfig, InputMapping
+from goose.components.http import HttpRequester, HttpConfig
+from goose.components.control import SelectorComponent, SelectorConfig, ConditionBranch, LoopComponent, LoopConfig
+from goose.components.plugin import PluginComponent, PluginConfig, ApiParam
 from goose.workflow.protocol import WorkflowDefinition
 
 # 配置日志

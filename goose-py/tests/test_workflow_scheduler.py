@@ -17,7 +17,7 @@ from goose.workflow.repository import WorkflowRepository, register_workflow_sche
 from goose.agent import Agent
 from goose.providers import OpenAIProvider, ProviderFactory
 from goose.conversation import Message as ModelMessage
-from goose.model import ModelConfig
+from goose.providers import ModelConfig
 from goose.session.repository import register_session_schemas
 
 # --- 配置日志 ---

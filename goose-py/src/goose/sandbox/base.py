@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict
+from typing import Dict,Any
 
 class ICodeSandbox(ABC):
     """代码沙箱抽象基类"""

@@ -4,10 +4,12 @@ import json
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 
-from goose.component.base import Component
-from goose.component.registry import register_component
-from goose.resources.tool import ToolDefinitionRegistry, ToolDefinition, ToolSourceType
+from goose.components.base import Component
+from goose.toolkit import tool_registry, ToolDefinition, ToolSourceType
 from goose.utils.template import TemplateRenderer
+from goose.components.registry import register_component
+from goose.types import NodeTypes
+
 
 # --- 配置模型 (保持对 Coze 协议的兼容) ---
 class ApiParam(BaseModel):
@@ -24,15 +26,17 @@ class PluginConfig(BaseModel):
     # 为了方便 Goose 原生使用，允许直接指定 tool_id
     tool_id: Optional[str] = None
 
-@register_component
+@register_component(
+    name=NodeTypes.PLUGIN,
+    group="Tool",
+    label="插件/工具执行器",
+    description="执行 HTTP 插件、本地函数或子工作流",
+    icon="zap",
+    author="System",
+    version="1.0.0",
+    config_model=PluginConfig
+)
 class PluginComponent(Component):
-    name = "plugin_runner"
-    label = "插件/工具执行器"
-    description = "执行 HTTP 插件、本地函数或子工作流"
-    icon = "zap"
-    group = "Tool"
-    config_model = PluginConfig
-
     async def execute(self, inputs: Dict[str, Any], config: PluginConfig) -> Dict[str, Any]:
         
         # 1. [解析] 确定 Tool ID
@@ -44,7 +48,7 @@ class PluginComponent(Component):
             raise ValueError("Plugin configuration missing 'tool_id'")
 
         # 2. [查找] 从注册表获取工具定义
-        tool_def = ToolDefinitionRegistry.get(tool_id)
+        tool_def = tool_registry.get(tool_id)
         if not tool_def:
             raise ValueError(f"Tool definition not found for ID: {tool_id}")
 

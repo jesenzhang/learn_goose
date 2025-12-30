@@ -1,12 +1,36 @@
-# from enum import Enum
-# from typing import Dict, Any, Optional, Callable
-# from pydantic import BaseModel
+from enum import Enum
+from typing import Dict, Any, Optional, Callable
+from pydantic import BaseModel
 
-# class ToolSourceType(str, Enum):
-#     PLUGIN = "plugin"       # HTTP API 插件 (OpenAPI)
-#     BUILTIN = "builtin"     # 本地 Python 函数
-#     WORKFLOW = "workflow"   # 子工作流
+class ToolSourceType(str, Enum):
+    PLUGIN = "plugin"       # HTTP API
+    BUILTIN = "builtin"     # 本地 Python 函数
+    MCP = "mcp"             # Model Context Protocol
+    WORKFLOW = "workflow"   # 子工作流
 
+class ToolParameter(BaseModel):
+    name: str
+    type: str
+    description: str
+    required: bool
+
+class ToolDefinition(BaseModel):
+    """
+    [Meta] 工具元数据
+    """
+    name: str
+    description: str = ""
+    source_type: ToolSourceType
+    
+    # JSON Schema for arguments (OpenAI format compatible)
+    args_schema: Dict[str, Any] = {}
+    
+    # 额外配置 (如 HTTP URL, Auth, WorkflowID)
+    extra_config: Dict[str, Any] = {}
+    
+    version: str = "1.0.0"
+    
+    
 # class ToolDefinition(BaseModel):
 #     """
 #     [Metadata] 工具元数据定义

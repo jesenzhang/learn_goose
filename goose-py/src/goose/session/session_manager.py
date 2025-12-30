@@ -13,7 +13,7 @@ from conversation import (
     Message, Role, MessageMetadata, Conversation, 
     MessageContent, TextContent # 用于类型检查
 )
-from model import ModelConfig
+from goose.providers import ModelConfig
 from extension_data import ExtensionData
 from chat_history_search import ChatHistorySearch
 from diagnostics import generate_diagnostics

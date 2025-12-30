@@ -1,15 +1,17 @@
 import aiofiles
 import os
 from pydantic import BaseModel, Field
-from ..base import Tool
+from goose.toolkit.base import Tool
 from ...conversation.message import CallToolResult, RawContent
 from ..utils import sanitize_path
+from ..registry import register_tool
 
 class PatchArgs(BaseModel):
     path: str = Field(..., description="The absolute or relative path to the file.")
     old_str: str = Field(..., description="The exact string to be replaced. Must be unique in the file.")
     new_str: str = Field(..., description="The new string to replace it with.")
 
+@register_tool()
 class PatchFileTool(Tool):
     name = "developer__text_editor_str_replace"
     description = (

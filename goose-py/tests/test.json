@@ -1,0 +1,161 @@
+{
+  "nodes": [
+    {
+      "id": "100001",
+      "type": "customInput",
+      "initialized": false,
+      "position": { "x": -81.9332090447596, "y": 7.549551555188266 },
+      "data": {
+        "outputs": [
+          {
+            "name": "query",
+            "type": "string",
+            "level": 0,
+            "isExpand": false,
+            "required": false,
+            "description": "",
+            "defaultValue": ""
+          }
+        ],
+        "nodeMeta": {
+          "icon": "data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20xmlns:xlink='http://www.w3.org/1999/xlink'%20fill='none'%20version='1.1'%20width='26'%20height='26'%20viewBox='0%200%2026%2026'%3e%3cg%3e%3crect%20x='0'%20y='0'%20width='26'%20height='26'%20rx='6'%20fill='%23366EF4'%20fill-opacity='1'/%3e%3cg%3e%3cpath%20d='M6.6,13C6.6,9.4653602,9.4653602,6.6,13,6.6C16.53464,6.6,19.400001,9.4653602,19.400001,13C19.400001,16.53464,16.53464,19.400001,13,19.400001C9.4653602,19.400001,6.6,16.53464,6.6,13C6.6,13,6.6,13,6.6,13ZM13,5C8.5817242,5,5,8.5817242,5,13C5,17.418281,8.5817242,21,13,21C17.418281,21,21,17.418281,21,13C21,8.5817242,17.418281,5,13,5C13,5,13,5,13,5ZM15.3598,15.828441C15.3598,15.828441,12.5313601,13,12.5313601,13C12.5313601,13,15.3598,10.1715598,15.3598,10.1715598C15.3598,10.1715598,14.2284403,9.040200200000001,14.2284403,9.040200200000001C14.2284403,9.040200200000001,10.268640000000001,13,10.268640000000001,13C10.268640000000001,13,14.2284403,16.9598,14.2284403,16.9598C14.2284403,16.9598,15.3598,15.828441,15.3598,15.828441C15.3598,15.828441,15.3598,15.828441,15.3598,15.828441Z'%20fill-rule='evenodd'%20fill='%23FFFFFF'%20fill-opacity='1'/%3e%3c/g%3e%3c/g%3e%3c/svg%3e",
+          "type": 1,
+          "title": "开始",
+          "description": "流程开始节点"
+        }
+      },
+      "class": ""
+    },
+    {
+      "id": "100002",
+      "type": "customOutput",
+      "initialized": false,
+      "position": { "x": 766.0299428691684, "y": -31.154484662258504 },
+      "data": {
+        "inputs": [
+          {
+            "name": "out",
+            "type": "string",
+            "source": {
+              "content": "",
+              "sourceId": "7dac3530-7b41-4911-ae31-5f54917dbdda",
+              "sourceName": "7dac3530-7b41-4911-ae31-5f54917dbdda.result"
+            }
+          }
+        ],
+        "content": "",
+        "nodeMeta": {
+          "icon": "data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20xmlns:xlink='http://www.w3.org/1999/xlink'%20fill='none'%20version='1.1'%20width='26'%20height='26'%20viewBox='0%200%2026%2026'%3e%3cg%20transform='matrix(-1,0,0,1,52,0)'%3e%3crect%20x='26'%20y='0'%20width='26'%20height='26'%20rx='6'%20fill='%23366EF4'%20fill-opacity='1'/%3e%3cg%3e%3cpath%20d='M32.6,13C32.6,9.4653602,35.4653602,6.6,39,6.6C42.534639999999996,6.6,45.400001,9.4653602,45.400001,13C45.400001,16.53464,42.534639999999996,19.400001,39,19.400001C35.4653602,19.400001,32.6,16.53464,32.6,13C32.6,13,32.6,13,32.6,13ZM39,5C34.5817242,5,31,8.5817242,31,13C31,17.418281,34.5817242,21,39,21C43.418281,21,47,17.418281,47,13C47,8.5817242,43.418281,5,39,5C39,5,39,5,39,5ZM41.3598,15.828441C41.3598,15.828441,38.5313601,13,38.5313601,13C38.5313601,13,41.3598,10.1715598,41.3598,10.1715598C41.3598,10.1715598,40.2284403,9.040200200000001,40.2284403,9.040200200000001C40.2284403,9.040200200000001,36.26864,13,36.26864,13C36.26864,13,40.2284403,16.9598,40.2284403,16.9598C40.2284403,16.9598,41.3598,15.828441,41.3598,15.828441C41.3598,15.828441,41.3598,15.828441,41.3598,15.828441Z'%20fill-rule='evenodd'%20fill='%23FFFFFF'%20fill-opacity='1'/%3e%3c/g%3e%3c/g%3e%3c/svg%3e",
+          "type": 2,
+          "title": "结束",
+          "description": "流程结束节点"
+        },
+        "returnType": "text",
+        "streamingOutput": true
+      },
+      "class": ""
+    },
+    {
+      "id": "7dac3530-7b41-4911-ae31-5f54917dbdda",
+      "type": "llm",
+      "initialized": false,
+      "position": { "x": 362.00761091339393, "y": -37.77812829371196 },
+      "data": {
+        "batch": false,
+        "model": {
+          "topP": 0.7,
+          "maxTokens": 4096,
+          "modelName": "Qwen/Qwen2.5-7B",
+          "temperature": 0.8,
+          "generationDiversity": "balance"
+        },
+        "inputs": [
+          {
+            "name": "query",
+            "type": "string",
+            "source": {
+              "content": "",
+              "sourceId": "100001",
+              "sourceName": "100001.query"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "name": "result",
+            "type": "string",
+            "level": 0,
+            "isExpand": false,
+            "required": false,
+            "description": "",
+            "defaultValue": ""
+          }
+        ],
+        "nodeMeta": {
+          "icon": "http://192.168.10.74:8081/static/svg/llm-Biay2vB4.svg",
+          "type": 10000,
+          "title": "大模型",
+          "description": "调用大语言模型,使用变量和提示词生成回复"
+        },
+        "pluginList": [
+          {
+            "id": "searxng_search",
+            "name": "SearXNG Search",
+            "group": "是一个免费的互联网元搜索引擎",
+            "config": {}
+          }
+        ],
+        "userPrompt": "回答用户问题：{{query}}&nbsp;",
+        "batchInputs": [
+          {
+            "name": "",
+            "type": "string",
+            "source": { "content": "", "sourceId": "", "sourceName": "" }
+          }
+        ],
+        "errorConfig": {
+          "timeoutS": 180,
+          "retryTimes": 0,
+          "backupModel": { "modelName": "" },
+          "returnContent": "{\n    \"output\": \"\"\n}",
+          "errorHandleType": "stop"
+        },
+        "systemPrompt": "你是一个有用的助手",
+        "visualInputs": []
+      },
+      "class": ""
+    }
+  ],
+  "edges": [
+    {
+      "id": "e7dac3530-7b41-4911-ae31-5f54917dbdda-100002",
+      "source": "7dac3530-7b41-4911-ae31-5f54917dbdda",
+      "target": "100002",
+      "sourceHandle": null,
+      "targetHandle": null,
+      "data": {},
+      "label": "",
+      "style": { "stroke": "#0052D9" },
+      "zIndex": 1,
+      "sourceX": 665.0070905700543,
+      "sourceY": 34.22175555322934,
+      "targetX": 763.0299428691684,
+      "targetY": 16.845515337741496
+    },
+    {
+      "id": "e100001-7dac3530-7b41-4911-ae31-5f54917dbdda",
+      "source": "100001",
+      "target": "7dac3530-7b41-4911-ae31-5f54917dbdda",
+      "sourceHandle": null,
+      "targetHandle": null,
+      "data": {},
+      "label": "",
+      "style": { "stroke": "#0052D9" },
+      "zIndex": 1,
+      "sourceX": 221.0667909552404,
+      "sourceY": 45.549551555188266,
+      "targetX": 359.0076066998115,
+      "targetY": 34.22175555322934
+    }
+  ]
+}

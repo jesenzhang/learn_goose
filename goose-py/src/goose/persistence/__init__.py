@@ -1,5 +1,5 @@
 from .backend import StorageBackend
 from .drivers import SQLiteBackend
-from .manager import PersistenceManager
+from .manager import PersistenceManager,persistence_manager
 
-__all__ = ["StorageBackend", "SQLiteBackend", "PersistenceManager"]
+__all__ = ["StorageBackend", "SQLiteBackend", "PersistenceManager", "persistence_manager"]

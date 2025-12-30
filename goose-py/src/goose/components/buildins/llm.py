@@ -1,17 +1,18 @@
 import json
 import re
 import logging
-import resource
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
-from goose.component.base import Component
-from goose.component.registry import register_component
-from goose.resources.tool import ToolDefinitionRegistry, ToolSourceType, ToolDefinition
+from goose.components.base import Component
+from goose.toolkit import tool_registry, ToolSourceType, ToolDefinition
 from goose.workflow.context import WorkflowContext
 from goose.utils.template import TemplateRenderer
 from goose.providers import ProviderFactory
 from goose.conversation import Message
+from goose.components.registry import register_component
+from goose.types import NodeTypes
+
 
 logger = logging.getLogger("goose.component.llm")
 
@@ -52,15 +53,17 @@ class LLMConfig(BaseModel):
 # LLM Component Implementation
 # ==========================================
 
-@register_component
+@register_component(
+    name=NodeTypes.LLM,
+    group="AI",
+    label="大语言模型",
+    description="执行对话、工具调用及结构化输出",
+    icon="cpu",
+    author="System",
+    version="1.0.0",
+    config_model=LLMConfig
+)
 class LLMComponent(Component):
-    name = "llm"
-    label = "大语言模型"
-    description = "执行对话、工具调用及结构化输出"
-    group = "AI"
-    icon = "cpu"
-    config_model = LLMConfig
-
     async def execute(self, inputs: Dict[str, Any],config: LLMConfig) -> Dict[str, Any]:
         """
         核心执行逻辑：
@@ -78,7 +81,7 @@ class LLMComponent(Component):
         if config.tools:
             for tool_id in config.tools:
                 # 从 Goose 的 ToolRegistry 获取
-                t_def = ToolDefinitionRegistry.get(tool_id)
+                t_def = tool_registry.get(tool_id).meta
                 if t_def:
                     tool_defs.append(t_def)
                     # 转换为 OpenAI 格式 (假设 ToolDefinition 实现了 to_openai_format)

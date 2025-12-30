@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Type, Optional, Callable, Awaitable
 from pydantic import BaseModel, Field, create_model
 
-from ..conversation.message import CallToolResult, RawContent
+from goose.conversation.message import CallToolResult, RawContent
 
 class ToolError(Exception):
     """工具执行期间发生的错误"""
@@ -75,10 +75,14 @@ def tool(name: str, description: str, args_model: Type[BaseModel]):
                 self.name = name
                 self.description = description
                 self.args_schema = args_model
+                self.func =func
                 super().__init__()
 
             async def run(self, **kwargs):
-                return await func(**kwargs)
+                # 支持异步和同步函数
+                if inspect.iscoroutinefunction(self.func):
+                    return await self.func(**kwargs)
+                return self.func(**kwargs)
         
         return DynamicTool()
     return decorator

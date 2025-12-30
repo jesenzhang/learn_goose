@@ -14,7 +14,7 @@ print(f"📂 Added source path: {src_path}")
 # --- 导入模块 (基于最新的 goose 包结构) ---
 from goose.session import SessionManager
 from goose.conversation.message import Message, TextContent
-from goose.model import ModelConfig
+from goose.providers import ModelConfig
 from goose.providers import OpenAIProvider
 
 # --- 配置区域 (请根据实际情况修改) ---

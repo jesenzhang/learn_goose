@@ -11,9 +11,12 @@ class Port(BaseModel):
     ui_widget: Optional[str] = None
 
 class UIConfig(BaseModel):
-    icon: str = "default"
-    label: str = ""
-    description: str = ""
+    label: str
+    description: str
+    author: str = "System"
+    group: str
+    icon: str
+    version: str = "1.0.0"
     ports: Dict[str, List[Port]] = Field(
         default_factory=lambda: {"inputs": [], "outputs": []}
     )
@@ -36,14 +39,17 @@ class ComponentDefinition(BaseModel):
 # ==========================================
 class ComponentMeta(BaseModel):
     type: str = Field(..., validation_alias=AliasChoices("id", "type"))
-    version: str = "1.0.0"
-    author: str = "System"
-    group: str = "default"
+    source: str = "system"  # system / user / plugin
+    
     tags: List[str] = []
+    
     definition: ComponentDefinition
     runner_ref: str = ""
 
     @property
     def id(self) -> str: return self.type
 
+    @property
+    def name(self) -> str:
+        return self.definition.ui.label or self.type
 

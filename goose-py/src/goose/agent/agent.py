@@ -3,16 +3,16 @@ import asyncio
 from typing import Optional, List,AsyncGenerator
 from enum import Enum
 
-from ..session import SessionManager
-from ..conversation import Message, Role, TextContent, ToolRequest, ToolResponse, CallToolResult, Conversation
-from ..providers.base import Provider
-from ..tools.registry import ToolRegistry
-from ..events import (
+from goose.session import SessionManager
+from goose.conversation import Message, Role, TextContent, ToolRequest, ToolResponse, CallToolResult, Conversation
+from goose.providers.base import Provider
+from goose.toolkit import ToolRegistry
+from goose.events import (
     EventBus, EventType, StreamerEvent, 
     TextEvent, ToolCallEvent, ToolResultEvent, StateEvent, ErrorEvent
 )
-from ..utils.concurrency import run_blocking
-from ..truncation.truncator import ContextTruncator
+from goose.utils.concurrency import run_blocking
+from goose.truncation.truncator import ContextTruncator
 
 
 logger = logging.getLogger("goose.agent")

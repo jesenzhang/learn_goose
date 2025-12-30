@@ -14,8 +14,8 @@ from openai import (
 )
 from openai.types.chat import ChatCompletionChunk
 
-from ..model import ModelConfig
-from ..conversation import (
+from .model_config import ModelConfig
+from goose.conversation import (
     Message, Role, TextContent, ToolRequest, ToolResponse, 
     ToolCall, CallToolResult, CallToolRequestParam, RawContent
 )

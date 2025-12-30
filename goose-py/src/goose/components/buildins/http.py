@@ -3,9 +3,10 @@ import json
 from typing import Dict, Any, Literal, Union, Optional
 from pydantic import BaseModel, Field
 
-from goose.component.base import Component
-from goose.component.registry import register_component
+from goose.components.base import Component
 from goose.utils.template import TemplateRenderer # 使用 Goose 的渲染器
+from goose.components.registry import register_component
+from goose.types import NodeTypes
 
 class HttpConfig(BaseModel):
     method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"] = Field("GET", description="HTTP方法")
@@ -20,15 +21,17 @@ class HttpConfig(BaseModel):
     
     timeout: int = Field(10, description="超时时间(秒)")
 
-@register_component
+@register_component(
+    name=NodeTypes.HTTP_REQUESTER,
+    group="Utilities",
+    label="HTTP 请求",
+    description="发送自定义 HTTP 请求",
+    icon="globe",
+    author="System",
+    version="1.0.0",
+    config_model=HttpConfig
+)
 class HttpRequester(Component):
-    name = "http_request"
-    label = "HTTP 请求"
-    description = "发送自定义 HTTP 请求"
-    icon = "globe"
-    group = "Utilities"
-    config_model = HttpConfig
-
     async def execute(self, inputs: Dict[str, Any], config: HttpConfig) -> Dict[str, Any]:
         # 1. 渲染 URL
         url = TemplateRenderer.render(config.url, inputs)

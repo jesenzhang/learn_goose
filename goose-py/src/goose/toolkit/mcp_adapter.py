@@ -2,10 +2,10 @@ from typing import Any, Dict, Type, List
 from pydantic import BaseModel, create_model, Field
 
 from .base import Tool
-from ..conversation.message import CallToolResult, RawContent
-from ..mcp.client import McpClient, McpToolDef
+from goose.conversation.message import CallToolResult, RawContent
+from goose.mcp.client import McpClient, McpToolDef
 
-class McpToolAdapter(Tool):
+class McpTool(Tool):
     """
     将 MCP 工具定义适配为 Goose 的 Tool 类。
     """

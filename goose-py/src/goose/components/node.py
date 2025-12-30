@@ -5,11 +5,11 @@ from pydantic import BaseModel, ValidationError
 
 # 引入底层能力
 from ..workflow.runnable import Runnable, WorkflowContext
-from ..workflow.nodes import CozeNodeMixin
+from ..workflow.nodes import BaseCozeNode
 
 logger = logging.getLogger("goose.component")
 
-class ComponentNode(Runnable, CozeNodeMixin, ABC):
+class ComponentNode(BaseCozeNode, ABC):
     """
     [机制层] ComponentNode
     封装了组件在工作流中运行的所有通用逻辑：
@@ -23,23 +23,24 @@ class ComponentNode(Runnable, CozeNodeMixin, ABC):
     input_model: ClassVar[Optional[Type[BaseModel]]] = None
     output_model: ClassVar[Optional[Type[BaseModel]]] = None
 
-    def __init__(self, config: Dict[str, Any], inputs: Dict[str, Any], node_id: str = None):
-        Runnable.__init__(self)
-        CozeNodeMixin.__init__(self, inputs) # 初始化输入映射
+    def __init__(self, inputs: Dict[str, Any] = None, node_id: str = None, raw_config: Dict[str, Any] = None):
+        super().__init__(inputs, node_id, raw_config)
         
-        self.node_id = node_id
-        self.raw_config = config # 保存原始配置字典
-
-    async def invoke(self, _: Any, context: WorkflowContext) -> Dict[str, Any]:
+    async def invoke(self, inputs: Any, context: WorkflowContext) -> Dict[str, Any]:
         """
         [Template Method] 标准执行流
         Scheduler 调用的唯一入口。
         """
         try:
+            self.set_inputs(inputs) # 设置输入
+            
             # 1. 解析动态引用 (Resolution)
             # context -> raw_inputs (dict)
             resolved_inputs = self.resolve_inputs(context)
-
+            
+            if inputs and isinstance(inputs, dict):
+                resolved_inputs.update(inputs)
+            
             # 2. 校验配置 (Validation - Config)
             validated_config = self._validate_model(
                 self.raw_config, self.config_model, "Config"
@@ -75,7 +76,7 @@ class ComponentNode(Runnable, CozeNodeMixin, ABC):
         if model is None:
             return data # 如果没定义模型，透传字典
         try:
-            return model.model_validate(data)
+            return model.model_validate(data or {})
         except ValidationError as e:
             raise ValueError(f"{label} Validation Error: {e}")
 

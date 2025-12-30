@@ -7,7 +7,7 @@ from typing import Dict, Any, Callable, List, Union, Optional
 from .runnable import Runnable, WorkflowContext
 from ..agent import Agent
 from ..events import EventType
-from ..tools.base import Tool
+from goose.toolkit import Tool
 from ..utils.concurrency import run_blocking
 from .resolver import ValueResolver 
 
@@ -21,9 +21,12 @@ class CozeNodeMixin:
     2. 解析变量: {{ item }} (用于 Map/Loop)
     3. 递归解析: 支持字典和列表结构的配置解析
     """
-    def __init__(self, inputs: Dict[str, Any] = None):
+    def __init__(self):
+        self.inputs_mapping = {}
+        
+    def set_inputs(self, inputs: Dict[str, Any] = None) -> Any:
         self.inputs_mapping = inputs or {}
-
+    
     def resolve_inputs(self, context: WorkflowContext, overrides: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         委托给 ValueResolver 进行解析
@@ -113,10 +116,24 @@ class BaseCozeNode(Runnable, CozeNodeMixin):
     所有 Coze 风格节点的基类。
     关键特性：在 invoke 阶段自动执行 resolve_inputs。
     """
-    def __init__(self, inputs: Dict[str, Any]):
+    def __init__(self, inputs: Dict[str, Any] = None, node_id: str = None, raw_config: Dict[str, Any] = None):
         Runnable.__init__(self)
-        CozeNodeMixin.__init__(self, inputs)
-
+        CozeNodeMixin.__init__(self)
+        
+        if inputs:
+            self.inputs_mapping = inputs
+        if node_id:
+            self.node_id = node_id
+        if raw_config:
+            self.raw_config = raw_config
+        
+        
+    def set_id(self, node_id: str):
+        self.node_id = node_id
+    
+    def set_raw_config(self, config: Dict[str, Any]):
+        self.raw_config = config
+        
     async def invoke(self, input_data: Any, context: WorkflowContext) -> Dict[str, Any]:
         """
         标准入口：解析参数 -> 执行核心逻辑

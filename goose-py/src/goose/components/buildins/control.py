@@ -4,13 +4,13 @@ from pydantic import BaseModel, Field
 from simpleeval import SimpleEval
 
 # --- 核心层依赖 (无 Adapter 依赖) ---
-from goose.component.base import Component
-from goose.component.registry import register_component
+from goose.components.base import Component
 from goose.resources.ui import UI
 from goose.workflow.protocol import WorkflowDefinition 
 from goose.workflow.converter import WorkflowConverter 
 from goose.workflow.scheduler import WorkflowScheduler
-
+from goose.components.registry import register_component
+from goose.types import NodeTypes
 # ==========================================
 # 1. Selector (If-Else)
 # ==========================================
@@ -23,18 +23,21 @@ class ConditionBranch(BaseModel):
 class SelectorConfig(BaseModel):
     conditions: List[ConditionBranch] = Field(
         default_factory=list,
-        json_schema_extra=UI.List(model_class=ConditionBranch)
+        json_schema_extra=UI.Combo(model_class=ConditionBranch)
     )
     default_handle: str = Field("else", description="默认分支句柄")
 
-@register_component
+@register_component(
+    name=NodeTypes.SELECTOR,
+    group="Control",
+    label="条件分支",
+    description="根据条件分支执行不同路径",
+    icon="git-branch",
+    author="System",
+    version="1.0.0",
+    config_model=SelectorConfig
+)
 class SelectorComponent(Component):
-    name = "selector"
-    label = "条件分支"
-    group = "Control"
-    icon = "git-branch"
-    config_model = SelectorConfig
-    
     async def execute(self, inputs: Dict[str, Any], config: SelectorConfig) -> Dict[str, Any]:
         evaluator = SimpleEval(names=inputs)
         
@@ -72,13 +75,17 @@ class LoopConfig(BaseModel):
     # Adapter 层必须在创建此节点前，将 VueFlow JSON 转换为此标准对象
     sub_workflow: WorkflowDefinition = Field(..., description="子工作流定义")
 
-@register_component
+@register_component(
+    name=NodeTypes.LOOP,
+    group="Control",
+    label="循环",
+    description="循环执行子工作流",
+    icon="repeat",
+    author="System",
+    version="1.0.0",
+    config_model=LoopConfig
+)
 class LoopComponent(Component):
-    name = "loop"
-    label = "循环"
-    group = "Control"
-    icon = "repeat"
-    config_model = LoopConfig
 
     async def execute(self, inputs: Dict[str, Any], config: LoopConfig) -> Dict[str, Any]:
         # 1. 确定迭代对象
@@ -151,14 +158,17 @@ class BatchConfig(BaseModel):
     # 同样接收标准定义
     sub_workflow: WorkflowDefinition = Field(..., description="子工作流定义")
 
-@register_component
+@register_component(
+    name=NodeTypes.BATCH,
+    group="Control",
+    label="批处理",
+    description="并行执行子工作流",
+    icon="layers",
+    author="System",
+    version="1.0.0",
+    config_model=BatchConfig
+)
 class BatchComponent(Component):
-    name = "batch"
-    label = "批处理"
-    group = "Control"
-    icon = "layers"
-    config_model = BatchConfig
-
     async def execute(self, inputs: Dict[str, Any], config: BatchConfig) -> Dict[str, Any]:
         raw_list = inputs.get("input_list", [])
         if not isinstance(raw_list, list):
@@ -194,23 +204,29 @@ class BatchComponent(Component):
 # 4. 信号组件 (Break / Continue)
 # ==========================================
 
-@register_component
+@register_component(
+    name=NodeTypes.BREAK,
+    group="Control",
+    label="跳出",
+    description="跳出当前循环",
+    icon="x-circle",
+    author="System",
+    version="1.0.0"
+)
 class BreakComponent(Component):
-    name = "break"
-    label = "跳出"
-    group = "Control"
-    icon = "x-circle"
-    
     async def execute(self, inputs: Dict, config: BaseModel) -> Dict:
         # 发送信号，Loop 组件会捕获这个 Key
         return {"_control_signal": "BREAK"}
 
-@register_component
+@register_component(
+    name=NodeTypes.CONTINUE,
+    group="Control",
+    label="继续",
+    description="继续当前循环",
+    icon="skip-forward",
+    author="System",
+    version="1.0.0"
+)
 class ContinueComponent(Component):
-    name = "continue"
-    label = "继续"
-    group = "Control"
-    icon = "skip-forward"
-    
     async def execute(self, inputs: Dict, config: BaseModel) -> Dict:
         return {"_control_signal": "CONTINUE"}

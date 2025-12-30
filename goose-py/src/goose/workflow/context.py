@@ -77,7 +77,7 @@ class WorkflowContext(BaseModel):
         if self._resources is None:
             # 简单的单例回退或报错，取决于架构要求
             # 这里为了方便，我们假设有一个全局注册表的 Wrapper
-            from ..core.tool import ToolDefinitionRegistry
+            from goose.toolkit.protocol import ToolDefinitionRegistry
             
             class SimpleResourceManager:
                 async def aget(self, domain, item_id):

@@ -3,8 +3,8 @@
 import json
 import logging
 from typing import Optional
-from ..persistence import PersistenceManager
 from .persistence import WorkflowCheckpointer, WorkflowState
+from goose.persistence.manager import persistence_manager
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 
 def register_workflow_schemas():
     """向 PersistenceManager 注册表结构"""
-    pm = PersistenceManager.get_instance()
-    pm.register_schema(WORKFLOW_RUNS_SCHEMA)
+    persistence_manager.register_schema(WORKFLOW_RUNS_SCHEMA)
 
 class WorkflowRepository(WorkflowCheckpointer):
     """
@@ -33,7 +32,7 @@ class WorkflowRepository(WorkflowCheckpointer):
     """
     def __init__(self):
         register_workflow_schemas()
-        self.pm = PersistenceManager.get_instance()
+        self.pm =persistence_manager
 
     async def save_checkpoint(self, state: WorkflowState):
         """保存状态"""

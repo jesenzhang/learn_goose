@@ -9,7 +9,7 @@ import aiosqlite
 import logging
 
 from ..conversation import Message, Role, MessageMetadata
-from ..model import ModelConfig
+from goose.providers import ModelConfig
 from .types import Session, SessionType
 from .extension_data import ExtensionData
 

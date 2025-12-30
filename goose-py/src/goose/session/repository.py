@@ -3,7 +3,7 @@
 import json
 import logging
 from typing import List, Optional, Dict, Any
-from ..persistence import PersistenceManager
+from goose.persistence import persistence_manager
 from ..conversation import Message, Conversation # 假设你有这些类
 # 如果 Message 对象使用了 Pydantic，我们需要用 model_dump 和 model_validate
 
@@ -33,14 +33,13 @@ CREATE TABLE IF NOT EXISTS messages (
 
 def register_session_schemas():
     """向 PersistenceManager 注册表结构"""
-    pm = PersistenceManager.get_instance()
+    pm = persistence_manager
     pm.register_schema(SESSION_SCHEMA)
     pm.register_schema(MESSAGE_SCHEMA)
 
 class SessionRepository:
     def __init__(self):
-        # 通过 Manager 获取后端，不需要自己管理连接
-        self.backend = PersistenceManager.get_instance().backend
+        self.backend = persistence_manager
 
     async def create_session(self, session_id: str, name: str = "New Session", metadata: Dict = None):
         """创建新会话"""

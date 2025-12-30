@@ -8,7 +8,7 @@ from ..conversation import Message, Conversation
 from .types import Session, SessionType
 from .extension_data import ExtensionData
 from .repository import SessionRepository, register_session_schemas
-from ..model import ModelConfig 
+from goose.providers import ModelConfig
 
 logger = logging.getLogger(__name__)
 

@@ -4,13 +4,14 @@ from pydantic import BaseModel, Field
 from ..base import Tool
 from ...conversation.message import CallToolResult, RawContent
 from ..utils import sanitize_path
+from ..registry import register_tool
 
 # --- Write Tool ---
-
 class WriteFileArgs(BaseModel):
     path: str = Field(..., description="Path to file. Will be overwritten if exists.")
     content: str = Field(..., description="Full content to write.")
 
+@register_tool()
 class WriteFileTool(Tool):
     name = "developer__text_editor_write"
     description = "Write full content to a file. Create directories if needed."
@@ -41,6 +42,7 @@ class WriteFileTool(Tool):
 class ReadFileArgs(BaseModel):
     path: str = Field(..., description="Path to file to read.")
 
+@register_tool()
 class ReadFileTool(Tool):
     name = "developer__text_editor_read"
     description = "Read file content."

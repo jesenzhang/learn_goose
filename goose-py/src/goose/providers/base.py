@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import List, Tuple, Any, AsyncGenerator, Optional,Dict
 from pydantic import BaseModel
 from goose.conversation import Message
-from goose.model import ModelConfig
+from .model_config import ModelConfig
 
 class Usage(BaseModel):
     """对应 Rust: pub struct Usage"""
