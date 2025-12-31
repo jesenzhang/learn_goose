@@ -45,6 +45,11 @@ class WorkflowScheduler:
         :param resume: 是否从断点恢复
         :param parent_ctx: 父级上下文 (用于子工作流变量继承)
         """
+        # 1. 找到入口 ID
+        entry_point_id = self.graph.entry_point
+        if not entry_point_id:
+             raise ValueError("Graph has no entry point!")
+         
         runtime = get_runtime()
         # ==========================================
         # 1. 初始化 Session & Context
@@ -140,12 +145,9 @@ class WorkflowScheduler:
             else:
                 logger.warning("🚫 No entry point found in Graph. Workflow might be empty.")
 
-        # 注入初始数据 (无论是 Start 节点还是隐式输入)
-        if should_inject_start:
-            self._inject_start_data(context, input_data)
-
+        
         # 发送开始事件
-        yield WorkflowEvent(type=WorkflowEventType.WORKFLOW_STARTED, session_id=run_id)
+        await streamer.emit(type=WorkflowEventType.WORKFLOW_STARTED, data=run_id)
 
         try:
             # ==========================================
