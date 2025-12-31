@@ -26,10 +26,10 @@ class AdapterManager:
                 raise ValueError(f"Unknown format: {format_type}")
             return adapter.transform_workflow(data)
         
-        # 自动嗅探
-        for adapter in cls._adapters.values():
-            if adapter.match(data):
-                return adapter.transform_workflow(data)
+        # # 自动嗅探
+        # for adapter in cls._adapters.values():
+        #     if adapter.match(data):
+        #         return adapter.transform_workflow(data)
         
         raise ValueError("Unknown workflow format")
 

@@ -1,17 +1,20 @@
 import logging
+from abc import ABC, abstractmethod
+from typing import Dict, Any, Type, Optional, ClassVar, Union, Callable, List
+from pydantic import BaseModel, ValidationError
 import re
 import asyncio
 import inspect
-from typing import Dict, Any, Callable, List, Union, Optional
 
-from .runnable import Runnable, WorkflowContext
+from .runnable import Runnable
+from .context import WorkflowContext
 from ..agent import Agent
-from ..events import EventType
 from goose.toolkit import Tool
 from ..utils.concurrency import run_blocking
 from .resolver import ValueResolver 
 
 logger = logging.getLogger("goose.workflow.nodes")
+
 
 class CozeNodeMixin:
     """
@@ -21,18 +24,14 @@ class CozeNodeMixin:
     2. 解析变量: {{ item }} (用于 Map/Loop)
     3. 递归解析: 支持字典和列表结构的配置解析
     """
-    def __init__(self):
-        self.inputs_mapping = {}
-        
-    def set_inputs(self, inputs: Dict[str, Any] = None) -> Any:
-        self.inputs_mapping = inputs or {}
     
-    def resolve_inputs(self, context: WorkflowContext, overrides: Dict[str, Any] = None) -> Dict[str, Any]:
+    def resolve_inputs(self,data: Dict[str, Any], context: WorkflowContext, overrides: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         委托给 ValueResolver 进行解析
         """
-        # 直接调用工具类
-        return ValueResolver.resolve(self.inputs_mapping, context, overrides)
+        if not data:
+            return {}
+        return ValueResolver.resolve(data, context, overrides)
 
     def _resolve_any(self, value: Any, context: WorkflowContext, overrides: Dict[str, Any]) -> Any:
         """递归解析任意类型的值"""
@@ -111,35 +110,130 @@ class CozeNodeMixin:
             return None
 
 
+class ComponentNode(Runnable, CozeNodeMixin, ABC):
+    """
+    [机制层] ComponentNode
+    封装了组件在工作流中运行的所有通用逻辑：
+    1. 继承 Runnable -> 可被 Scheduler 调度
+    2. 继承 CozeNodeMixin -> 可解析 {{ ref }} 引用
+    3. 实现 Pydantic 校验 -> 保证输入输出类型安全
+    """
+
+    # --- 契约定义 (由子类提供) ---
+    config_model: ClassVar[Optional[Type[BaseModel]]] = None
+    input_model: ClassVar[Optional[Type[BaseModel]]] = None
+    output_model: ClassVar[Optional[Type[BaseModel]]] = None
+
+    def __init__(self):
+        super().__init__()
+
+    
+    def set_config_model(self, config_model: Type[BaseModel]):
+        self.config_model = config_model
+    def set_input_model(self, input_model: Type[BaseModel]):
+        self.input_model = input_model
+    def set_output_model(self, output_model: Type[BaseModel]):
+        self.output_model = output_model
+
+    async def invoke(self, inputs: Dict[str, Any], config: Dict[str, Any], context: WorkflowContext) -> Dict[str, Any]:
+        """
+        [Template Method] 标准执行流
+        Scheduler 调用的唯一入口。
+        """
+        try:
+            raw_config =config
+            
+            node_id = config.get("id", "unknown")
+            
+            resolved_inputs = self.resolve_inputs(inputs,context)
+            
+            # 2. 校验配置 (Validation - Config)
+            validated_config = self._validate_model(
+                raw_config, self.config_model, "Config"
+            )
+
+            # 3. 校验输入 (Validation - Inputs)
+            validated_inputs = self._validate_model(
+                resolved_inputs, self.input_model, "Input"
+            )
+            sig = inspect.signature(self.execute)
+            params = sig.parameters
+            call_kwargs = {}
+            if "context" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
+                call_kwargs["context"] = context
+            if "config" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
+                call_kwargs["config"] = validated_config
+            
+            # 4. 执行业务逻辑 (Execution)
+            # 此时传入的已是 Pydantic 对象
+            result = await self.execute(inputs=validated_inputs,**call_kwargs)
+
+            # 5. 处理结果 (Normalization)
+            return self._normalize_output(result)
+
+        except Exception as e:
+            # 统一错误处理，附带节点信息
+            node_label = getattr(self, "label", self.__class__.__name__)
+            logger.error(f"❌ Node '{node_label}' ({self.node_id}) failed: {e}", exc_info=True)
+            raise e
+
+    @abstractmethod
+    async def execute(self, inputs: Any,**kwargs) -> Any:
+        """
+        [Hook] 子类必须实现的业务逻辑。
+        """
+        pass
+
+    def _validate_model(self, data: Dict, model: Type[BaseModel], label: str) -> Any:
+        """辅助方法：Pydantic 校验"""
+        if model is None:
+            return data or {}
+        try:
+            # 2. 校验
+            validated = model.model_validate(data or {})
+            # 如果模型是动态生成的“允许任意字段”的空模型 (对应 inputs: Dict)
+            # 我们应该返回它的 model_dump() (即字典)，而不是对象
+            # 否则 execute(self, inputs: Dict) 接收到的是一个 BaseModel 实例，会报错
+            if not model.model_fields and hasattr(model, "model_config") and model.model_config.get("extra") == "allow":
+                # 检查是否是那个仅用于占位的空模型
+                if not model.model_fields: 
+                    return validated.model_dump()
+            
+            return validated
+        except ValidationError as e:
+            raise ValueError(f"{label} Validation Error: {e}")
+
+    def _normalize_output(self, result: Any) -> Dict[str, Any]:
+        """辅助方法：确保返回字典"""
+        if result is None: return {}
+        
+        if self.output_model and isinstance(result, self.output_model):
+            return result.model_dump()
+        
+        if isinstance(result, BaseModel):
+            return result.model_dump()
+            
+        if not isinstance(result, dict):
+            return {"output": result}
+            
+        return result
+    
+    
 class BaseCozeNode(Runnable, CozeNodeMixin):
     """
     所有 Coze 风格节点的基类。
     关键特性：在 invoke 阶段自动执行 resolve_inputs。
     """
-    def __init__(self, inputs: Dict[str, Any] = None, node_id: str = None, raw_config: Dict[str, Any] = None):
-        Runnable.__init__(self)
-        CozeNodeMixin.__init__(self)
-        
-        if inputs:
-            self.inputs_mapping = inputs
-        if node_id:
-            self.node_id = node_id
-        if raw_config:
-            self.raw_config = raw_config
-        
-        
-    def set_id(self, node_id: str):
-        self.node_id = node_id
-    
-    def set_raw_config(self, config: Dict[str, Any]):
-        self.raw_config = config
+    def __init__(self):
+        # 显式声明无参 init，防止调用者错误传递状态
+        pass
         
     async def invoke(self, input_data: Any, context: WorkflowContext) -> Dict[str, Any]:
         """
         标准入口：解析参数 -> 执行核心逻辑
         """
         # 1. 解析参数 (Inputs Mapping -> Real Values)
-        kwargs = self.resolve_inputs(context)
+        kwargs = self.resolve_inputs(input_data,context)
         
         # 2. 如果 Scheduler 传入了 input_data (通常是 Start 节点的情况)，合并进去
         if input_data and isinstance(input_data, dict):
@@ -198,8 +292,8 @@ class AgentNode(BaseCozeNode):
         final_response = []
         # 调用 Agent
         async for event in self.agent.reply(target_session_id, user_input=str(user_input)):
-            if event.type == EventType.TEXT:
-                final_response.append(event.text)
+           
+            final_response.append(event.text)
             # 这里可以扩展处理 ToolCall 等其他事件
         
         result_text = "".join(final_response)

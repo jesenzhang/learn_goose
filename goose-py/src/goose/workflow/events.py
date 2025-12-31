@@ -7,6 +7,8 @@ class WorkflowEventType(str, Enum):
     WORKFLOW_STARTED = "workflow_started"
     WORKFLOW_COMPLETED = "workflow_completed"
     WORKFLOW_ERROR = "workflow_error"
+    WORKFLOW_FAILED = "workflow_failed"
+    
     NODE_STARTED = "node_started"
     NODE_FINISHED = "node_finished"
     NODE_ERROR = "node_error"

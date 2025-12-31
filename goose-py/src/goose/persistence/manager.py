@@ -26,7 +26,7 @@ class PersistenceManager:
             return
         self.backend: Optional[StorageBackend] = None
         self._schemas: List[str] = []
-        
+        self._is_booted = False
         self._initialized = True
         logger.debug("📦 PersistenceManager instance created (Singleton).")
 
@@ -54,15 +54,42 @@ class PersistenceManager:
 
     def register_schema(self, sql: str):
         """
-        供各模块调用，注册自己的建表语句。
+        注册 Schema。
+        核心改进：如果已启动，直接执行；否则加入队列。
         """
         if sql not in self._schemas:
             self._schemas.append(sql)
+            
+            # [核心逻辑] 如果系统已经启动了，新来的 Schema 要立刻补执行！
+            # 注意：这里需要 ensure_future 或 loop.create_task，因为 register_schema 通常是同步调用的
+            if self._is_booted:
+                logger.info("⚡ System already booted. Executing new schema immediately.")
+                # 获取当前事件循环来执行异步任务
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                    if loop.is_running():
+                        loop.create_task(self._run_schema_safe(sql))
+                    else:
+                        # 极其罕见的情况
+                        loop.run_until_complete(self._run_schema_safe(sql))
+                except RuntimeError:
+                     # 如果没有运行中的循环，可能是在脚本初始化阶段，这通常不会发生，
+                     # 因为 booted=True 意味着已经在一个异步环境里调用过 boot 了
+                     pass
 
     def _check_ready(self):
         if not self.backend:
             raise RuntimeError("Persistence layer not ready. Did you await persistence_manager.boot()?")
-        
+    
+    async def _run_schema_safe(self, sql: str):
+        """执行 Schema 的辅助函数，带异常捕获"""
+        self._check_ready()
+        try:
+            await self.backend.execute(sql)
+        except Exception as e:
+            logger.warning(f"Schema execution warning: {e}")
+            
     async def execute(self, query: str, params: tuple = ()) -> None:
         """执行写操作 (INSERT, UPDATE, DELETE)"""
         self._check_ready()
@@ -87,7 +114,7 @@ class PersistenceManager:
         
         logger.info("🚀 Booting Persistence Layer...")
         await self.backend.connect()
-        
+        self._is_booted = True
         # 统一执行所有注册的 Schema
         for sql in self._schemas:
             try:

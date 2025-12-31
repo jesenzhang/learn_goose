@@ -3,7 +3,8 @@ import logging
 from typing import Dict, Any, Optional
 
 from .graph import Graph
-from .runnable import Runnable, WorkflowContext
+from .runnable import Runnable
+from .context import WorkflowContext
 from .nodes import CozeNodeMixin
 # 注意：为了避免循环引用，我们可能需要在方法内部导入 Scheduler
 # 或者将 Scheduler 抽象为接口，但 Python 中我们可以延迟导入

@@ -1,7 +1,10 @@
 import logging
 from goose.registry import sys_registry
-from goose.workflow.graph import Graph
+from goose.workflow.graph import Graph,Node,Edge
 from goose.workflow.protocol import WorkflowDefinition
+from typing import Dict
+from goose.workflow.nodes import ComponentNode
+
 
 logger = logging.getLogger("goose.workflow.converter")
 
@@ -9,6 +12,12 @@ class WorkflowConverter:
     """
     Compiler: WorkflowDefinition -> Executable Graph
     """
+    def __init__(self):
+        # [优化] 组件实例缓存池
+        # Key: Component Class Name or Type String
+        # Value: Component Instance
+        self._component_cache: Dict[str, ComponentNode] = {}
+        
     def convert(self, definition: WorkflowDefinition) -> Graph:
         graph = Graph()
         
@@ -22,18 +31,24 @@ class WorkflowConverter:
                 logger.error(f"❌ Component type '{node_def.type}' not found in registry!")
                 continue
             
-            instance = component_cls()
-            instance.raw_config = node_def.config
-            # 注入配置 (Runtime State)
-            # Scheduler 会读取 instance.config 和 instance.inputs_mapping
-            instance.config = node_def.config
-            instance.inputs_mapping = node_def.inputs # 之前定义的扁平 Dict
+            # 2. [优化] 优先从缓存取，没有再实例化
+            # 这样无论图里有多少个 LLM 节点，内存里永远只有一个 LLMComponent 实例
+            if node_def.type not in self._component_cache:
+                self._component_cache[node_def.type] = component_cls()
+                logger.debug(f"✨ Instantiated Singleton for {node_def.type}")
             
-            # 元数据注入 (可选，用于调试)
-            instance.node_id = node_def.id
-            instance.type = node_def.type
+            component_instance = self._component_cache[node_def.type]
             
-            graph.add_node(node_def.id, instance)
+            node = Node(
+                id=node_def.id,
+                component=component_instance, # 逻辑
+                config=node_def.config,       # 数据
+                inputs=node_def.inputs,       # 数据
+                label=getattr(node_def, 'label', None)
+            )
+            
+            graph.add_node(node)
+            
             logger.info(f"🔨 Built node: {node_def.id} ({node_def.type})")
 
         # 2. 创建连线

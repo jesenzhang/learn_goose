@@ -5,5 +5,6 @@ from .factory import ProviderFactory
 from .openai import OpenAIProvider
 from .siliconflow import SiliconFlowProvider
 from .model_config import ModelConfig
+from .builder import LLMBuilder
 
-__all__ = ["Provider", "ProviderFactory", "OpenAIProvider", "SiliconFlowProvider","ProviderUsage","Usage","ModelConfig"]
+__all__ = ["Provider", "ProviderFactory", "OpenAIProvider", "SiliconFlowProvider","ProviderUsage","Usage","ModelConfig","LLMBuilder"]

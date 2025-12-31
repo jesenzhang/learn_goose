@@ -6,26 +6,25 @@ from typing import Dict, List, Any, Optional, Union,Callable
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .runnable import Runnable
+    from .nodes import ComponentNode
 
-@dataclass
-class Edge:
-    """
-    [Core] 图的边对象。
-    支持控制流协议的关键在于 source_handle。
-    """
-    source: str
-    target: str
-    
-    # [Protocol] 出发端口 ID (用于 If-Else/Switch)
-    # 示例: "true", "false", "option_a", "default"
-    # 如果为 None，表示这是一条无条件流转的边 (Always flow)
-    source_handle: Optional[str] = None 
-    
-    # [Protocol] 目标端口 ID (用于数据映射，可选)
-    target_handle: Optional[str] = None
 # 路由函数：接收上下文，返回下一个节点 ID
 Router = Callable[["WorkflowContext"], str]
-
+@dataclass
+class Node:
+    """
+    [Graph Node] 图节点
+    它是静态配置和动态逻辑的结合点。
+    """
+    id: str
+    component: ComponentNode  # 无状态组件实例 (单例)
+    
+    # [核心] 配置数据存储在这里，而不是 component 内部
+    config: Dict[str, Any] = field(default_factory=dict)
+    inputs: Dict[str, Any] = field(default_factory=dict) # 输入映射 ({{ ref }})
+    
+    label: Optional[str] = None
+    
 @dataclass
 class Edge:
     """
@@ -50,25 +49,39 @@ class Edge:
     
 class Graph:
     def __init__(self):
-        self.nodes: Dict[str, "Runnable"] = {}
+        self.nodes: Dict[str, Node] = {}
         # 边可以是静态 ID，也可以是动态 Router 函数
         self.edges: Dict[str, List[Edge]] = {}
         self.entry_point: Optional[str] = None
 
-    def add_node(self, node_id: str, runnable: Any):
+    def add_node(self,node: Node):
         """
         添加节点。
         :param node_id: 唯一标识
         :param runnable: 可执行对象 (通常是 Runnable 子类)
         """
+        node_id = node.id
         if node_id in self.nodes:
             raise ValueError(f"Node {node_id} already exists.")
             
-        self.nodes[node_id] = runnable
+        self.nodes[node_id] = node
         # 初始化该节点的出边列表
         if node_id not in self.edges:
             self.edges[node_id] = []
-
+            
+    def add_node_from(self, node_id: str, component: ComponentNode, config: Dict = None, inputs: Dict = None, label: str = None):
+        """辅助方法：语法糖，内部委托给 add_node"""
+        # 仅仅负责构造，逻辑委托给核心方法
+        node = Node(
+            id=node_id, 
+            component=component, 
+            config=config or {}, 
+            inputs=inputs or {}, 
+            label=label
+        )
+        self.add_node(node)
+        
+        
     def add_edge(self, source: str, target: str, source_handle: str = None, target_handle: str = None):
         """
         [核心] 添加边。
@@ -120,7 +133,7 @@ class Graph:
     # 查询接口 (供 Scheduler 使用)
     # ==========================================
 
-    def get_node(self, node_id: str) -> Optional[Any]:
+    def get_node(self, node_id: str) -> Optional[Node]:
         """获取节点实例"""
         return self.nodes.get(node_id)
 

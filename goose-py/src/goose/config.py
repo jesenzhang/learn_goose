@@ -3,7 +3,30 @@ import yaml
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
 
+class SystemConfig(BaseSettings):
+    # 基础配置
+    env: str = "production"  # development / production
+    db_url: str = "./temp_test_data/test_goose.db"
+    
+    # 事件系统配置
+    event_bus_size: int = 1000
+    event_ttl: int = 3600
+    
+    # 密钥配置 (自动读取环境变量 OPENAI_API_KEY 等)
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    serpapi_api_key: str = ""
+    
+    silicon_api_key: str = ""
+    silicon_base_url: str = "https://api.siliconflow.cn/v1"
+    
+    class Config:
+        env_file = ".env"  # 自动读取当前目录下的 .env 文件
+        env_prefix = "GOOSE_"
+        
+        
 # 默认配置路径 (类比 Rust 的 dirs::home_dir)
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "goose"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"

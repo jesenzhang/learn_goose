@@ -4,8 +4,9 @@ from pydantic import BaseModel, Field, PrivateAttr, ConfigDict
 # 为了避免循环引用，仅在类型检查时导入接口
 if TYPE_CHECKING:
     from goose.sandbox import ICodeSandbox
-    from goose.resource import ResourceManager
+    from goose.resources import ResourceManager
     from goose.workflow.scheduler import WorkflowScheduler # 或者定义一个 Executor Protocol
+    from goose.events import IStreamer
 
 class WorkflowContext(BaseModel):
     """
@@ -37,8 +38,10 @@ class WorkflowContext(BaseModel):
     
     _sandbox: Optional['ICodeSandbox'] = PrivateAttr(default=None)
     _resources: Optional['ResourceManager'] = PrivateAttr(default=None)
-    _executor: Optional[Any] = PrivateAttr(default=None) # 通常是 Scheduler 实例
-
+    _executor: Optional['WorkflowScheduler'] = PrivateAttr(default=None) # 通常是 Scheduler 实例
+    _streamer: Optional['IStreamer'] = PrivateAttr(default=None) # [新增]
+    
+    
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # ==========================================
@@ -47,16 +50,16 @@ class WorkflowContext(BaseModel):
 
     def set_services(
         self, 
-        sandbox: Optional['CodeSandbox'] = None,
+        sandbox: Optional['ICodeSandbox'] = None,
         resources: Optional['ResourceManager'] = None,
-        executor: Optional[Any] = None
+        executor: Optional['WorkflowScheduler'] = None,
+        streamer: Optional['IStreamer'] = None # [新增]
     ):
-        """
-        在 Scheduler 启动或恢复时调用，注入运行时服务。
-        """
+        """Scheduler 在启动前调用此方法注入服务"""
         if sandbox: self._sandbox = sandbox
         if resources: self._resources = resources
         if executor: self._executor = executor
+        if streamer: self._streamer = streamer
 
     @property
     def sandbox(self) -> 'CodeSandbox':
@@ -65,8 +68,8 @@ class WorkflowContext(BaseModel):
         如果未注入，默认返回本地沙箱 (LocalSandbox)。
         """
         if self._sandbox is None:
-            from ..core.sandbox import LocalSandbox
-            self._sandbox = LocalSandbox()
+            from goose.sandbox import NativeSandboxAdapter
+            self._sandbox = NativeSandboxAdapter()
         return self._sandbox
 
     @property
@@ -74,18 +77,6 @@ class WorkflowContext(BaseModel):
         """
         获取资源管理器 (用于查找 Tool/Plugin 定义)。
         """
-        if self._resources is None:
-            # 简单的单例回退或报错，取决于架构要求
-            # 这里为了方便，我们假设有一个全局注册表的 Wrapper
-            from goose.toolkit.protocol import ToolDefinitionRegistry
-            
-            class SimpleResourceManager:
-                async def aget(self, domain, item_id):
-                    # 简单桥接到 ToolDefinitionRegistry
-                    return ToolDefinitionRegistry.get(item_id)
-            
-            self._resources = SimpleResourceManager()
-            
         return self._resources
 
     @property
@@ -100,7 +91,14 @@ class WorkflowContext(BaseModel):
                 "Cannot run sub-workflows."
             )
         return self._executor
-
+    
+    @property
+    def streamer(self) -> 'IStreamer':
+        if not self._streamer:
+            raise RuntimeError("Streamer not injected via set_services()")
+        return self._streamer
+    
+    
     # ==========================================
     # State Management (状态管理)
     # ==========================================

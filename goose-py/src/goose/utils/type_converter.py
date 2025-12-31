@@ -262,7 +262,7 @@ class TypeConverter:
 
         fields = {}
         for name, param in sig.parameters.items():
-            if name in ('self', 'cls', 'ctx', 'config'): 
+            if name in ('self', 'cls', 'ctx', 'config','context'): 
                 continue
 
             # 2. [关键] 过滤掉 Config 参数 (即 Keyword-Only 参数)
@@ -343,7 +343,7 @@ class TypeConverter:
 
         for name, param in sig.parameters.items():
             # [关键] 过滤掉系统参数 和 inputs 参数
-            if name in ('self', 'cls', 'ctx', 'inputs'): 
+            if name in ('self', 'cls', 'ctx', 'inputs','context'): 
                 continue
             
             annotation = param.annotation

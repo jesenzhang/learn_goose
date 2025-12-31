@@ -9,7 +9,7 @@ from goose.registry import sys_registry
 from goose.components.base import Component
 from goose.components import register_component
 from goose.workflow.scheduler import WorkflowScheduler
-from goose.adapter.vueflow import VueFlowAdapter
+from goose.adapter import AdapterManager
 from goose.workflow.converter import WorkflowConverter
 
 # 配置日志
@@ -118,7 +118,7 @@ async def run_test():
 
     # Step 1: Adapter (JSON -> WorkflowDefinition)
     print("1️⃣  Running VueFlowAdapter...")
-    adapter = VueFlowAdapter()
+    adapter = AdapterManager.get_adapter("vueflow")
     wf_def = adapter.transform_workflow(REAL_JSON_DATA)
     
     # 打印一下转换后的节点信息，确认 Schema 提取是否成功

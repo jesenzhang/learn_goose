@@ -7,10 +7,11 @@ from goose.session import SessionManager
 from goose.conversation import Message, Role, TextContent, ToolRequest, ToolResponse, CallToolResult, Conversation
 from goose.providers.base import Provider
 from goose.toolkit import ToolRegistry
-from goose.events import (
+from .events import (
     EventBus, EventType, StreamerEvent, 
     TextEvent, ToolCallEvent, ToolResultEvent, StateEvent, ErrorEvent
 )
+from goose.events import MemoryEventBus
 from goose.utils.concurrency import run_blocking
 from goose.truncation.truncator import ContextTruncator
 
@@ -38,7 +39,7 @@ class Agent:
         self.max_turns = 10
         
         # [新增] 事件总线
-        self.events = EventBus()
+        self.events = MemoryEventBus()
         
         # [新增] 内部状态控制
         self._status = AgentStatus.IDLE

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Type, ClassVar
-from .node import ComponentNode
+from goose.workflow.nodes import ComponentNode
 
 class Component(ComponentNode, ABC):
     """
