@@ -40,9 +40,16 @@ class SQLEventStore(IEventStore):
 
     async def save_event(self, event: Event) -> None:
         # 实际生产中建议批量插入优化性能，这里演示单条插入
+        event_type = event.type
+        if hasattr(event_type, "value"):
+            # 如果是 Enum 对象，取 .value
+            event_type_str = event_type.value
+        else:
+            # 如果已经是字符串，直接用
+            event_type_str = str(event_type)
         await self.pm.execute(
             "INSERT INTO workflow_events (id, run_id, seq_id, type, timestamp, event_json) VALUES (?, ?, ?, ?, ?, ?)",
-            (event.id, event.run_id, event.seq_id, event.type.value, event.timestamp, event.model_dump_json())
+            (event.id, event.run_id, event.seq_id, event_type_str, event.timestamp, event.model_dump_json())
         )
 
     async def get_events(self, run_id: str, start_seq_id: int = 0) -> List[Event]:

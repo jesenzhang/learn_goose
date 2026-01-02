@@ -1,12 +1,9 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Union,Callable
 
-# 为了避免运行时循环引用，我们在类型检查阶段引入 Runnable
-# 在运行时，nodes 只是 Dict[str, Any]
+from .nodes import ComponentNode
 from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from .runnable import Runnable
-    from .nodes import ComponentNode
+   
 
 # 路由函数：接收上下文，返回下一个节点 ID
 Router = Callable[["WorkflowContext"], str]

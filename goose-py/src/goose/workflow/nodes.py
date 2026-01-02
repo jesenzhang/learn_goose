@@ -174,7 +174,7 @@ class ComponentNode(Runnable, CozeNodeMixin, ABC):
         except Exception as e:
             # 统一错误处理，附带节点信息
             node_label = getattr(self, "label", self.__class__.__name__)
-            logger.error(f"❌ Node '{node_label}' ({self.node_id}) failed: {e}", exc_info=True)
+            logger.error(f"❌ Node '{node_label}' ({node_id}) failed: {e}", exc_info=True)
             raise e
 
     @abstractmethod

@@ -31,7 +31,7 @@ logger = logging.getLogger("IntegrationTest")
 # 0. 测试数据准备 (Test Data Setup)
 # ==========================================
 
-TEST_JSON_PATH = Path(r"F:\Workspace\learn_goose\goose-py\tests\test.json")
+TEST_JSON_PATH = Path(r"goose-py/tests/test.json")
 
 def ensure_test_json_exists():
     """
