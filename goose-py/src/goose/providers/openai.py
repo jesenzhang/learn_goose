@@ -189,22 +189,24 @@ class OpenAIProvider(Provider):
         self, 
         system: str, 
         messages: List[Message], 
-        tools: List[Any] = []
+        tools: Optional[List] = None
     ) -> Tuple[Message, ProviderUsage]:
         openai_msgs = self._prepare_messages(system, messages)
         openai_tools = self._prepare_tools(tools)
-
+        payload = {
+            "model":self.model_config.model_name,
+            "messages": openai_msgs,
+            # "stream": False, # 或者 True，取决于你的逻辑
+            # 其他参数如 temperature...
+        }
+        if tools and len(tools) > 0:
+            payload["tools"] = openai_tools
         try:
             # Tool Monitor: Log what we are sending
             if openai_tools:
                 logger.debug(f"Sending request with {len(openai_tools)} tools")
             
-            response = await self.client.chat.completions.create(
-                model=self.model_config.model_name,
-                messages=openai_msgs,
-                tools=openai_tools,
-                stream=False
-            )
+            response = await self.client.chat.completions.create(**payload)
             
             choice = response.choices[0]
             msg_data = choice.message
@@ -259,19 +261,21 @@ class OpenAIProvider(Provider):
         self,
         system: str,
         messages: List[Message],
-        tools: List[Any] = []
+        tools: Optional[List] = None
     ) -> AsyncGenerator[Tuple[Optional[Message], Optional[ProviderUsage]], None]:
         
         openai_msgs = self._prepare_messages(system, messages)
         openai_tools = self._prepare_tools(tools)
-        
+        payload = {
+            "model":self.model_config.model_name,
+            "messages": openai_msgs,
+            "stream": True, # 或者 True，取决于你的逻辑
+            # 其他参数如 temperature...
+        }
+        if tools and len(tools) > 0:
+            payload["tools"] = openai_tools
         try:
-            stream = await self.client.chat.completions.create(
-                model=self.model_config.model_name,
-                messages=openai_msgs,
-                tools=openai_tools,
-                stream=True
-            )
+            stream = await self.client.chat.completions.create(**payload)
         except Exception as e:
             self._handle_error(e)
             return
@@ -408,6 +412,31 @@ class OpenAIProvider(Provider):
             )
             yield None, estimated_usage
 
+    async def create_embeddings(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+            
+        # 从环境变量或配置中获取 Embedding 模型，默认为 text-embedding-3-small
+        # 注意：这里的 model_name 可能是 LLM 的，Embedding 模型通常需要单独指定
+        # 建议在 ModelConfig 中增加 embedding_model 字段，或者这里硬编码/读环境变量
+        embedding_model = os.getenv("GOOSE_EMBEDDING_MODEL", "text-embedding-3-small")
+        
+        try:
+            # 自动处理 batch (OpenAI 官方建议一次不超过 2048 个 token，这里做简单处理)
+            response = await self.client.embeddings.create(
+                input=texts,
+                model=embedding_model,
+                encoding_format="float"
+            )
+            # 按 index 排序确保顺序一致
+            sorted_data = sorted(response.data, key=lambda x: x.index)
+            return [item.embedding for item in sorted_data]
+            
+        except Exception as e:
+            self._handle_error(e)
+            return []
+
+            
     async def get_models(self) -> List[str]:
         try:
             models_page = await self.client.models.list()
@@ -470,10 +499,10 @@ class OpenAIProvider(Provider):
         
         return openai_tools
 
-    def _prepare_messages(self, system: str, history: List[Message]) -> List[Dict[str, Any]]:
+    def _prepare_messages(self, system: Message|str, history: List[Message]) -> List[Dict[str, Any]]:
         messages = []
         if system:
-            messages.append({"role": "system", "content": system})
+            messages.append({"role": "system", "content": system.as_concat_text() if isinstance(system, Message) else system})
         
         for msg in history:
             if not msg.metadata.agent_visible:

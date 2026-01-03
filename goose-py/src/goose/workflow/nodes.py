@@ -60,7 +60,7 @@ class CozeNodeMixin:
                 return overrides[key]
 
         # 2. 检查引用 (Reference {{ node.key }})
-        ref_match = re.match(r"^\{\{\s*([a-zA-Z0-9_]+)\.(.+)\s*\}\}$", template)
+        ref_match = re.match(r"^\{\{\s*([a-zA-Z0-9_\-]+)\.(.+)\s*\}\}$", template)
         if ref_match:
             node_id = ref_match.group(1)
             path_str = ref_match.group(2).strip()

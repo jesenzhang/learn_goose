@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any, AsyncGenerator, Optional,Union,TypeVar
 from goose.events.bus import IEventBus
 from goose.events.store import IEventStore
-from goose.events.types import Event
+from goose.events.types import Event,SystemEvents
 import logging
 from pydantic import BaseModel
 E = TypeVar("E", bound=BaseModel)
@@ -74,9 +74,46 @@ class BaseStreamer(IStreamer):
             asyncio.create_task(self._safe_save(event))
 
     async def listen(self, after_seq_id: int = -1) -> AsyncGenerator[Event, None]:
-        """智能混合监听 (热数据 + Backfill)"""
-        async for event in self.bus.subscribe(self.run_id, after_seq_id=after_seq_id):
-            yield event
+        """
+        [核心修复] 智能混合监听
+        1. 先从 DB 拉取历史 (Backfill)
+        2. 如果流程未结束，再监听 Bus (Real-time)
+        """
+        last_seq_id = after_seq_id
+        is_terminal = False
+
+        # --- Phase 1: Backfill (从数据库拉取冷数据) ---
+        # 即使工作流正在运行，新连接的客户端也需要先看之前的记录
+        try:
+            history_events = await self.store.get_events(self.run_id, after_seq_id)
+            for event in history_events:
+                yield event
+                last_seq_id = max(last_seq_id, event.seq_id)
+                
+                # 检查是否有终止信号
+                if event.type in [SystemEvents.WORKFLOW_COMPLETED, SystemEvents.WORKFLOW_FAILED]:
+                    is_terminal = True
+        except Exception as e:
+            logger.error(f"Failed to backfill events from store: {e}")
+
+        # 如果通过回填发现工作流已经结束，直接退出，不要去监听 Bus
+        if is_terminal:
+            logger.info(f"Stream {self.run_id} is already finished. Backfill complete.")
+            return
+
+        # --- Phase 2: Live Listen (从总线监听热数据) ---
+        logger.info(f"Switching to live bus listener for {self.run_id} after seq {last_seq_id}")
+        
+        async for event in self.bus.subscribe(self.run_id):
+            # [去重关键] 只有当 Bus 传来的事件 ID 比 DB 里读到的更新时才推送
+            # 防止 DB 刚写入还没读出来，Bus 又推了一遍造成的重复
+            if event.seq_id > last_seq_id:
+                yield event
+                last_seq_id = event.seq_id
+                
+                # 实时流中遇到结束事件，也要退出循环
+                if event.type in [SystemEvents.WORKFLOW_COMPLETED, SystemEvents.WORKFLOW_FAILED]:
+                    break
             
     async def sync_history(self) -> AsyncGenerator[Event, None]:
         """纯冷数据拉取"""

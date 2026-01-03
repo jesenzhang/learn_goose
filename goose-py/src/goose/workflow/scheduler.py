@@ -178,9 +178,11 @@ class WorkflowScheduler:
                 # --- D. [Core] 调用无状态组件 ---
                 try:
                     # 显式传递: 输入, 静态配置, 上下文
+                    invocation_config = node.config.copy()
+                    invocation_config["id"] = current_node_id
                     output = await node.component.invoke(
                         inputs=invocation_inputs,
-                        config=node.config,
+                        config=invocation_config,
                         context=context
                     )
                 except Exception as e:

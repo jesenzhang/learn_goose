@@ -4,6 +4,7 @@ from typing import List, Tuple, Any, AsyncGenerator, Optional,Dict
 from pydantic import BaseModel
 from goose.conversation import Message
 from .model_config import ModelConfig
+from .types import RerankResult,Document
 
 class Usage(BaseModel):
     """对应 Rust: pub struct Usage"""
@@ -68,3 +69,121 @@ class Provider(ABC):
             注意：在流式传输中，Message 可能是增量的文本，Usage 可能只在最后一次返回。
         """
         pass
+
+
+    async def create_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """
+        生成文本向量
+        """
+        raise NotImplementedError("This provider does not support embeddings")
+
+
+    async def rerank(
+        self, 
+        query: str, 
+        documents: List[str], 
+        top_n: Optional[int] = None
+    ) -> List[RerankResult]:
+        """
+        重排序
+        """
+        raise NotImplementedError("This provider does not support reranking")
+
+class LLMClient(Protocol):
+    """
+    [Core SPI] 标准 LLM 客户端接口
+    组件只调用这些方法，不关心底层是 LangChain 还是 OpenAI 原生 SDK
+    """
+
+    @abstractmethod
+    async def ainvoke(
+        self,
+        messages: List["ChatMessage"],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        stop: Optional[List[str]] = None,
+        **kwargs,
+    ) -> Tuple[Message, ProviderUsage]:
+        """异步生成完整回复"""
+        pass
+
+    @abstractmethod
+    async def astream(
+        self,
+        messages: List["ChatMessage"],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        stop: Optional[List[str]] = None,
+        **kwargs,
+    ) -> AsyncGenerator[Tuple[Optional[Message], Optional[ProviderUsage]], None]:
+        """异步流式生成"""
+        pass
+
+
+class EmbeddingClient(Protocol):
+    """
+    [Core SPI] 标准 Embedding 客户端接口
+    """
+
+    @abstractmethod
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed search docs.
+
+        Args:
+            texts: List of text to embed.
+
+        Returns:
+            List of embeddings.
+        """
+
+    @abstractmethod
+    def embed_query(self, text: str) -> list[float]:
+        """Embed query text.
+
+        Args:
+            text: Text to embed.
+
+        Returns:
+            Embedding.
+        """
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Asynchronous Embed search docs.
+
+        Args:
+            texts: List of text to embed.
+
+        Returns:
+            List of embeddings.
+        """
+
+    async def aembed_query(self, text: str) -> list[float]:
+        """Asynchronous Embed query text.
+
+        Args:
+            text: Text to embed.
+
+        Returns:
+            Embedding.
+        """
+
+
+class RerankClient(Protocol):
+    """
+    OpenCoze 标准重排序模型接口
+    """
+
+    @abstractmethod
+    def rerank(
+        self, documents: List[Document], query: str, top_k: int = None
+    ) -> List[Document]:
+        """
+        对文本列表进行重排序
+        """
+        pass
+
+    # 也可以支持 LangChain Document 对象的重载
+    async def arerank(
+        self, documents: List[Document], query: str, top_k: int = None
+    ) -> List[Document]:
+        """异步重排序"""
+        # 默认同步回退，具体实现可覆盖
+        return self.rerank(query, documents, top_k)

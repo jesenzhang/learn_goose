@@ -21,40 +21,66 @@ class IEventStore(ABC):
 
 # --- Implementation ---
 
+WORKFLOW_EVENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS workflow_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    seq_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    timestamp REAL,
+    event_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(run_id) REFERENCES sessions(id)
+);
+"""
+
+WORKFLOW_EVENTS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_events_lookup ON workflow_events(run_id, seq_id);
+"""
+
+def register_event_store_schema():
+    from goose.persistence.manager import persistence_manager
+    persistence_manager.register_schema(WORKFLOW_EVENTS_TABLE_SQL)
+    persistence_manager.register_schema(WORKFLOW_EVENTS_INDEX_SQL)
 
 class SQLEventStore(IEventStore):
-    def __init__(self,pm:PersistenceManager):
+    def __init__(self, pm: PersistenceManager):
         self.pm = pm
         # 注册表结构
-        self.pm.register_schema("""
-        CREATE TABLE IF NOT EXISTS workflow_events (
-            id TEXT PRIMARY KEY,
-            run_id TEXT NOT NULL,
-            seq_id INTEGER NOT NULL,
-            type TEXT NOT NULL,
-            timestamp REAL,
-            event_json TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_events_run_id ON workflow_events(run_id);
-        """)
+        self.pm.register_schema(WORKFLOW_EVENTS_TABLE_SQL)
+        self.pm.register_schema(WORKFLOW_EVENTS_INDEX_SQL)
 
     async def save_event(self, event: Event) -> None:
-        # 实际生产中建议批量插入优化性能，这里演示单条插入
+        # 统一类型转换逻辑
         event_type = event.type
-        if hasattr(event_type, "value"):
-            # 如果是 Enum 对象，取 .value
-            event_type_str = event_type.value
-        else:
-            # 如果已经是字符串，直接用
-            event_type_str = str(event_type)
+        # 兼容 Enum 和 Str
+        type_str = getattr(event_type, "value", str(event_type))
+
         await self.pm.execute(
-            "INSERT INTO workflow_events (id, run_id, seq_id, type, timestamp, event_json) VALUES (?, ?, ?, ?, ?, ?)",
-            (event.id, event.run_id, event.seq_id, event_type_str, event.timestamp, event.model_dump_json())
+            """
+            INSERT INTO workflow_events 
+            (id, run_id, seq_id, type, timestamp, event_json) 
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id, 
+                event.run_id, 
+                event.seq_id, 
+                type_str, 
+                event.timestamp, 
+                event.model_dump_json() # Pydantic v2 直接序列化整个对象
+            )
         )
 
-    async def get_events(self, run_id: str, start_seq_id: int = 0) -> List[Event]:
+    async def get_events(self, run_id: str, after_seq_id: int = -1) -> List[Event]:
+        # [关键] 确保按 seq_id 正序排列，否则前端打印会乱序
         rows = await self.pm.fetch_all(
-            "SELECT event_json FROM workflow_events WHERE run_id = ? AND seq_id > ? ORDER BY seq_id ASC",
-            (run_id, start_seq_id)
+            """
+            SELECT event_json FROM workflow_events 
+            WHERE run_id = ? AND seq_id > ? 
+            ORDER BY seq_id ASC
+            """,
+            (run_id, after_seq_id)
         )
+        # 反序列化
         return [Event.model_validate_json(row["event_json"]) for row in rows]

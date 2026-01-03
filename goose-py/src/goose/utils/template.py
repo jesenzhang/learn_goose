@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any, Optional
 from jinja2 import Environment, BaseLoader, Undefined
+import re
 
 logger = logging.getLogger("goose.utils.prompt_engine")
 
@@ -47,10 +48,41 @@ class TemplateRenderer:
         if "{{" not in template_str:
             return template_str
 
+        # --- 关键修复：UUID 引用预处理 ---
+        # 目标：匹配 {{ UUID.key }} 并转换为 {{ _ctx['UUID'].key }}
+        # UUID 正则部分：[0-9a-fA-F-]+ (允许数字开头，允许连字符)
+        # 变量名正则部分：[a-zA-Z0-9_]+
+        
+        def replace_uuid_ref(match):
+            # match.group(0) 是完整匹配 {{ ... }}
+            # match.group(1) 是 UUID (e.g. 7dac-...)
+            # match.group(2) 是 属性名 (e.g. result)
+            uuid_key = match.group(1)
+            attr_key = match.group(2)
+            
+            # 只有当 key 包含连字符 '-' 或者以数字开头时，才进行转换
+            if '-' in uuid_key or (uuid_key and uuid_key[0].isdigit()):
+                # 转换为字典查找语法
+                return f"{{{{ _ctx['{uuid_key}'].{attr_key} }}}}"
+            
+            # 否则保持原样 (普通变量)
+            return match.group(0)
+        
+        # 正则解释：
+        # \{\{\s* : 匹配 {{ 和可能的空格
+        # ([0-9a-fA-F\-]+) : Group 1 - 匹配 UUID (含连字符和数字)
+        # \.            : 匹配点号
+        # ([a-zA-Z0-9_]+)  : Group 2 - 匹配属性名
+        # \s*\}\}       : 匹配可能的空格和 }}
+        pattern = r"\{\{\s*([0-9a-fA-F\-]+)\.([a-zA-Z0-9_]+)\s*\}\}"
+        
+        # 执行替换
+        processed_str = re.sub(pattern, replace_uuid_ref, template_str)
+
         try:
             # from_string 会利用 Environment 的缓存机制
-            template = TemplateRenderer._env.from_string(template_str)
-            return template.render(**context)
+            template = TemplateRenderer._env.from_string(processed_str)
+            return template.render(**context,_ctx=context)
         except Exception as e:
             logger.warning(f"PromptEngine render failed: {e}. Raw: '{template_str[:50]}...'")
             # 降级策略：返回原始字符串

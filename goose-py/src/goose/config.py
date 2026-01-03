@@ -5,6 +5,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
+# 默认配置路径 (类比 Rust 的 dirs::home_dir)
+DEFAULT_CONFIG_DIR = Path.home() / ".config" / "goose"
+DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
 class SystemConfig(BaseSettings):
     # 基础配置
     env: str = "production"  # development / production
@@ -19,38 +22,15 @@ class SystemConfig(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     serpapi_api_key: str = ""
     
-    silicon_api_key: str = ""
+    silicon_api_key: str = "sk-climzomnsicqdepumaymoshvgviaggcgounvovaqglltepkd"
     silicon_base_url: str = "https://api.siliconflow.cn/v1"
     
     class Config:
         env_file = ".env"  # 自动读取当前目录下的 .env 文件
         env_prefix = "GOOSE_"
         
-        
-# 默认配置路径 (类比 Rust 的 dirs::home_dir)
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "goose"
-DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
-
-class GooseConfig(BaseModel):
-    """
-    对应 Rust: Config
-    控制 Goose 的全局行为
-    """
-    # 默认模型提供商
-    GOOSE_PROVIDER: str = Field(default="openai", alias="GOOSE_PROVIDER")
-    GOOSE_MODEL: str = Field(default="gpt-4o", alias="GOOSE_MODEL")
-    
-    # API Keys (优先级：环境变量 > 配置文件)
-    OPENAI_API_KEY: Optional[str] = None
-    OPENAI_BASE_URL: Optional[str] = None
-    ANTHROPIC_API_KEY: Optional[str] = None
-    
-    # 扩展配置 (Extension)
-    # 格式: { "name": { "enabled": true, "args": ... } }
-    extensions: Dict[str, Any] = Field(default_factory=dict)
-
     @classmethod
-    def load(cls, config_path: Path = DEFAULT_CONFIG_FILE) -> "GooseConfig":
+    def load(cls, config_path: Path = DEFAULT_CONFIG_FILE) -> "SystemConfig":
         """加载配置：默认值 -> 配置文件 -> 环境变量 (最高优先级)"""
         
         # 1. 基础默认值
@@ -81,11 +61,12 @@ class GooseConfig(BaseModel):
 
         return cls(**config_data)
 
+
 # 全局单例
 _global_config = None
 
-def get_config() -> GooseConfig:
+def get_config() -> SystemConfig:
     global _global_config
     if _global_config is None:
-        _global_config = GooseConfig.load()
+        _global_config = SystemConfig.load()
     return _global_config

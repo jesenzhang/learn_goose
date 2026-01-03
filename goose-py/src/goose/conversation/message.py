@@ -140,6 +140,23 @@ class Message(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    @property
+    def tool_calls(self) -> List["ToolRequest"]:
+        """
+        [Helper] 快速从 content 中提取所有的工具调用请求。
+        这修复了 AttributeError: 'Message' object has no attribute 'tool_calls'
+        """
+        # 避免循环引用，如果 ToolRequest 在下面定义，可能需要局部引用，
+        # 但通常都在同一个文件中定义，所以直接用
+        return [c for c in self.content if isinstance(c, ToolRequest)]
+
+    @property
+    def text(self) -> str:
+        """
+        [Helper] 快速获取纯文本内容。
+        """
+        return "\n".join([c.text for c in self.content if isinstance(c, TextContent)])
+        
     @classmethod
     def system(cls, text: str = "") -> "Message":
         msg = cls(role=Role.SYSTEM)

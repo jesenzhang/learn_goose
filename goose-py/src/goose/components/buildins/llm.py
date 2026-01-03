@@ -8,29 +8,26 @@ from goose.components.base import Component
 from goose.toolkit import tool_registry, ToolSourceType, ToolDefinition
 from goose.workflow.context import WorkflowContext
 from goose.utils.template import TemplateRenderer
-from goose.providers import ProviderFactory
-from goose.conversation import Message
+from goose.conversation import Message, Role, TextContent
 from goose.components.registry import register_component
 from goose.types import NodeTypes
-
+from goose.events.types import SystemEvents  # 引入系统事件
 
 logger = logging.getLogger("goose.component.llm")
 
 # ==========================================
-# 配置模型 (Schema Definition)
+# Schema Definition
 # ==========================================
 
 class OutputDefinition(BaseModel):
     name: str
-    type: str = "string" # string, number, boolean, array, object
+    type: str = "string"
     description: Optional[str] = None
 
 class LLMConfig(BaseModel):
     # --- 模型配置 ---
-    model: str = Field(..., description="模型名称 (e.g. gpt-4o)")
-    base_url: Optional[str] = Field(None, description="API Base URL")
-    api_key: Optional[str] = Field(None, description="API Key")
-    
+    model: str = Field(..., description="模型资源ID (e.g. sys.model.gpt4o)")
+    id: Optional[str] = Field(None, description="运行时注入的节点 ID")
     # --- 提示词 ---
     prompt: str = Field(..., description="用户提示词 (支持 {{var}})")
     system_prompt: str = Field("", description="系统提示词 (支持 {{var}})")
@@ -64,15 +61,12 @@ class LLMConfig(BaseModel):
     config_model=LLMConfig
 )
 class LLMComponent(Component):
-    async def execute(self, inputs: Dict[str, Any],config: LLMConfig) -> Dict[str, Any]:
-        """
-        核心执行逻辑：
-        1. 准备工具和模型。
-        2. 渲染 Prompt。
-        3. 注入 JSON Schema (如果需要)。
-        4. 执行 ReAct 循环 (Chat -> Tool -> Chat)。
-        5. 解析输出。
-        """
+    async def execute(
+        self, 
+        inputs: Dict[str, Any], 
+        config: LLMConfig, 
+        context: WorkflowContext
+    ) -> Dict[str, Any]:
         
         # 1. [准备] 工具定义
         tool_defs = []
@@ -80,33 +74,25 @@ class LLMComponent(Component):
         
         if config.tools:
             for tool_id in config.tools:
-                # 从 Goose 的 ToolRegistry 获取
                 t_def = tool_registry.get_meta(tool_id)
                 if t_def:
                     tool_defs.append(t_def)
-                    # 转换为 OpenAI 格式 (假设 ToolDefinition 实现了 to_openai_format)
-                    # 如果没有实现，这里需要手动转换，下文会提供 Helper
+                    # 转换工具定义格式
                     openai_tools.append(self._to_openai_tool(t_def))
                 else:
                     logger.warning(f"Tool not found: {tool_id}")
 
         # 2. [准备] 模型 Provider
-        # 优先使用 config 中的配置，如果没有则尝试从系统默认配置获取
-        # 这里为了演示，每次创建一个临时的 Provider 实例
-        provider_config = {
-            "model_name": config.model,
-            "api_key": config.api_key or "default", # 实际应从 ENV 或 KeyManager 获取
-            "base_url": config.base_url,
-            "temperature": config.temperature,
-            "max_tokens": config.max_tokens
-        }
-        # 简单工厂模式创建 Provider (OpenAI Compatible)
-        provider = ProviderFactory.create("openai", provider_config)
+        # 从资源管理器获取已初始化的 Provider 实例 (单例)
+        try:
+            provider = await context.resources.get_instance(config.model)
+        except Exception as e:
+            raise ValueError(f"Failed to load model resource '{config.model}': {e}")
 
         # 3. [渲染] Prompt
         system_instruction = config.system_prompt
         
-        # 如果是 JSON 模式，构建 Schema 并注入 System Prompt
+        # JSON Schema 注入
         if config.response_format == "json_object" and config.output_definitions:
             try:
                 target_schema = self._build_json_schema(config.output_definitions)
@@ -122,13 +108,14 @@ class LLMComponent(Component):
             except Exception as e:
                 logger.warning(f"Failed to build JSON schema: {e}")
 
-        # 使用 TemplateRenderer 渲染变量
+        # 渲染变量
         system_content = TemplateRenderer.render(system_instruction, inputs)
         user_content = TemplateRenderer.render(config.prompt, inputs)
-        system_prompt=Message.system(system_content if system_content else '') 
-        messages = []
         
-        messages.append(Message.user(user_content))
+        # 初始化消息历史
+        # 注意：Prompt 不包含在 messages 列表中，而是作为 system/user 参数传给 Provider
+        # 但为了 ReAct 循环，我们需要维护一个本地的 messages 列表
+        current_messages = [Message.user(user_content)]
 
         # 4. [执行] ReAct Loop
         current_iter = 0
@@ -138,61 +125,97 @@ class LLMComponent(Component):
         while current_iter < config.max_iterations:
             current_iter += 1
             
-            # --- 调用 LLM ---
-            # 注意：Goose 的 Provider 接口通常返回 Message 对象
-            response_msg = await provider.complete(system_prompt,messages, tools=openai_tools if openai_tools else None)
+            # --- Stream Loop ---
+            accumulated_text = ""
+            current_tool_msg: Optional[Message] = None
             
-            # 累积推理内容 (DeepSeek/O1)
-            if response_msg.reasoning_content:
-                final_reasoning_content += response_msg.reasoning_content
+            # 使用 provider.stream 获取打字机效果
+            # 传递 tools 参数：如果是空列表，传 None，或者取决于 Provider 实现
+            # 之前的 OpenAIProvider 修复版支持传空列表，这里传 openai_tools or None 最稳妥
+            async for partial_msg, usage in provider.stream(
+                system=system_content,
+                messages=current_messages, # 传递当前历史（不含 system）
+                tools=openai_tools or None
+            ):
+                if partial_msg:
+                    # Case A: 文本流
+                    if partial_msg.content and isinstance(partial_msg.content[0], TextContent):
+                        text_chunk = partial_msg.content[0].text
+                        accumulated_text += text_chunk
+                        # [Core] 推送流式 Token 到 EventBus
+                        await context.streamer.emit(
+                            SystemEvents.STREAM_TOKEN, 
+                            text_chunk, 
+                            producer_id=config.id
+                        )
+                    
+                    # Case B: 工具调用消息 (通常在流结束时由 Provider 组装好返回)
+                    # 根据你的 OpenAIProvider 实现，含有 tool_calls 的 message 会作为 partial_msg 返回
+                    if partial_msg.tool_calls:
+                        current_tool_msg = partial_msg
+
+                # Usage 暂时忽略，或者累加
+
+            # Stream 结束，处理结果
             
-            # 追加到历史
-            messages.append(response_msg)
-            
-            # 检查是否有工具调用
-            if not response_msg.tool_calls:
-                # 没有工具调用，任务结束
-                final_response_content = response_msg.content
+            # 如果有工具调用
+            if current_tool_msg and current_tool_msg.tool_calls:
+                # 将 Assistant 的工具调用消息加入历史
+                current_messages.append(current_tool_msg)
+                
+                logger.info(f"🔧 Tool Calls detected: {len(current_tool_msg.tool_calls)}")
+                
+                # 执行所有工具
+                for tool_call_req in current_tool_msg.tool_calls:
+                    # 解包 Request
+                    # ToolRequest(id=..., toolCall=Result(value=CallToolRequestParam(...)))
+                    if tool_call_req.tool_call.is_error:
+                        continue
+                        
+                    param = tool_call_req.tool_call.value
+                    call_id = tool_call_req.id
+                    func_name = param.name
+                    args = param.arguments
+
+                    tool_result_content = ""
+                    
+                    # 查找本地工具定义
+                    target_tool = next((t for t in tool_defs if t.name == func_name), None)
+                    
+                    if target_tool:
+                        try:
+                            # 执行工具 (支持 Sync 和 Async)
+                            if target_tool.source_type == ToolSourceType.BUILTIN:
+                                if getattr(target_tool, 'func', None):
+                                    # [Core] 注入 context (如果工具函数需要)
+                                    # 这里做一个简单的参数检测，或者约定工具函数签名
+                                    # 简单起见，直接传 args
+                                    res = target_tool.func(**args)
+                                    if hasattr(res, '__await__'): 
+                                        res = await res
+                                    tool_result_content = json.dumps(res, ensure_ascii=False) if isinstance(res, (dict, list)) else str(res)
+                            else:
+                                tool_result_content = "Plugin tools not implemented yet"
+                        except Exception as e:
+                            tool_result_content = f"Error executing tool: {str(e)}"
+                    else:
+                        tool_result_content = f"Error: Tool {func_name} not found."
+
+                    # 将工具结果回填给 LLM (作为 Tool Message)
+                    current_messages.append(Message.tool(tool_result_content, tool_call_id=call_id))
+                
+                # 继续下一轮循环 (Chat with Tool Results)
+                continue
+
+            else:
+                # 没有工具调用，这是最终回复
+                # 将纯文本回复加入历史 (保持完整性)
+                assistant_msg = Message.assistant(accumulated_text)
+                current_messages.append(assistant_msg)
+                
+                final_response_content = accumulated_text
                 break
-            
-            # --- 执行工具 ---
-            logger.info(f"🔧 Tool Calls detected: {len(response_msg.tool_calls)}")
-            
-            for tool_call in response_msg.tool_calls:
-                call_id = tool_call.id
-                func_name = tool_call.function.name
-                args_str = tool_call.function.arguments
-                
-                tool_result_content = ""
-                
-                # 查找匹配的本地工具定义
-                target_tool = next((t for t in tool_defs if t.name == func_name), None)
-                
-                if target_tool:
-                    try:
-                        args = json.loads(args_str)
-                        # 执行工具
-                        # LLMComponent 作为一个 Component，调用工具时需要传入 context
-                        # 如果工具是 Builtin 函数
-                        if target_tool.source_type == ToolSourceType.BUILTIN:
-                            # 注入 context 如果需要，或直接调用
-                            # 这里复用 PluginComponent 的逻辑，或者直接调用 func
-                            if getattr(target_tool, 'func', None):
-                                res = target_tool.func(**args)
-                                if hasattr(res, '__await__'): # Async check
-                                    res = await res
-                                tool_result_content = json.dumps(res, ensure_ascii=False) if isinstance(res, (dict, list)) else str(res)
-                        
-                        # 如果是 Plugin (HTTP)，这里暂略，建议复用 PluginComponent 的逻辑
-                        
-                    except Exception as e:
-                        tool_result_content = f"Error executing tool: {str(e)}"
-                else:
-                    tool_result_content = f"Error: Tool {func_name} not found locally."
-
-                # 将工具结果回填给 LLM
-                messages.append(Message.tool(tool_result_content, tool_call_id=call_id))
-
+        
         # 5. [解析] 结果处理
         final_output = {}
         
@@ -216,10 +239,6 @@ class LLMComponent(Component):
                     output_key = valid_defs[0].name
             
             final_output[output_key] = final_response_content
-
-        # 注入推理过程 (可选)
-        if final_reasoning_content:
-            final_output["reasoning_content"] = final_reasoning_content
 
         return final_output
 
@@ -254,13 +273,11 @@ class LLMComponent(Component):
         }
 
     def _clean_json_markdown(self, text: str) -> str:
-        """清洗 Markdown 格式的 JSON"""
         text = text.strip()
         pattern = r"^```(?:json)?\s*(\{.*?\})\s*```$"
         match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
         if match:
             return match.group(1)
-        # 启发式查找大括号
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1:
@@ -268,9 +285,6 @@ class LLMComponent(Component):
         return text
 
     def _to_openai_tool(self, tool_def: ToolDefinition) -> Dict:
-        """简单的工具定义转换器"""
-        # 如果 ToolDefinition 中已经缓存了 openai schema 最好
-        # 这里做一个简单的 mock 转换
         return {
             "type": "function",
             "function": {

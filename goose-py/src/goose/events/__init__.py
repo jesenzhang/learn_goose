@@ -1,6 +1,6 @@
 from .bus import MemoryEventBus,IEventBus
 from .streamer import BaseStreamer,IStreamer
-from .store import SQLEventStore,IEventStore
+from .store import SQLEventStore,IEventStore,register_event_store_schema
 from .types import Event,SystemEvents
 
 __all__ = [
@@ -11,5 +11,6 @@ __all__ = [
     "IEventBus",
     "IStreamer",
     "SQLEventStore",
-    "SystemEvents"
+    "SystemEvents",
+    "register_event_store_schema"
 ]
