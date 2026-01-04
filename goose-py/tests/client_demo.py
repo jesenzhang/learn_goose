@@ -207,7 +207,7 @@ class WorkflowHandler:
         elif event_type == "workflow_started":
             self.final_output = event.get("data")
             print(f"\n   ✅ Workflow Completed")
-            return False
+            
         elif event_type == "workflow_completed":
             self.final_output = event.get("data")
             print(f"\n   ✅ Workflow Completed")
@@ -243,13 +243,20 @@ if __name__ == "__main__":
     log("Starting workflow...", "🚀")
     handler = WorkflowHandler(client)
     
-    # 启动监听 (from_beginning=True 确保不丢 Token)
-    run_id = client.run_workflow(
-        wf_id=wf_id, 
-        inputs={"query": "Explain Quantum Physics simply."}
-    )
+    # client.start_workflow(
+    #     wf_id=wf_id, 
+    #     inputs={"query": "Explain Quantum Physics simply."}, 
+    #     on_event=handler.handle_event,
+    #     from_beginning=True 
+    # )
+    
+    # # 启动监听 (from_beginning=True 确保不丢 Token)
+    # run_id = client.run_workflow(
+    #     wf_id=wf_id, 
+    #     inputs={"query": "Explain Quantum Physics simply."}
+    # )
 
-    client.listen_to_existing_run(run_id, handler.handle_event)
+    client.listen_to_existing_run('run_e3b84650b09f4133afebb1d6f8396eba', handler.handle_event)
     
     # 4. 挂起/恢复 循环 (支持多次挂起)
     while handler.is_suspended and handler.current_run_id:

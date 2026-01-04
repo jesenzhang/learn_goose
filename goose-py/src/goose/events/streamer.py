@@ -86,7 +86,10 @@ class BaseStreamer(IStreamer):
         # 即使工作流正在运行，新连接的客户端也需要先看之前的记录
         try:
             history_events = await self.store.get_events(self.run_id, after_seq_id)
+            logger.info(f'Backfilled {len(history_events)} events from store for {self.run_id}')
+            
             for event in history_events:
+                logger.info(f"Yielding event {event.seq_id} from store")
                 yield event
                 last_seq_id = max(last_seq_id, event.seq_id)
                 

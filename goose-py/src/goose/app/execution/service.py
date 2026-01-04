@@ -50,11 +50,30 @@ class ExecutionService:
         # 1. 创建记录
         run_id = await self._create_execution_record(wf_id, inputs, user_id)
         
-        # Pass after_seq_id to the orchestrator
-        async for event in self._orchestrate_stream_task(
-            run_id, wf_id, inputs, user_id, is_resume=False, after_seq_id=after_seq_id
-        ):
-            yield event
+        runtime = get_runtime()
+        streamer = runtime.streamer_factory.create(run_id)
+
+        asyncio.create_task(
+            self._run_scheduler_task(run_id, wf_id, inputs, user_id, streamer, is_resume=False)
+        )
+        try:
+            logger.info(f"🎧 Client listening to {run_id} (after seq {after_seq_id})")
+            
+            async for event in streamer.listen(after_seq_id=after_seq_id):
+                # 序列化
+                data = event.model_dump() if hasattr(event, "model_dump") else event
+                yield data
+                
+                # 终止条件检查：如果收到了结束事件，流就该停止了
+                # 这样可以防止客户端一直挂着连接，即使任务早就结束了
+                event_type = data.get("type")
+                if event_type in ["workflow_completed", "error", "workflow_failed"]:
+                    logger.info(f"🏁 Stream {run_id} ended normally.")
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Listener error for {run_id}: {e}", exc_info=True)
+            yield {"type": "error", "error": str(e)}
 
     async def resume_stream_generator(
         self, 
@@ -197,7 +216,7 @@ class ExecutionService:
             
             async for event in streamer.listen(after_seq_id=after_seq_id):
                 # 序列化
-                data = event.dict() if hasattr(event, "dict") else event
+                data = event.model_dump() if hasattr(event, "model_dump") else event
                 yield data
                 
                 # 终止条件检查：如果收到了结束事件，流就该停止了
