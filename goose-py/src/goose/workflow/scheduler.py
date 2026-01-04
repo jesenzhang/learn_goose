@@ -54,6 +54,7 @@ class WorkflowScheduler:
         graph: Graph, 
         inputs: Any, 
         run_id: str = None, 
+        streamer: Optional['Streamer'] = None,
         resume: bool = False,
         parent_ctx: WorkflowContext = None,
         resource_manager: Optional['ResourceManager'] = None,
@@ -104,7 +105,8 @@ class WorkflowScheduler:
         #             session_type=SessionType.WORKFLOW
         #         )
         # 1.3 获取 Streamer (Event Producer)
-        streamer = runtime.streamer_factory.create(run_id)
+        if streamer is None:
+            streamer = runtime.streamer_factory.create(run_id)
         
         # 1.4 兜底 Resource Manager
         if resource_manager is None:

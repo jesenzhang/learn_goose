@@ -70,14 +70,17 @@ class ExecutionRepository:
             return data
         return None
     
-    async def update_status(self, run_id: str, status: str, outputs: Dict = None, error: str = None):
+    async def update_status(self, run_id: str, status: str, outputs: Any = None, error: str = None):
         """[Sync] 根据引擎事件更新状态"""
         updates = ["status = :status", "updated_at = CURRENT_TIMESTAMP"]
         params = {"run_id": run_id, "status": status}
         
         if outputs is not None:
             updates.append("outputs = :outputs")
-            params["outputs"] = json.dumps(outputs)
+            if isinstance(outputs, (dict, list)):
+                params["outputs"] = json.dumps(outputs, ensure_ascii=False)
+            else:
+                params["outputs"] = str(outputs)
             
         if error is not None:
             updates.append("error = :error")

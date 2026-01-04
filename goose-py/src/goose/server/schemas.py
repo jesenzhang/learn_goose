@@ -66,7 +66,13 @@ class RunReq(BaseModel):
 class ResumeReq(BaseModel):
     """恢复运行请求"""
     inputs: Dict[str, Any] = Field(default_factory=dict, description="可选：补充或覆盖之前的变量")
-     
+
+class ExecutionCreateReq(BaseModel):
+    workflow_id: str = Field(..., description="要运行的工作流ID")
+    inputs: Dict[str, Any] = Field(default_factory=dict, description="运行时输入参数")
+    # 可选：指定触发源
+    trigger_source: str = "api"
+      
 class SingleNodeRunReq(BaseModel):
     """单节点测试请求"""
     node_type: str = Field(..., description="组件类型标识, e.g. 'model.llm'")

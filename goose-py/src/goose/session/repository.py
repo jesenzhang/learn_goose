@@ -51,6 +51,7 @@ class SessionRepository:
         # 确保 Schema 已注册 (防止用户忘记手动调用 register)
         register_session_schemas()
 
+        
     async def create_session(self, session_id: str, name: str = "New Session", metadata: Dict = None):
         """创建新会话"""
         await self.pm.execute(

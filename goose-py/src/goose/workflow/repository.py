@@ -50,38 +50,45 @@ class WorkflowRepository(WorkflowCheckpointer):
         self.pm =persistence_manager
 
     async def save(self, workflow: WorkflowDefinition, title: str) -> str:
-        """Upsert Workflow"""
-        # 如果 ID 不存在，生成新的
+        """Upsert Workflow (Optimized)"""
+        
+        # 1. 确保 ID 存在
         if not workflow.id:
             workflow.id = f"wf_{uuid.uuid4().hex[:8]}"
         
-        # 序列化
-        def_json = workflow.model_dump_json()
+        # 2. [关键修复] 显式序列化
+        # 使用 model_dump(mode='json') 先转成 Python Dict，可以清晰看到存了什么
+        # 避免 model_dump_json() 在某些 Pydantic 版本下的黑盒行为
+        try:
+            workflow_dict = workflow.model_dump(mode='json')
+            
+            # [Debug] 如果你不放心，可以在这里打印看看 nodes 是否还在
+            # if "nodes" not in workflow_dict or not workflow_dict["nodes"]:
+            #     logger.warning(f"⚠️ Warning: Saving workflow {workflow.id} with EMPTY nodes!")
+            
+            def_json = json.dumps(workflow_dict, ensure_ascii=False)
+            
+        except Exception as e:
+            logger.error(f"Serialization failed: {e}")
+            raise ValueError("Failed to serialize workflow definition")
+
+        # 3. [优化] 使用 SQLite 的 UPSERT 语法 (INSERT OR REPLACE)
+        # 这比 "Select -> If -> Update/Insert" 更原子、更高效，且代码更少
+        sql = """
+        INSERT OR REPLACE INTO workflows (id, title, definition, updated_at) 
+        VALUES (:id, :title, :definition, CURRENT_TIMESTAMP)
+        """
         
-        # 检查是否存在 (简单做法，生产环境可用 Upsert 语法)
-        exists = await self.pm.fetch_one(
-            "SELECT id FROM workflows WHERE id = :id", 
-            {"id": workflow.id}
+        await self.pm.execute(
+            sql,
+            {
+                "id": workflow.id, 
+                "title": title, 
+                "definition": def_json
+            }
         )
         
-        if exists:
-            await self.pm.execute(
-                """
-                UPDATE workflows 
-                SET title = :title, definition = :definition, updated_at = CURRENT_TIMESTAMP
-                WHERE id = :id
-                """,
-                {"id": workflow.id, "title": title, "definition": def_json}
-            )
-        else:
-            await self.pm.execute(
-                """
-                INSERT INTO workflows (id, title, definition) 
-                VALUES (:id, :title, :definition)
-                """,
-                {"id": workflow.id, "title": title, "definition": def_json}
-            )
-        
+        logger.info(f"💾 Workflow saved: {workflow.id} (Size: {len(def_json)} chars)")
         return workflow.id
 
     async def get(self, wf_id: str) -> Optional[WorkflowDefinition]:

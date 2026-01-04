@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
         execution_repo = ExecutionRepository()
         user_repo = UserRepository()
         user_resource_repo = UserResourceRepository()
-        
+        session_repo=SessionRepository()
         user_service = UserService(user_repo, user_resource_repo)
         
         workflow_service = WorkflowService(
@@ -79,7 +79,8 @@ async def lifespan(app: FastAPI):
         exec_service = ExecutionService(converter=converter,
                                         wf_repo=workflow_repo,
                                         exec_repo=execution_repo,
-                                        auth_repo=user_resource_repo)
+                                        auth_repo=user_resource_repo,
+                                        session_repo=session_repo)
         
         # 4. 初始化并启动 Trigger Manager (App Layer)
         # TriggerManager 依赖 ExecutionService 来调度任务

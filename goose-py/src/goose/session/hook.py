@@ -39,15 +39,14 @@ class SessionPersistenceHook(WorkflowHook):
         except Exception as e:
             logger.error(f"Failed to ensure session: {e}")
             # 根据策略，这里可以选择抛出异常阻断流程，或者降级运行
-            
+
         # --- A. 写入用户消息 ---
         # 提取用户输入文本
         content = ""
-        if isinstance(inputs, str):
-            content = inputs
-        elif isinstance(inputs, dict):
-            # 尝试寻找常见的输入字段
-            content = inputs.get("query") or inputs.get("input") or json.dumps(inputs)
+        if isinstance(inputs, dict):
+            content = json.dumps(inputs, ensure_ascii=False)
+        else:
+            content = str(inputs)
         
         if content:
             await self.repo.add_message(
@@ -75,30 +74,57 @@ class SessionPersistenceHook(WorkflowHook):
     async def on_node_end(self, run_id: str, node: Node, output: Any, context: WorkflowContext):
         """
         保存 AI 回复 (Assistant Message)
-        仅针对 LLM 类型的节点
         """
-        # 1. 判断是否是 LLM 节点
-        # 假设 Component 有 kind 属性，或者根据类名判断
+        # 1. 判断是否是 LLM 节点 (保持原逻辑)
         is_llm = False
-        if hasattr(node.component, 'kind') and node.component.kind == ResourceKind.LLM:
+        # 增加对 type 字符串的判断，更加鲁棒
+        if hasattr(node, 'type') and (node.type == 'model.llm' or 'llm' in str(node.type).lower()):
+            is_llm = True
+        elif hasattr(node.component, 'kind') and str(node.component.kind) == 'llm':
             is_llm = True
         elif "LLM" in node.component.__class__.__name__:
             is_llm = True
             
         if is_llm and output:
-            # 2. 提取内容
-            content = output
-            if isinstance(output, dict):
-                content = output.get("content") or output.get("text") or json.dumps(output)
-            elif hasattr(output, "content"): # Message object
-                content = output.content
-                
-            # 3. 写入数据库
-            await self.repo.add_message(
-                session_id=run_id,
-                message=Message(role=Role.ASSISTANT, content=str(content))
-            )
-            logger.info(f"🤖 [Hook] Assistant message saved from node {node.id}")
+            # 2. 智能提取文本内容
+            text_content = ""
+            
+            if isinstance(output, str):
+                text_content = output
+            elif isinstance(output, dict):
+                # 优先找 'result', 'text', 'answer', 'content' 这些常见字段
+                for key in ["result", "text", "content", "answer"]:
+                    if key in output and output[key]:
+                        val = output[key]
+                        text_content = val if isinstance(val, str) else json.dumps(val, ensure_ascii=False)
+                        break
+                # 如果没找到常见字段，为了不丢数据，转存整个 JSON
+                if not text_content:
+                    text_content = json.dumps(output, ensure_ascii=False)
+            elif hasattr(output, "content"): 
+                text_content = str(output.content)
+            else:
+                text_content = str(output)
+
+            # 3. [关键修复] 构造符合 Pydantic 定义的 Message
+            # 既然报错说要 List，我们就把字符串包在列表里
+            # 假设 Message 定义是 content: List[str] 或 List[ContentItem]
+            # 如果是 List[str]:
+            final_content = [text_content]
+            
+            # 如果是 List[ContentItem]，你需要根据你的 domain 定义来构造，例如:
+            # final_content = [ContentItem(type="text", text=text_content)]
+            
+            # 这里按最常见的 List[str] 或兼容格式处理：
+            try:
+                await self.repo.add_message(
+                    session_id=run_id,
+                    message=Message(role=Role.ASSISTANT, content=final_content)
+                )
+                logger.info(f"🤖 [Hook] Assistant message saved from node {node.id}")
+            except Exception as e:
+                # 兜底日志，防止 hook 炸掉整个流程
+                logger.error(f"Failed to save assistant message: {e}")
             
     async def on_workflow_end(self, run_id: str, outputs: Any, context: WorkflowContext):
         """
