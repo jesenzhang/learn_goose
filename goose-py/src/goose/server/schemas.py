@@ -72,6 +72,8 @@ class ExecutionCreateReq(BaseModel):
     inputs: Dict[str, Any] = Field(default_factory=dict, description="运行时输入参数")
     # 可选：指定触发源
     trigger_source: str = "api"
+    target_node_id: Optional[str] = Field(None, description="Debug模式：运行至指定节点后停止")
+    after_seq_id: int = Field(default=-1, description="Start streaming events after this sequence ID. -1 means from the beginning.")
       
 class SingleNodeRunReq(BaseModel):
     """单节点测试请求"""

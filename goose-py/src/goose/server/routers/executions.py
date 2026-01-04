@@ -26,6 +26,35 @@ async def run_execution(
     except Exception as e:
         raise HTTPException(500, str(e))
 
+@router.get("/{run_id}/events")
+async def listen_execution_events(
+    run_id: str,
+    after_seq_id: int = Query(-1, description="从哪个序列号开始(-1=从头开始)"),
+    request: Request = None, # 用于检测客户端断开
+    service: ExecutionService = Depends(get_exec_service),
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    [SSE] 监听指定任务的事件流
+    适用于: 
+    1. 异步任务启动后的被动监听
+    2. 页面刷新后的断线重连
+    """
+    try:
+        generator = service.listen_to_execution(
+            run_id=run_id, 
+            user_id=user_id, 
+            after_seq_id=after_seq_id
+        )
+        return StreamingResponse(
+            sse_wrapper(request, generator),
+            media_type="text/event-stream"
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    
 # 2. 流式运行 (新任务)
 @router.post("/stream")
 async def stream_execution(
@@ -35,7 +64,12 @@ async def stream_execution(
     user_id: str = Depends(get_current_user_id)
 ):
     try:
-        generator = service.execute_stream_generator(req.workflow_id, req.inputs, user_id)
+        generator = service.execute_stream_generator(
+            req.workflow_id, 
+            req.inputs, 
+            user_id,
+            after_seq_id=req.after_seq_id 
+        )
         return StreamingResponse(
             sse_wrapper(request, generator),
             media_type="text/event-stream"

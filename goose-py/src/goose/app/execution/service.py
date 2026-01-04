@@ -43,14 +43,17 @@ class ExecutionService:
         self, 
         wf_id: str, 
         inputs: Dict[str, Any], 
-        user_id: str
+        user_id: str,
+        after_seq_id: int = -1
     ) -> AsyncGenerator[Dict, None]:
         """[SSE] 启动新任务并流式返回"""
         # 1. 创建记录
         run_id = await self._create_execution_record(wf_id, inputs, user_id)
         
-        # 2. 编排流式任务 (New Run)
-        async for event in self._orchestrate_stream_task(run_id, wf_id, inputs, user_id, is_resume=False):
+        # Pass after_seq_id to the orchestrator
+        async for event in self._orchestrate_stream_task(
+            run_id, wf_id, inputs, user_id, is_resume=False, after_seq_id=after_seq_id
+        ):
             yield event
 
     async def resume_stream_generator(
@@ -81,7 +84,8 @@ class ExecutionService:
         wf_id: str, 
         inputs: Dict, 
         user_id: str,
-        is_resume: bool
+        is_resume: bool,
+        after_seq_id: int = -1
     ) -> AsyncGenerator[Dict, None]:
         """
         [Core Helper] 统一处理 New Run 和 Resume 的流式编排
@@ -110,8 +114,8 @@ class ExecutionService:
 
         # B. 定义监听任务
         async def event_listener():
-            # 这里可以根据 is_resume 决定是否加载历史事件，通常 Resume 只需要监听新的
-            async for event in streamer.listen():
+            # If the client requested history (e.g., -1), this will fetch from DB first
+            async for event in streamer.listen(after_seq_id=after_seq_id):
                 await event_queue.put(event)
 
         # C. 启动
@@ -151,6 +155,62 @@ class ExecutionService:
         )
         return run_id
 
+    # ==========================================
+    # 5. 异步监听 (Subscribe to Existing Run)
+    # ==========================================
+
+    async def listen_to_execution(
+        self, 
+        run_id: str, 
+        user_id: str, 
+        after_seq_id: int = -1
+    ) -> AsyncGenerator[Dict, None]:
+        """
+        [SSE] 监听一个已经存在的执行任务 (支持断线重连/历史回放)
+        
+        :param run_id: 任务ID
+        :param user_id: 用户ID (鉴权)
+        :param after_seq_id: 从哪个序列号开始听。
+               -1 表示从头开始 (History + Live)
+               None 表示只听实时的 (Live Only)
+               >0 表示从指定位置接续
+        """
+        # 1. 检查任务是否存在
+        exec_record = await self.exec_repo.get(run_id)
+        if not exec_record:
+            raise ValueError(f"Execution {run_id} not found")
+
+        # 2. 鉴权
+        if not await self.auth_repo.check_ownership(user_id, run_id):
+            raise ValueError(f"Permission denied: User {user_id} cannot access execution {run_id}")
+
+        # 3. 获取 Streamer
+        runtime = get_runtime()
+        streamer = runtime.streamer_factory.create(run_id)
+
+        # 4. 开始监听
+        # Streamer.listen 内部封装了:
+        # A. 如果 after_seq_id != None: 先去 EventStore 查历史事件并 yield
+        # B. 订阅 EventBus 监听实时事件
+        try:
+            logger.info(f"🎧 Client listening to {run_id} (after seq {after_seq_id})")
+            
+            async for event in streamer.listen(after_seq_id=after_seq_id):
+                # 序列化
+                data = event.dict() if hasattr(event, "dict") else event
+                yield data
+                
+                # 终止条件检查：如果收到了结束事件，流就该停止了
+                # 这样可以防止客户端一直挂着连接，即使任务早就结束了
+                event_type = data.get("type")
+                if event_type in ["workflow_completed", "error", "workflow_failed"]:
+                    logger.info(f"🏁 Stream {run_id} ended normally.")
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Listener error for {run_id}: {e}", exc_info=True)
+            yield {"type": "error", "error": str(e)}
+            
     # ==========================================
     # 3. 核心调度逻辑 (Unified)
     # ==========================================

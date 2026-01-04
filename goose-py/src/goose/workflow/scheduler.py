@@ -211,7 +211,6 @@ class WorkflowScheduler:
                         producer_id=current_node_id
                     )
 
-
                     output = await node.component.invoke(
                         inputs=invocation_inputs,
                         config=invocation_config,
