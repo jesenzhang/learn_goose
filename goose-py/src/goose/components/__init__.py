@@ -31,6 +31,7 @@ from .buildins import (
     StartComponent,
     StartConfig,
 )
+from .protocol import ComponentDefinition,Port,UIConfig,ComponentMeta
 from .registry import component_registry, register_component
 
 sys_registry.register_domain("components", component_registry)
@@ -66,4 +67,8 @@ __all__ = [
     "SelectorConfig",
     "StartComponent",
     "StartConfig",
+    "ComponentDefinition",
+    "Port",
+    "UIConfig",
+    "ComponentMeta",
 ]

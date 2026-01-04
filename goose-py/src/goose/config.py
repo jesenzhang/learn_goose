@@ -25,6 +25,11 @@ class SystemConfig(BaseSettings):
     silicon_api_key: str = "sk-climzomnsicqdepumaymoshvgviaggcgounvovaqglltepkd"
     silicon_base_url: str = "https://api.siliconflow.cn/v1"
     
+    jwt_secret_key: str = Field(default="goose-insecure-secret-change-me", env="GOOSE_JWT_SECRET")
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60 * 24 # Token 有效期 (例如 1 天)
+    
+    
     class Config:
         env_file = ".env"  # 自动读取当前目录下的 .env 文件
         env_prefix = "GOOSE_"

@@ -1,12 +1,11 @@
 import logging
-import os
 from typing import Any, List, Optional, Dict, AsyncGenerator
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from sqlalchemy import text, event
 from sqlalchemy.engine import Engine
-from sqlalchemy.engine.url import make_url
+
 from goose.persistence.backend import StorageBackend
 
 logger = logging.getLogger("goose.persistence.drivers")
@@ -18,16 +17,13 @@ class SQLAlchemyBackend(StorageBackend):
     """
     def __init__(self, db_url: str, **engine_kwargs):
         # 1. 针对 SQLite 的特殊 URL 处理
+        # 如果用户只传了 "sqlite:///test.db"，自动补全异步驱动名
         if db_url.startswith("sqlite://") and "aiosqlite" not in db_url:
             db_url = db_url.replace("sqlite://", "sqlite+aiosqlite://")
 
         self.db_url = db_url
         
-        # [关键修复] 2. 自动创建 SQLite 目录
-        if "sqlite" in db_url:
-            self._ensure_sqlite_directory(db_url)
-
-        # 3. 创建引擎
+        # 2. 创建引擎
         self.engine = create_async_engine(
             db_url,
             future=True,
@@ -35,34 +31,10 @@ class SQLAlchemyBackend(StorageBackend):
             **engine_kwargs
         )
 
-        # 4. 配置 Hooks (WAL, Foreign Keys)
+        # 3. [关键] 针对 SQLite 的特殊配置 (Hook)
         if "sqlite" in db_url:
             self._setup_sqlite_hooks()
-            
-    def _ensure_sqlite_directory(self, db_url: str):
-        """
-        解析 SQLite URL 并确保父目录存在。
-        """
-        try:
-            # 使用 SQLAlchemy 工具解析 URL
-            url = make_url(db_url)
-            database_path = url.database
-            
-            # 忽略内存数据库
-            if not database_path or database_path == ":memory:":
-                return
 
-            # 获取目录路径
-            # Windows 下 database_path 可能是绝对路径，也可能是相对路径
-            directory = os.path.dirname(os.path.abspath(database_path))
-            
-            if directory and not os.path.exists(directory):
-                logger.info(f"📂 Creating database directory: {directory}")
-                os.makedirs(directory, exist_ok=True)
-                
-        except Exception as e:
-            logger.warning(f"Failed to ensure database directory: {e}")
-            
     def _setup_sqlite_hooks(self):
         """
         为 SQLite 配置特殊指令：
@@ -117,37 +89,19 @@ class SQLAlchemyBackend(StorageBackend):
     async def execute_script(self, script: str) -> None:
         """
         执行多条 SQL 语句的脚本。
-        通用实现：按分号分割，在同一个事务中逐条执行。
+        SQLAlchemy 的 execute 默认不支持多语句。
+        我们需要下沉到底层驱动来执行。
         """
-        # engine.begin() 开启一个事务
-        # 如果中间某条语句失败，会自动回滚；全部成功则自动提交
         async with self.engine.begin() as conn:
-            # 移除 SQL 注释 (简单处理，防止 -- 或 /* */ 里包含分号导致分割错误)
-            # 如果你的 Schema 很标准，不移除也可以
-            
-            # 按分号分割语句
-            for statement in script.split(';'):
-                statement = statement.strip()
-                if statement:
-                    try:
+            if "sqlite" in self.db_url:
+                # [关键] 针对 SQLite，调用 run_sync 使用原生 executescript
+                await conn.run_sync(lambda sync_conn: sync_conn.connection.executescript(script))
+            else:
+                # 针对 Postgres/MySQL，通常按分号分割执行即可，或者直接透传
+                # 这里简单实现为按分号分割
+                for statement in script.split(';'):
+                    if statement.strip():
                         await conn.execute(text(statement))
-                    except Exception as e:
-                        # 打印具体的错误语句，方便调试
-                        logger.error(f"❌ SQL Execution Failed: {e}")
-                        logger.error(f"❌ Faulty SQL: {statement}")
-                        raise e
-                    
-        # async with self.engine.begin() as conn:
-        #     if "sqlite" in self.db_url:
-        #         # ✅ 官方推荐：使用 run_sync 调用底层同步方法
-        #         # SQLAlchemy 会自动处理线程切换，不会阻塞 Loop
-        #         await conn.run_sync(lambda sync_conn: sync_conn.connection.executescript(script))
-        #     else:
-        #         # 针对 Postgres/MySQL，按分号分割执行
-        #         # (代码保持不变)
-        #         for statement in script.split(';'):
-        #             if statement.strip():
-        #                 await conn.execute(text(statement))
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[None, None]:

@@ -1,6 +1,6 @@
 # providers/base.py
 from abc import ABC, abstractmethod
-from typing import List, Tuple, Any, AsyncGenerator, Optional,Dict
+from typing import List, Tuple, Any, AsyncGenerator, Optional,Dict,Protocol
 from pydantic import BaseModel
 from goose.conversation import Message
 from .model_config import ModelConfig

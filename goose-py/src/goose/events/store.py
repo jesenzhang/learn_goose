@@ -29,8 +29,7 @@ CREATE TABLE IF NOT EXISTS workflow_events (
     type TEXT NOT NULL,
     timestamp REAL,
     event_json TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(run_id) REFERENCES sessions(id)
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -60,16 +59,16 @@ class SQLEventStore(IEventStore):
             """
             INSERT INTO workflow_events 
             (id, run_id, seq_id, type, timestamp, event_json) 
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (:id, :run_id, :seq_id, :type, :timestamp, :event_json)
             """,
-            (
-                event.id, 
-                event.run_id, 
-                event.seq_id, 
-                type_str, 
-                event.timestamp, 
-                event.model_dump_json() # Pydantic v2 直接序列化整个对象
-            )
+            {
+                "id": event.id,
+                "run_id": event.run_id,
+                "seq_id": event.seq_id,
+                "type": type_str,
+                "timestamp": event.timestamp,
+                "event_json": event.model_dump_json()
+            }
         )
 
     async def get_events(self, run_id: str, after_seq_id: int = -1) -> List[Event]:
@@ -77,10 +76,13 @@ class SQLEventStore(IEventStore):
         rows = await self.pm.fetch_all(
             """
             SELECT event_json FROM workflow_events 
-            WHERE run_id = ? AND seq_id > ? 
+            WHERE run_id = :run_id AND seq_id > :after_seq_id 
             ORDER BY seq_id ASC
             """,
-            (run_id, after_seq_id)
+            {
+                "run_id": run_id, 
+                "after_seq_id": after_seq_id
+            }
         )
         # 反序列化
         return [Event.model_validate_json(row["event_json"]) for row in rows]

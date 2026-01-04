@@ -44,6 +44,10 @@ from .scheduler import (
 from .subgraph import (
     SubgraphNode,
 )
+from .protocol import (
+    WorkflowDefinition,
+    NodeConfig,EdgeConfig
+)
 
 __all__ = [
     'AgentNode',
@@ -67,4 +71,7 @@ __all__ = [
     'WorkflowScheduler',
     'WorkflowState',
     'register_workflow_schemas',
+    'WorkflowDefinition',
+    'NodeConfig',
+    'EdgeConfig',
 ]

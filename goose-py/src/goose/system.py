@@ -4,7 +4,7 @@ from typing import Optional
 # Imports
 from goose.config import SystemConfig
 from goose.persistence.manager import persistence_manager
-from goose.persistence.drivers import SQLiteBackend
+from goose.persistence.drivers import SQLAlchemyBackend
 from goose.registry import sys_registry
 # Events
 from goose.events.bus import MemoryEventBus  # [修正] 导入具体实现
@@ -29,7 +29,13 @@ async def boot(config: SystemConfig = None) -> G.Runtime:
         config = SystemConfig()
 
     # 1. 初始化持久层
-    backend = SQLiteBackend(config.db_url)
+    db_path = config.db_url
+    if not db_path.startswith("sqlite") and not "://" in db_path:
+            # 假设是相对文件路径
+            db_url = f"sqlite+aiosqlite:///{db_path}"
+    else:
+            db_url = db_path
+    backend = SQLAlchemyBackend(db_url)
     
     # [修正] persistence_manager 是单例对象，不是类
     persistence_manager.set_backend(backend)
