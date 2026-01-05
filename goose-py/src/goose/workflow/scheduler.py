@@ -8,12 +8,12 @@ from goose.workflow.graph import Graph
 from goose.workflow.context import WorkflowContext
 from goose.events import SystemEvents
 from goose.workflow.events import WorkflowEventType
-from goose.workflow.persistence import WorkflowState, WorkflowCheckpointer
-from goose.workflow.repository import WorkflowRepository, register_workflow_schemas
+from goose.workflow.checkpointer import WorkflowCheckpoint, WorkflowCheckpointer
+from goose.workflow.repository import WorkflowRepository
 
 # --- Runtime Dependencies ---
 from goose.globals import get_streamer_factory, get_runtime
-from goose.workflow.hooks import WorkflowHook
+from goose.workflow.hook import WorkflowHook
 
 if TYPE_CHECKING:
     from goose.resources.manager import ResourceManager
@@ -30,8 +30,6 @@ class WorkflowScheduler:
                  checkpointer: Optional[WorkflowCheckpointer] = None,
                  hooks: List[WorkflowHook] = None # [新增] 接收钩子列表
                  ):
-        # 确保数据库 Schema 已就绪
-        register_workflow_schemas()
         # 默认使用 SQL Repository
         self._default_checkpointer = checkpointer or WorkflowRepository()
         self.hooks = hooks or [] # [新增]
@@ -317,7 +315,7 @@ class WorkflowScheduler:
     async def _save_state(self, run_id: str, queue: List[str], context: WorkflowContext, status: str):
         """持久化状态辅助方法"""
         if self._default_checkpointer:
-            state = WorkflowState(
+            state = WorkflowCheckpoint(
                 run_id=run_id,
                 execution_queue=queue,
                 context_data=context.node_outputs, 

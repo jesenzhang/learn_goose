@@ -30,6 +30,8 @@ class WorkflowContext(BaseModel):
     # 用于存储 Loop 变量、环境变量或 Start 节点的初始配置
     variables: Dict[str, Any] = Field(default_factory=dict)
     
+    parent: Optional['WorkflowContext'] = Field(default=None)
+    
     # 元数据: 存储如 parent_run_id 等追踪信息
     meta: Dict[str, Any] = Field(default_factory=dict)
 
@@ -38,9 +40,10 @@ class WorkflowContext(BaseModel):
     
     _sandbox: Optional['ICodeSandbox'] = PrivateAttr(default=None)
     _resources: Optional['ResourceManager'] = PrivateAttr(default=None)
-    _executor: Optional['WorkflowScheduler'] = PrivateAttr(default=None) # 通常是 Scheduler 实例
-    _streamer: Optional['IStreamer'] = PrivateAttr(default=None) # [新增]
+    _executor: Optional['WorkflowScheduler'] = PrivateAttr(default=None)
+    _streamer: Optional['IStreamer'] = PrivateAttr(default=None)
     
+    is_suspended: bool = Field(default=False, description="控制位")
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

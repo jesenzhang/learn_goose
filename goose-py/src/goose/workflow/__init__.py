@@ -22,14 +22,13 @@ from .nodes import (
     MapNode,
     ToolNode,
 )
-from .persistence import (
+from .checkpointer import (
     WorkflowCheckpointer,
-    WorkflowState,
-    WorkflowState,
+    WorkflowCheckpoint,
+    WorkflowCheckpoint,
 )
 from .repository import (
     WorkflowRepository,
-    register_workflow_schemas,
 )
 from .resolver import (
     Selector,
@@ -69,7 +68,7 @@ __all__ = [
     'WorkflowEventType',
     'WorkflowRepository',
     'WorkflowScheduler',
-    'WorkflowState',
+    'WorkflowCheckpoint',
     'register_workflow_schemas',
     'WorkflowDefinition',
     'NodeConfig',

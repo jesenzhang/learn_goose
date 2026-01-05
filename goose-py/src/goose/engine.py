@@ -22,7 +22,7 @@ import goose.globals as G
 
 # Modules schemas
 from goose.session import register_session_schemas,SessionRepository
-from goose.workflow import register_workflow_schemas,WorkflowRepository
+from goose.workflow import WorkflowRepository
 
 # [适配] 引入新的 Schema 定义
 # 建议：为了避免循环引用，Schema 定义最好放在单独的 constants 文件或 persistence/schemas.py
@@ -126,7 +126,6 @@ class GooseEngine:
         
         # 1. 基础模块
         register_session_schemas()
-        register_workflow_schemas() # 这里面包含 workflows 表
         register_event_store_schema()
         register_resource_schema(pm)
         

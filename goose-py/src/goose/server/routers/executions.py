@@ -13,6 +13,31 @@ from goose.server.deps import get_exec_service, get_current_user_id
 
 router = APIRouter(prefix="/api/v1/executions", tags=["executions"])
 
+@router.get("/active")
+async def get_active_executions(
+    service: ExecutionService = Depends(get_exec_service),
+    # 仅限管理员
+    user_id: str = Depends(get_current_user_id) 
+):
+    return ApiResponse(data=await service.list_active_executions())
+
+@router.post("/{run_id}/stop")
+async def stop_execution(
+    run_id: str,
+    service: ExecutionService = Depends(get_exec_service),
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    [管理] 强制停止任务
+    """
+    try:
+        await service.terminate_execution(run_id, user_id)
+        return ApiResponse(message="Execution terminated")
+    except ValueError as e:
+        raise HTTPException(403, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    
 # 1. 异步运行 (返回 ID)
 @router.post("/run")
 async def run_execution(

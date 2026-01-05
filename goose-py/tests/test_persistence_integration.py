@@ -7,15 +7,15 @@ import logging
 # 假设项目路径设置正确
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.goose.persistence import SQLiteBackend, PersistenceManager
-from src.goose.session.repository import register_session_schemas, SessionRepository
-from src.goose.conversation import Message
-
+from goose.persistence import SQLAlchemyBackend, persistence_manager,PersistenceManager
+from goose.session.repository import register_session_schemas, SessionRepository
+from goose.conversation import Message
+from goose.workflow.checkpointer import WorkflowCheckpointRepository,WorkflowCheckpoint
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("test_persistence")
 
-TEST_DB_PATH = "./temp_test_data/test_goose.db"
+db_path = "./temp_test_data/test_goose.db"
 
 async def setup_env():
     if os.path.exists("./temp_test_data"):
@@ -28,17 +28,29 @@ async def main():
 
     # 1. [Infrastructure] 初始化持久化层
     # 这里我们注入具体的 SQLite 实现
-    backend = SQLiteBackend(TEST_DB_PATH)
-    pm = PersistenceManager.initialize(backend)
+    if not db_path.startswith("sqlite") and "://" not in db_path:
+            db_url = f"sqlite+aiosqlite:///{db_path}"
+    else:
+            db_url = db_path
+    backend = SQLAlchemyBackend(db_url)
+    pm:PersistenceManager = persistence_manager
+    pm.set_backend(backend)
 
     # 2. [Module Registration] 注册 Session 模块的 Schema
     # 这一步体现了解耦：Session 模块自己决定表结构，主程序负责加载
-    register_session_schemas()
-
+ 
+    from goose.persistence.repository import BaseRepository
+    print(f"🏠 Test Script BaseRepo ID: {id(BaseRepository)}") # 打印内存地址
+    print(f"🧐 Schemas before boot: {BaseRepository.get_all_schemas()}")
     # 3. [Boot] 启动数据库 (建立连接，创建表)
     await pm.boot()
     print("✅ Persistence Layer Booted (Tables Created).")
 
+    workflow_checkpoint_repo = WorkflowCheckpointRepository(pm)
+    
+    await workflow_checkpoint_repo.save_checkpoint(WorkflowCheckpoint(run_id="test_run", execution_queue=[], context_data={}))
+    
+    test =await workflow_checkpoint_repo.load_checkpoint("test_run")
     # 4. [Logic] 使用 SessionRepository
     # Repository 内部自动使用 PersistenceManager 获取连接
     repo = SessionRepository()

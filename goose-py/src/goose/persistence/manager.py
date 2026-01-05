@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 # 引入新的接口定义
 from .backend import StorageBackend
+from .repository import BaseRepository
 
 logger = logging.getLogger("goose.persistence.manager")
 
@@ -76,6 +77,9 @@ class PersistenceManager:
 
     async def boot(self):
         """启动：连接数据库并应用所有 Schema"""
+        
+        print(f"🏭 Manager Boot BaseRepo ID: {id(BaseRepository)}") # 打印内存地址
+        
         if not self.backend:
             raise RuntimeError("❌ Cannot boot: No backend set.")
         
@@ -83,6 +87,17 @@ class PersistenceManager:
         await self.backend.connect()
         self._is_booted = True
         
+        schemas = BaseRepository.get_all_schemas()
+        if schemas:
+            logger.info(f"🔨 Applying {len(schemas)} registered schemas...")
+            for sql in schemas:
+                try:
+                    # 假设 execute 是执行 SQL 的方法
+                    await self._run_script_safe(sql)
+                except Exception as e:
+                    logger.error(f"Failed to apply schema:\n{sql}\nError: {e}")
+                    raise e
+                
         # 应用所有注册的 Schema
         for script in self._schemas:
             await self._run_script_safe(script)
@@ -133,3 +148,4 @@ class PersistenceManager:
 
 # 全局单例
 persistence_manager = PersistenceManager()
+

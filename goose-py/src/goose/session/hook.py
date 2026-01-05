@@ -1,7 +1,7 @@
 import logging
 import json
 from typing import Any, Dict
-from goose.workflow.hooks import WorkflowHook
+from goose.workflow.hook import WorkflowHook
 from goose.workflow.context import WorkflowContext
 from goose.workflow.graph import Node
 from goose.session.repository import SessionRepository

@@ -20,7 +20,6 @@ import goose.globals as G
 
 # Modules schemas (用于 JIT 注册)
 from goose.session import register_session_schemas
-from goose.workflow import register_workflow_schemas
 from goose.resources.presets import get_system_presets
 from goose.events import register_event_store_schema
 
@@ -42,7 +41,6 @@ async def boot(config: SystemConfig = None) -> G.Runtime:
     
     # 注册各个模块的 Schema (利用 PM 的 Lazy Loading 特性)
     register_session_schemas()
-    register_workflow_schemas()
     register_event_store_schema()
     
     await persistence_manager.boot()

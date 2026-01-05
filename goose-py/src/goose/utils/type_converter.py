@@ -7,6 +7,7 @@ import jsonschema
 
 # 引用核心类型定义 (确保 core/types.py 存在)
 from goose.types import DataType, TypeInfo
+from sqlalchemy import false
 
 # --- 全局配置 ---
 TIME_FORMAT_REGEX = {
@@ -38,6 +39,9 @@ class TypeConverter:
     @staticmethod
     def to_json_schema(typeinfo: TypeInfo) -> Dict[str, Any]:
         """TypeInfo -> JSON Schema"""
+        if typeinfo is None:
+            return {}
+        
         schema = {
             "title": typeinfo.title or None,
             "description": typeinfo.description or None,
@@ -261,6 +265,7 @@ class TypeConverter:
             return TypeInfo(type=DataType.OBJECT)
 
         fields = {}
+        has_inputs_dict_arg = False
         for name, param in sig.parameters.items():
             if name in ('self', 'cls', 'ctx', 'config','context'): 
                 continue
