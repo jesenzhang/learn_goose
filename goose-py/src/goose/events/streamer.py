@@ -89,7 +89,6 @@ class BaseStreamer(IStreamer):
             logger.info(f'Backfilled {len(history_events)} events from store for {self.run_id}')
             
             for event in history_events:
-                logger.info(f"Yielding event {event.seq_id} from store")
                 yield event
                 last_seq_id = max(last_seq_id, event.seq_id)
                 
