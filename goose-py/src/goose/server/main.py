@@ -7,22 +7,22 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 # --- 1. Core & Config ---
-from goose.config import SystemConfig
+from goose.system_config import SystemConfig
 from goose.engine import GooseEngine
 from goose.workflow.converter import WorkflowConverter
 # --- 2. Application Layer (Services) ---
-from goose.app.execution.service import ExecutionService
-from goose.app.workflow.service import WorkflowService
-from goose.app.trigger.manager import TriggerManager
+from goose.app.execution_service.service import ExecutionService
+from goose.app.workflow_service.workflow import WorkflowService
+from goose.app.trigger_service.manager import TriggerManager
 
 # --- 3. Server Layer (Routers) ---
 from goose.server.routers import workflows, executions, trigger,auth
 
 from goose.session import SessionRepository
 from goose.workflow import WorkflowRepository
-from goose.app.execution.repository import ExecutionRepository
-from goose.app.user.repository import UserRepository,UserResourceRepository
-from goose.app.user.service import UserService
+from goose.app.execution_service.repository import ExecutionRepository
+from goose.app.user_service.repository import UserRepository,UserResourceRepository
+from goose.app.user_service.service import UserService
 
 # --- Logging Setup ---
 logging.basicConfig(

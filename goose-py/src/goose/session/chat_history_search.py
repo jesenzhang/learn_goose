@@ -1,10 +1,7 @@
-# goose-py/chat_history_search.py
 import json
 from datetime import datetime
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field
-import aiosqlite
-
 from ..conversation import MessageContent, TextContent
 
 class ChatRecallMessage(BaseModel):

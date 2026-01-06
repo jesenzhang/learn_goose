@@ -2,7 +2,7 @@ import asyncio
 from typing import Optional
 
 # Imports
-from goose.config import SystemConfig
+from goose.system_config import SystemConfig
 from goose.persistence.manager import persistence_manager
 from goose.persistence.drivers import SQLAlchemyBackend
 from goose.registry import sys_registry
@@ -18,10 +18,10 @@ from goose.providers import LLMBuilder
 # Globals
 import goose.globals as G
 
-# Modules schemas (用于 JIT 注册)
-from goose.session import register_session_schemas
+# # Modules schemas (用于 JIT 注册)
+# from goose.session import register_session_schemas
 from goose.resources.presets import get_system_presets
-from goose.events import register_event_store_schema
+# from goose.events import register_event_store_schema
 
 async def boot(config: SystemConfig = None) -> G.Runtime:
     if config is None:
@@ -40,8 +40,8 @@ async def boot(config: SystemConfig = None) -> G.Runtime:
     persistence_manager.set_backend(backend)
     
     # 注册各个模块的 Schema (利用 PM 的 Lazy Loading 特性)
-    register_session_schemas()
-    register_event_store_schema()
+    # register_session_schemas()
+    # register_event_store_schema()
     
     await persistence_manager.boot()
     

@@ -2,8 +2,11 @@ import json
 import time
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List
-from goose.persistence.manager import PersistenceManager
+from goose.persistence import BaseRepository,with_table,TableSpec
+from goose.registry import BaseRegistry
 from .types import ResourceMetadata, ResourceKind, ResourceScope
+from pydantic import BaseModel,Field
+from datetime import datetime,timezone
 
 # --- Trait (Interface) ---
 RESOURCE_TABLE_SCHEMA = """
@@ -22,9 +25,22 @@ RESOURCE_INDEX_SCHEMA = """
         CREATE INDEX IF NOT EXISTS idx_resources_owner ON resources(owner_id);
         """
 
-def register_resource_schema(pm: PersistenceManager):
-    pm.register_schema(RESOURCE_TABLE_SCHEMA)
-    pm.register_schema(RESOURCE_INDEX_SCHEMA)
+class ResourceEntity(BaseModel):
+    id: str = Field(..., description="Resource ID")
+    owner_id: str = Field(..., description="Resource owner ID")
+    kind: ResourceKind = Field(..., description="Resource kind")
+    scope: ResourceScope = Field(..., description="Resource scope")
+    provider: str = Field(..., description="Resource provider")
+    config: dict = Field(..., description="Resource config")
+    # created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    
+# def register_resource_schema(pm: PersistenceManager):
+#     pm.register_schema(RESOURCE_TABLE_SCHEMA)
+#     pm.register_schema(RESOURCE_INDEX_SCHEMA)
         
 class ResourceStore(ABC):
     """
@@ -63,38 +79,49 @@ class SystemResourceStore(ResourceStore):
 
 # --- Implementation: User (Database) ---
 
-class UserResourceStore(ResourceStore):
+
+@with_table(name='resources',model=ResourceEntity,sql=[RESOURCE_TABLE_SCHEMA,RESOURCE_INDEX_SCHEMA],pk='id',priority=0,attr_name='resource_spec')
+class UserResourceStore(BaseRepository,ResourceStore):
     """
     用户自定义资源 (SQL)
     适配 SQLAlchemy 风格 (:param_name)
     """
-    def __init__(self, pm: PersistenceManager):
-        self.pm = pm
-
+    
     async def get_metadata(self, resource_id: str, owner_id: str = None) -> Optional[ResourceMetadata]:
-        if not owner_id:
-            raise ValueError("UserResourceStore requires owner_id query parameter.")
+        
+        entities:List[ResourceEntity] = await self._find(ResourceEntity,filters= {"id": resource_id, "owner_id": owner_id})
+        if entities:
+            e = entities[0]
+            return ResourceMetadata(
+                id=e.id,
+                kind=ResourceKind(e.kind),
+                scope=ResourceScope(e.scope),
+                provider=e.provider,
+                config=e.config
+            )
+        # if not owner_id:
+        #     raise ValueError("UserResourceStore requires owner_id query parameter.")
 
-        # [Change] 使用 :param 命名参数风格
-        sql = "SELECT * FROM resources WHERE id = :id AND owner_id = :owner_id"
+        # # [Change] 使用 :param 命名参数风格
+        # sql = "SELECT * FROM resources WHERE id = :id AND owner_id = :owner_id"
         
-        # [Change] 传入字典参数
-        row = await self.pm.fetch_one(sql, {"id": resource_id, "owner_id": owner_id})
+        # # [Change] 传入字典参数
+        # row = await self.pm.fetch_one(sql, {"id": resource_id, "owner_id": owner_id})
         
-        if row:
-            try:
-                return ResourceMetadata(
-                    id=row["id"],
-                    kind=ResourceKind(row["kind"]),
-                    scope=ResourceScope(row["scope"]),
-                    provider=row["provider"],
-                    config=json.loads(row["config_json"])
-                )
-            except Exception as e:
-                # 实际生产中建议使用 logging
-                print(f"Error parsing resource {resource_id}: {e}")
-                return None
-        return None
+        # if row:
+        #     try:
+        #         return ResourceMetadata(
+        #             id=row["id"],
+        #             kind=ResourceKind(row["kind"]),
+        #             scope=ResourceScope(row["scope"]),
+        #             provider=row["provider"],
+        #             config=json.loads(row["config_json"])
+        #         )
+        #     except Exception as e:
+        #         # 实际生产中建议使用 logging
+        #         print(f"Error parsing resource {resource_id}: {e}")
+        #         return None
+        # return None
 
     async def save_metadata(self, meta: ResourceMetadata, owner_id: str = None) -> None:
         if not owner_id:
@@ -102,26 +129,38 @@ class UserResourceStore(ResourceStore):
 
         now = time.time()
         
-        # [Change] 使用 :param 风格
-        # 注意：INSERT OR REPLACE 是 SQLite 特有语法。
-        # 如果要兼容 Postgres，需要改写为标准的 Upsert (ON CONFLICT DO UPDATE)
-        # 这里为了保持简单，沿用 SQLite 语法
-        sql = """
-        INSERT OR REPLACE INTO resources 
-        (id, owner_id, kind, scope, provider, config_json, created_at, updated_at)
-        VALUES (:id, :owner_id, :kind, :scope, :provider, :config_json, :created_at, :updated_at)
-        """
         
-        # [Change] 传入字典参数
-        params = {
-            "id": meta.id,
-            "owner_id": owner_id,
-            "kind": meta.kind.value,
-            "scope": meta.scope.value,
-            "provider": meta.provider,
-            "config_json": json.dumps(meta.config),
-            "created_at": now, # 简化处理，每次都更新创建时间（Replace语义）
-            "updated_at": now
-        }
+        self._upsert(ResourceEntity,ResourceEntity(
+            id=meta.id,
+            owner_id=owner_id,
+            kind=meta.kind.value,
+            scope=meta.scope.value,
+            provider=meta.provider,
+            config=meta.config,
+            created_at=now,
+            updated_at=now
+        ))
         
-        await self.pm.execute(sql, params)
+        # # [Change] 使用 :param 风格
+        # # 注意：INSERT OR REPLACE 是 SQLite 特有语法。
+        # # 如果要兼容 Postgres，需要改写为标准的 Upsert (ON CONFLICT DO UPDATE)
+        # # 这里为了保持简单，沿用 SQLite 语法
+        # sql = """
+        # INSERT OR REPLACE INTO resources 
+        # (id, owner_id, kind, scope, provider, config_json, created_at, updated_at)
+        # VALUES (:id, :owner_id, :kind, :scope, :provider, :config_json, :created_at, :updated_at)
+        # """
+        
+        # # [Change] 传入字典参数
+        # params = {
+        #     "id": meta.id,
+        #     "owner_id": owner_id,
+        #     "kind": meta.kind.value,
+        #     "scope": meta.scope.value,
+        #     "provider": meta.provider,
+        #     "config_json": json.dumps(meta.config),
+        #     "created_at": now, # 简化处理，每次都更新创建时间（Replace语义）
+        #     "updated_at": now
+        # }
+        
+        # await self.pm.execute(sql, params)

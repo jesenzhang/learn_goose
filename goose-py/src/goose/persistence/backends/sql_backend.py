@@ -1,9 +1,13 @@
 from typing import Any, Dict, List, Tuple
+import logging
 from ..backend import PersistenceBackend
 from ..spec import TableSpec
 from ..drivers.base import SQLDriver
 from ..drivers.sqlalchemy_driver import SQLAlchemyDriver
 from contextlib import asynccontextmanager
+
+
+logger = logging.getLogger(__name__)
 
 class SQLBackend(PersistenceBackend):
     """
@@ -13,13 +17,35 @@ class SQLBackend(PersistenceBackend):
         # 默认注入 SQLAlchemyDriver，也可以通过工厂注入其他
         self.driver: SQLDriver = SQLAlchemyDriver(db_url)
 
-    async def boot(self, schemas: list):
+    async def boot(self, schemas: List[str|List[str]]):
         await self.driver.connect()
         for item in schemas:
             try:
-                await self.driver.execute(item['sql'])
-            except Exception:
-                pass # 忽略已存在错误
+                # 2. 规范化为 List[str]
+                # 这里是我们处理 "多条语句" 的核心：依靠 List 结构，而不是字符串拆分
+                sql_list = []
+                if isinstance(item, str):
+                    # 如果是单字符串，去除首尾空白
+                    sql_list = [item.strip()]
+                elif isinstance(item, list):
+                    # 如果是列表，过滤空字符串
+                    sql_list = [s.strip() for s in item if s.strip()]
+                
+                # 3. 逐条执行
+                # 这样每条语句都是独立的，出错了也能知道具体是哪一条
+                for sql in sql_list:
+                    # 可选：做一个简单的防御性检查，如果用户真的误传了带分号的串，给个警告
+                    if ";" in sql and not sql.strip().endswith(";"):
+                        # 这只是一个软性提示，不是硬性拆分
+                        # logger.warning(f"Detected potential multi-statement SQL in single string: {sql[:50]}...")
+                        pass
+
+                    await self.driver.execute(sql)
+                    
+            except Exception as e:
+                # 建议打印日志，而不是默默 pass，否则排查 Schema 问题会很痛苦
+                logger.error(f"Failed to init table: {e}")
+                pass
 
     def _build_where(self, filters: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         """

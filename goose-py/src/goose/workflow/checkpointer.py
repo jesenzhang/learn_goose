@@ -4,10 +4,11 @@ from pydantic import BaseModel,Field
 from datetime import datetime
 from goose.persistence import BaseRepository,with_table,TableSpec
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
-class WorkflowCheckpoint(BaseModel):
+class WorkflowCheckpointEntity(BaseModel):
     """
     [DTO] 工作流状态快照。
     用于在 Scheduler 和 Repository 之间传输数据。
@@ -24,7 +25,7 @@ class WorkflowCheckpoint(BaseModel):
     # 状态元数据
     status: str = "pending" # pending, running, suspended, completed, failed
     error: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: float = Field(default_factory=time.time)
     
     # --- 兼容性属性 (可选) ---
     @property
@@ -37,10 +38,10 @@ class WorkflowCheckpointer(Protocol):
     Checkpointer 只是一个行为契约：保存和加载状态。
     它不关心 Session 是怎么创建的。
     """
-    async def save_checkpoint(self, state: WorkflowCheckpoint) -> None:
+    async def save_checkpoint(self, state: WorkflowCheckpointEntity) -> None:
         ...
 
-    async def load_checkpoint(self, run_id: str) -> Optional[WorkflowCheckpoint]:
+    async def load_checkpoint(self, run_id: str) -> Optional[WorkflowCheckpointEntity]:
         ...
         
 WORKFLOW_CHECKPOINT_SCHEMA =  """
@@ -50,26 +51,26 @@ WORKFLOW_CHECKPOINT_SCHEMA =  """
         context_data TEXT,      -- JSON: 存储 node_outputs
         status TEXT,            -- running, suspended, completed, failed
         error TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at REAL
     );
     """
     
-@with_table(name='workflow_checkpoints',model=WorkflowCheckpoint,sql=WORKFLOW_CHECKPOINT_SCHEMA,priority=0,pk='run_id',attr_name='checkpoint_spec')
+@with_table(name='workflow_checkpoints',model=WorkflowCheckpointEntity,sql=WORKFLOW_CHECKPOINT_SCHEMA,priority=0,pk='run_id',attr_name='checkpoint_spec')
 class WorkflowCheckpointRepository(BaseRepository,WorkflowCheckpointer):
     """WorkflowCheckpointRepository"""
 
-    async def save_checkpoint(self, state: WorkflowCheckpoint):
+    async def save_checkpoint(self, state: WorkflowCheckpointEntity):
         """保存状态"""
         try:
-            await self._upsert(WorkflowCheckpoint,state)
+            await self._upsert(WorkflowCheckpointEntity,state)
         except Exception as e:
             logger.error(f"❌ FATAL ERROR: Database Save Failed! Reason: {e}")
             raise e
         
-    async def load_checkpoint(self, run_id: str) -> Optional[WorkflowCheckpoint]:
+    async def load_checkpoint(self, run_id: str) -> Optional[WorkflowCheckpointEntity]:
         """加载状态"""
         try:
-            data = await self._get(WorkflowCheckpoint,run_id)
+            data = await self._get(WorkflowCheckpointEntity,run_id)
             return data
         except Exception as e:
             logger.error(f"❌ FATAL ERROR: Database Load Failed! Reason: {e}")

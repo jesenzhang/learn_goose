@@ -14,7 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 # --- Goose 模块导入 ---
 from goose import workflow
-from goose.config import SystemConfig
+from goose.system_config import SystemConfig
 from goose.events import IStreamer
 from goose.events.types import SystemEvents, Event
 from goose.workflow.scheduler import WorkflowScheduler, Graph

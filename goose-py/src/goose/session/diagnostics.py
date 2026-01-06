@@ -6,8 +6,9 @@ import platform
 import sys
 from datetime import datetime
 from typing import Any
+from .manager import SessionManager
 
-async def generate_diagnostics(session_manager, session_id: str) -> bytes:
+async def generate_diagnostics(session_manager:SessionManager, session_id: str) -> bytes:
     """
     生成诊断 ZIP 包的二进制数据
     :param session_manager: SessionManager 实例
@@ -32,7 +33,7 @@ async def generate_diagnostics(session_manager, session_id: str) -> bytes:
         # 3. 导出 Session 数据 (Session.json)
         try:
             session = await session_manager.get_session(session_id)
-            messages = await session_manager.get_storage().get_messages(session_id)
+            messages = await session_manager.get_messages(session_id)
             
             export_data = {
                 "session": session.model_dump(mode='json', by_alias=True),

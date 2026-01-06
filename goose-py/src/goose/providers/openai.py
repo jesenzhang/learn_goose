@@ -2,6 +2,9 @@ import os
 import json
 import logging
 from typing import List, Tuple, Optional, Dict, Any, AsyncGenerator, Union
+import httpx
+from tenacity import retry, wait_random_exponential, stop_after_attempt, retry_if_exception_type
+import asyncio
 
 from openai import AsyncOpenAI
 from openai import (
@@ -131,15 +134,34 @@ class OpenAIProvider(Provider):
             # 允许部分场景下延迟报错，但在初始化时最好检查
             logger.warning("OpenAI API Key not found in config or environment.")
 
-        self.client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            organization=organization,
-            project=project,
-            timeout=timeout,
-            default_headers=extra_headers or None
+        connection_limits = httpx.Limits(
+            max_connections=500, 
+            max_keepalive_connections=100
+        )
+        
+        # timeout: 设置合理的超时时间
+        self.http_client = httpx.AsyncClient(
+            limits=connection_limits,
+            timeout=httpx.Timeout(60.0, connect=10.0)
         )
 
+        # 2. 将 http_client 注入到 AsyncOpenAI
+        self.client = AsyncOpenAI(
+            api_key=api_key, 
+            base_url=base_url,
+            http_client=self.http_client,
+            organization=organization,
+            project=project,
+            default_headers=extra_headers or None
+        )
+        # 2. 并发限制 (比如限制为 100 并发)
+        self._sem = asyncio.Semaphore(100)
+        
+        
+    async def close(self):
+        # 记得在应用关闭时清理资源
+        await self.http_client.aclose()
+        
     @classmethod
     def from_env(cls, model_config: ModelConfig) -> "OpenAIProvider":
         api_key = os.getenv("OPENAI_API_KEY")
@@ -185,6 +207,11 @@ class OpenAIProvider(Provider):
     def get_model_config(self) -> ModelConfig:
         return self.model_config
 
+    @retry(
+        wait=wait_random_exponential(multiplier=1, max=60),
+        stop=stop_after_attempt(5),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError))
+    )
     async def complete(
         self, 
         system: str, 
@@ -201,62 +228,66 @@ class OpenAIProvider(Provider):
         }
         if tools and len(tools) > 0:
             payload["tools"] = openai_tools
-        try:
-            # Tool Monitor: Log what we are sending
-            if openai_tools:
-                logger.debug(f"Sending request with {len(openai_tools)} tools")
             
-            response = await self.client.chat.completions.create(**payload)
-            
-            choice = response.choices[0]
-            msg_data = choice.message
-            
-            content_list = []
-            # DeepSeek support (reasoning_content)
-            reasoning = getattr(msg_data, "reasoning_content", None)
-            content_str = msg_data.content or ""
-            
-            if reasoning:
-                content_str = f"[Thinking]\n{reasoning}\n\n[Answer]\n{content_str}"
-            
-            if content_str:
-                content_list.append(TextContent(text=content_str))
-            
-            # Extract Tool Calls
-            if msg_data.tool_calls:
-                for tc in msg_data.tool_calls:
-                    try:
-                        # [优化] 使用 repair_and_parse_json 替代 json.loads
-                        args = repair_and_parse_json(tc.function.arguments)
-                    except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse JSON args for tool {tc.function.name}: {tc.function.arguments}")
-                        # [优化] 如果实在解析不了，将原始内容放入 'raw' 字段，让 Agent 有机会看到错误并重试
-                        args = {"error": "json_parse_error", "raw": tc.function.arguments}
-                        
-                    req = CallToolRequestParam(name=tc.function.name, arguments=args)
-                    content_list.append(ToolRequest(
-                        id=tc.id,
-                        toolCall=ToolCall.success(req)
-                    ))
+        async with self._sem:
+            try:
+                # Tool Monitor: Log what we are sending
+                if openai_tools:
+                    logger.debug(f"Sending request with {len(openai_tools)} tools")
+                
+                response = await self.client.chat.completions.create(**payload)
+                
+                choice = response.choices[0]
+                msg_data = choice.message
+                
+                content_list = []
+                # DeepSeek support (reasoning_content)
+                reasoning = getattr(msg_data, "reasoning_content", None)
+                content_str = msg_data.content or ""
+                
+                if reasoning:
+                    content_str = f"[Thinking]\n{reasoning}\n\n[Answer]\n{content_str}"
+                
+                if content_str:
+                    content_list.append(TextContent(text=content_str))
+                
+                # Extract Tool Calls
+                if msg_data.tool_calls:
+                    for tc in msg_data.tool_calls:
+                        try:
+                            # [优化] 使用 repair_and_parse_json 替代 json.loads
+                            args = repair_and_parse_json(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse JSON args for tool {tc.function.name}: {tc.function.arguments}")
+                            # [优化] 如果实在解析不了，将原始内容放入 'raw' 字段，让 Agent 有机会看到错误并重试
+                            args = {"error": "json_parse_error", "raw": tc.function.arguments}
+                            
+                        req = CallToolRequestParam(name=tc.function.name, arguments=args)
+                        content_list.append(ToolRequest(
+                            id=tc.id,
+                            toolCall=ToolCall.success(req)
+                        ))
 
-            result_message = Message(role=Role.ASSISTANT, content=content_list)
-            
-            usage = Usage()
-            if response.usage:
-                usage = Usage(
-                    input_tokens=response.usage.prompt_tokens,
-                    output_tokens=response.usage.completion_tokens,
-                    total_tokens=response.usage.total_tokens
-                )
+                result_message = Message(role=Role.ASSISTANT, content=content_list)
+                
+                usage = Usage()
+                if response.usage:
+                    usage = Usage(
+                        input_tokens=response.usage.prompt_tokens,
+                        output_tokens=response.usage.completion_tokens,
+                        total_tokens=response.usage.total_tokens
+                    )
 
-            provider_usage = ProviderUsage(model=self.model_config.model_name, usage=usage)
-            await ensure_usage_tokens(provider_usage, system, messages, result_message, tools)
+                provider_usage = ProviderUsage(model=self.model_config.model_name, usage=usage)
+                await ensure_usage_tokens(provider_usage, system, messages, result_message, tools)
 
-            return result_message, provider_usage
+                return result_message, provider_usage
 
-        except Exception as e:
-            self._handle_error(e)
+            except Exception as e:
+                self._handle_error(e)
 
+    
+    
     async def stream(
         self,
         system: str,
@@ -274,143 +305,159 @@ class OpenAIProvider(Provider):
         }
         if tools and len(tools) > 0:
             payload["tools"] = openai_tools
-        try:
-            stream = await self.client.chat.completions.create(**payload)
-        except Exception as e:
-            self._handle_error(e)
-            return
-
-        final_usage: Optional[ProviderUsage] = None
-        accumulated_text: str = ""
+            
+            
+        # =================================================
+        # 1. 定义受保护的连接函数 (只重试这个!)
+        # =================================================
+        @retry(
+            wait=wait_random_exponential(min=1, max=60),
+            stop=stop_after_attempt(5),
+            retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
+            reraise=True
+        )
+        async def _create_stream_connection():
+            # 这里只负责建立连接，并不读取内容
+            return await self.client.chat.completions.create(**payload)
         
-        # Buffer for parallel tool calling (OpenAI sends chunks by index)
-        # Structure: { index: { "id": str, "name": str, "args_parts": [] } }
-        tool_call_buffer: Dict[int, Dict[str, Any]] = {}
+        async with self._sem:
+            try:
+                stream = await _create_stream_connection()
+            except Exception as e:
+                self._handle_error(e)
+                return
 
-        try:
-            async for chunk in stream:
-                # 1. Handle Usage
-                if hasattr(chunk, "usage") and chunk.usage:
-                    usage = Usage(
-                        input_tokens=chunk.usage.prompt_tokens,
-                        output_tokens=chunk.usage.completion_tokens,
-                        total_tokens=chunk.usage.total_tokens
-                    )
-                    final_usage = ProviderUsage(model=chunk.model, usage=usage)
-                    yield None, final_usage
+            final_usage: Optional[ProviderUsage] = None
+            accumulated_text: str = ""
+            
+            # Buffer for parallel tool calling (OpenAI sends chunks by index)
+            # Structure: { index: { "id": str, "name": str, "args_parts": [] } }
+            tool_call_buffer: Dict[int, Dict[str, Any]] = {}
 
-                if not chunk.choices: 
-                    continue
-                
-                delta = chunk.choices[0].delta
-                
-                # 2. Extract Text & Reasoning
-                content_text = ""
-                # Standard content
-                if hasattr(delta, "content") and delta.content:
-                    content_text = delta.content
-                elif isinstance(delta, dict) and "content" in delta:
-                    content_text = delta["content"]
-                
-                # DeepSeek/R1 Reasoning
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    # In a real GUI, we might want to separate this. 
-                    # For now, we prepend it or stream it as text.
-                    content_text = delta.reasoning_content + content_text
+            try:
+                async for chunk in stream:
+                    # 1. Handle Usage
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage = Usage(
+                            input_tokens=chunk.usage.prompt_tokens,
+                            output_tokens=chunk.usage.completion_tokens,
+                            total_tokens=chunk.usage.total_tokens
+                        )
+                        final_usage = ProviderUsage(model=chunk.model, usage=usage)
+                        yield None, final_usage
 
-                if content_text:
-                    accumulated_text += content_text
-                    partial = Message(
-                        role=Role.ASSISTANT, 
-                        content=[TextContent(text=content_text)]
-                    )
-                    yield partial, None
-                
-                # 3. Handle Streaming Tool Calls
-                tool_calls = getattr(delta, "tool_calls", None)
-                if not tool_calls and isinstance(delta, dict):
-                    tool_calls = delta.get("tool_calls")
-
-                if tool_calls:
-                    for tc in tool_calls:
-                        idx = tc.index
-                        if idx not in tool_call_buffer:
-                            tool_call_buffer[idx] = {"id": "", "name": "", "args_parts": []}
-                        
-                        # ID usually comes in the first chunk for that index
-                        if hasattr(tc, "id") and tc.id: 
-                            tool_call_buffer[idx]["id"] = tc.id
-                        
-                        if hasattr(tc, "function"):
-                            fn = tc.function
-                            if hasattr(fn, "name") and fn.name: 
-                                tool_call_buffer[idx]["name"] = fn.name
-                            if hasattr(fn, "arguments") and fn.arguments: 
-                                tool_call_buffer[idx]["args_parts"].append(fn.arguments)
-
-                # 4. Finalize Tool Calls on Stop
-                finish_reason = getattr(chunk.choices[0], "finish_reason", None)
-                if finish_reason in ["tool_calls", "stop", "function_call"] and tool_call_buffer:
-                    tool_contents = []
+                    if not chunk.choices: 
+                        continue
                     
-                    # Sort by index to maintain order
-                    sorted_indexes = sorted(tool_call_buffer.keys())
-                    for idx in sorted_indexes:
+                    delta = chunk.choices[0].delta
+                    
+                    # 2. Extract Text & Reasoning
+                    content_text = ""
+                    # Standard content
+                    if hasattr(delta, "content") and delta.content:
+                        content_text = delta.content
+                    elif isinstance(delta, dict) and "content" in delta:
+                        content_text = delta["content"]
+                    
+                    # DeepSeek/R1 Reasoning
+                    if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                        # In a real GUI, we might want to separate this. 
+                        # For now, we prepend it or stream it as text.
+                        content_text = delta.reasoning_content + content_text
+
+                    if content_text:
+                        accumulated_text += content_text
+                        partial = Message(
+                            role=Role.ASSISTANT, 
+                            content=[TextContent(text=content_text)]
+                        )
+                        yield partial, None
+                    
+                    # 3. Handle Streaming Tool Calls
+                    tool_calls = getattr(delta, "tool_calls", None)
+                    if not tool_calls and isinstance(delta, dict):
+                        tool_calls = delta.get("tool_calls")
+
+                    if tool_calls:
+                        for tc in tool_calls:
+                            idx = tc.index
+                            if idx not in tool_call_buffer:
+                                tool_call_buffer[idx] = {"id": "", "name": "", "args_parts": []}
+                            
+                            # ID usually comes in the first chunk for that index
+                            if hasattr(tc, "id") and tc.id: 
+                                tool_call_buffer[idx]["id"] = tc.id
+                            
+                            if hasattr(tc, "function"):
+                                fn = tc.function
+                                if hasattr(fn, "name") and fn.name: 
+                                    tool_call_buffer[idx]["name"] = fn.name
+                                if hasattr(fn, "arguments") and fn.arguments: 
+                                    tool_call_buffer[idx]["args_parts"].append(fn.arguments)
+
+                    # 4. Finalize Tool Calls on Stop
+                    finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+                    if finish_reason in ["tool_calls", "stop", "function_call"] and tool_call_buffer:
+                        tool_contents = []
+                        
+                        # Sort by index to maintain order
+                        sorted_indexes = sorted(tool_call_buffer.keys())
+                        for idx in sorted_indexes:
+                            data = tool_call_buffer[idx]
+                            full_args_str = "".join(data["args_parts"])
+                            
+                            try:
+                                # [优化] 使用 repair_and_parse_json
+                                if not full_args_str:
+                                    args_obj = {}
+                                else:
+                                    args_obj = repair_and_parse_json(full_args_str)
+                            except json.JSONDecodeError as e:
+                                logger.error(f"JSON Parse Error for tool {data['name']}: {e} | Raw: {full_args_str}")
+                                # Fallback: expose raw string
+                                args_obj = {"error": "json_parse_error", "raw": full_args_str}
+                            param = CallToolRequestParam(name=data["name"], arguments=args_obj)
+                            
+                            # Generate ID if missing (some local models omit ID)
+                            call_id = data["id"] or f"call_{idx}_{os.urandom(4).hex()}"
+                            
+                            tool_contents.append(ToolRequest(
+                                id=call_id,
+                                toolCall=ToolCall.success(param)
+                            ))
+                        
+                        if tool_contents:
+                            yield Message(role=Role.ASSISTANT, content=tool_contents), None
+
+            except Exception as e:
+                self._handle_error(e)
+
+            # 5. Usage Fallback
+            if final_usage is None:
+                full_content_list = []
+                if accumulated_text:
+                    full_content_list.append(TextContent(text=accumulated_text))
+                
+                # Reconstruct tool calls for token counting
+                if tool_call_buffer:
+                    for idx in sorted(tool_call_buffer.keys()):
                         data = tool_call_buffer[idx]
-                        full_args_str = "".join(data["args_parts"])
-                        
-                        try:
-                            # [优化] 使用 repair_and_parse_json
-                            if not full_args_str:
-                                args_obj = {}
-                            else:
-                                args_obj = repair_and_parse_json(full_args_str)
-                        except json.JSONDecodeError as e:
-                            logger.error(f"JSON Parse Error for tool {data['name']}: {e} | Raw: {full_args_str}")
-                            # Fallback: expose raw string
-                            args_obj = {"error": "json_parse_error", "raw": full_args_str}
-                        param = CallToolRequestParam(name=data["name"], arguments=args_obj)
-                        
-                        # Generate ID if missing (some local models omit ID)
-                        call_id = data["id"] or f"call_{idx}_{os.urandom(4).hex()}"
-                        
-                        tool_contents.append(ToolRequest(
-                            id=call_id,
+                        full_args = "".join(data["args_parts"])
+                        param = CallToolRequestParam(name=data["name"], arguments={"raw": full_args})
+                        full_content_list.append(ToolRequest(
+                            id=data["id"] or "unknown",
                             toolCall=ToolCall.success(param)
                         ))
-                    
-                    if tool_contents:
-                        yield Message(role=Role.ASSISTANT, content=tool_contents), None
 
-        except Exception as e:
-            self._handle_error(e)
-
-        # 5. Usage Fallback
-        if final_usage is None:
-            full_content_list = []
-            if accumulated_text:
-                full_content_list.append(TextContent(text=accumulated_text))
-            
-            # Reconstruct tool calls for token counting
-            if tool_call_buffer:
-                 for idx in sorted(tool_call_buffer.keys()):
-                    data = tool_call_buffer[idx]
-                    full_args = "".join(data["args_parts"])
-                    param = CallToolRequestParam(name=data["name"], arguments={"raw": full_args})
-                    full_content_list.append(ToolRequest(
-                        id=data["id"] or "unknown",
-                        toolCall=ToolCall.success(param)
-                    ))
-
-            full_response_message = Message(role=Role.ASSISTANT, content=full_content_list)
-            estimated_usage = ProviderUsage(
-                model=self.model_config.model_name, 
-                usage=Usage(input_tokens=0, output_tokens=0, total_tokens=0)
-            )
-            await ensure_usage_tokens(
-                estimated_usage, system, messages, full_response_message, tools
-            )
-            yield None, estimated_usage
+                full_response_message = Message(role=Role.ASSISTANT, content=full_content_list)
+                estimated_usage = ProviderUsage(
+                    model=self.model_config.model_name, 
+                    usage=Usage(input_tokens=0, output_tokens=0, total_tokens=0)
+                )
+                await ensure_usage_tokens(
+                    estimated_usage, system, messages, full_response_message, tools
+                )
+                yield None, estimated_usage
 
     async def create_embeddings(self, texts: List[str]) -> List[List[float]]:
         if not texts:

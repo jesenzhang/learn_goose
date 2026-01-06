@@ -1,11 +1,3 @@
-# goose-py/extension_data.py
-from typing import Dict, Any, Optional, Type, TypeVar
-from pydantic import BaseModel, Field
-
-T = TypeVar("T", bound=BaseModel)
-
-# src/goose/session/extension_data.py
-
 from typing import Dict, Any, Optional, Type, TypeVar
 from pydantic import BaseModel, Field
 

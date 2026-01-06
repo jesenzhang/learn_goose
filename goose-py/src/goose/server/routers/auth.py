@@ -2,11 +2,11 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from goose.config import SystemConfig
+from goose.system_config import SystemConfig
 from pydantic import BaseModel
 
 from goose.server.utils import create_access_token_by_config,decode_access_token_by_config
-from goose.app.user.service import UserService
+from goose.app.user_service.service import UserService
 from goose.server.deps import get_user_service,get_sys_config
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])

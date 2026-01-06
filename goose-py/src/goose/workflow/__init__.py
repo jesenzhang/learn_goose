@@ -24,8 +24,8 @@ from .nodes import (
 )
 from .checkpointer import (
     WorkflowCheckpointer,
-    WorkflowCheckpoint,
-    WorkflowCheckpoint,
+    WorkflowCheckpointEntity,
+    WorkflowCheckpointEntity,
 )
 from .repository import (
     WorkflowRepository,
@@ -68,7 +68,7 @@ __all__ = [
     'WorkflowEventType',
     'WorkflowRepository',
     'WorkflowScheduler',
-    'WorkflowCheckpoint',
+    'WorkflowCheckpointEntity',
     'register_workflow_schemas',
     'WorkflowDefinition',
     'NodeConfig',

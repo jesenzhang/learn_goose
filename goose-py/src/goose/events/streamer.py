@@ -2,11 +2,12 @@ from abc import ABC, abstractmethod
 import asyncio
 from enum import Enum
 from typing import Any, AsyncGenerator, Optional,Union,TypeVar
-from goose.events.bus import IEventBus
-from goose.events.store import IEventStore
-from goose.events.types import Event,SystemEvents
+from .bus import IEventBus
+from .store import IEventStore
+from .types import Event,SystemEvents
 import logging
 from pydantic import BaseModel
+
 E = TypeVar("E", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,8 @@ class IStreamer(ABC):
     async def listen(self, after_seq_id: int = -1) -> AsyncGenerator[E, None]:
         """监听流 (Memory Bus + Backfill)"""
         pass
-    
+
+
 class BaseStreamer(IStreamer):
     """
     [基础层] 通用流式管理器。

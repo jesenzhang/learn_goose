@@ -4,9 +4,10 @@ import json
 import logging
 from typing import List, Dict, Any, ClassVar, Optional,Type,TYPE_CHECKING,Union,AsyncGenerator
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from .spec import TableSpec
 if TYPE_CHECKING:
-    from goose.persistence.manager import PersistenceManager
+    from .manager import PersistenceManager
 from datetime import datetime
 
 logger = logging.getLogger("goose.persistence")
@@ -14,7 +15,7 @@ logger = logging.getLogger("goose.persistence")
 def with_table(
     name: str,
     model: Type[BaseModel],
-    sql: str,
+    sql: Union[str, List[str]],
     pk: str = "id",
     priority: int = 0,
     attr_name: str = None
@@ -36,7 +37,8 @@ def with_table(
             model_class=model,
             schema_sql=sql,
             pk_field=pk,
-            priority=priority
+            priority=priority,
+            source=cls.__name__
         )
 
         # 2. 自动注入属性 (方便 self._get(self.TBL_XXX) 调用)
@@ -51,12 +53,7 @@ def with_table(
 
         # 3. 注册到 BaseRepository 的全局注册表
         # 注意：这里我们直接操作 BaseRepository 的类属性
-        BaseRepository._registered_schemas.append({
-            "sql": spec.schema_sql,
-            "priority": spec.priority,
-            "table": spec.table_name,
-            "source": cls.__name__
-        })
+        BaseRepository._registered_table_specs.append(spec)
         if not hasattr(cls, '_model_index'): cls._model_index = {}
         cls._model_index[model] = spec
         
@@ -76,7 +73,7 @@ class BaseRepository:
     
     # 全局 Schema 注册表 (单例)
     # 结构: [{"sql": "...", "priority": 0, "source": "RepoName", "table": "table_name"}]
-    _registered_schemas: ClassVar[List[Dict[str, Any]]] = []
+    _registered_table_specs: ClassVar[List[TableSpec]] = []
     _model_index: ClassVar[Dict[Type[BaseModel], TableSpec]] = {}
     
     def __init__(self, pm:'PersistenceManager' = None):
@@ -104,11 +101,7 @@ class BaseRepository:
         
         for _, attr in cls.__dict__.items():
             if isinstance(attr, TableSpec):
-                BaseRepository._registered_schemas.append({
-                    "sql": attr.schema_sql,
-                    "priority": attr.priority,
-                    "table": attr.table_name
-                })
+                BaseRepository._registered_table_specs.append(attr)
                 BaseRepository._model_index[attr.model_class] = attr
                 
     def _resolve_spec(self, token):
@@ -117,11 +110,11 @@ class BaseRepository:
         raise ValueError(f"Spec not found for {token}")
     
     @classmethod
-    def get_all_schemas(cls) -> List[str]:
+    def get_all_schemas(cls) -> List[str|list[str]]:
         """供 PersistenceManager.boot() 调用"""
         # 按优先级升序排序 (0 -> 10 -> 100)
-        sorted_items = sorted(BaseRepository._registered_schemas, key=lambda x: x['priority'])
-        return [item['sql'] for item in sorted_items]
+        sorted_items = sorted(BaseRepository._registered_table_specs, key=lambda x: x.priority)
+        return [item.schema_sql for item in sorted_items]
 
     
     # --- Data Mapper ---

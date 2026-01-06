@@ -3,6 +3,7 @@ import json
 from enum import Enum
 from typing import List, Optional, Any, Dict, Union, Literal
 from pydantic import BaseModel, Field, ConfigDict,model_validator
+import uuid
 
 # --- 基础内容定义 ---
 class Role(str, Enum):
@@ -136,12 +137,15 @@ class Message(BaseModel):
     """
     支持智能构造的 Message 类
     """
-    id: Optional[str] = None
-    role: Role
-    created: int = Field(default_factory=lambda: int(time.time()))
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8], description="消息ID")
+    role: Role = Field(default=Role.USER, description="消息角色")
+
     content: List[MessageContent] = Field(default_factory=list)
     metadata: MessageMetadata = Field(default_factory=MessageMetadata)
 
+    session_id: Optional[str] = Field(default=None, description="所属会话ID")
+    created_at: float = Field(default_factory=time.time, description="消息创建时间")
+    
     model_config = ConfigDict(populate_by_name=True)
 
     # =========================================================================

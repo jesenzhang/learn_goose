@@ -45,7 +45,7 @@ class WorkflowReq(BaseModel):
 
 
 # --- 执行记录响应 ---
-class ExecutionModelDTO(BaseModel):
+class ExecutionEntity(BaseModel):
     """ExecutionModel的Pydantic版本，用于API响应"""
     id: str
     workflow_id: str

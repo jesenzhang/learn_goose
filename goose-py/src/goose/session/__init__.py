@@ -2,7 +2,7 @@ from .types import Session, SessionType
 from .manager import SessionManager
 from .extension_data import ExtensionData
 from .chat_history_search import ChatHistorySearch, ChatRecallResult
-from .repository import SessionRepository,register_session_schemas
+from .repository import SessionRepository
 __all__ = [
     "Session",
     "SessionType",
@@ -11,5 +11,4 @@ __all__ = [
     "ChatHistorySearch",
     "ChatRecallResult",
     "SessionRepository",
-    "register_session_schemas",
 ]

@@ -1,5 +1,5 @@
 from typing import List
-from goose.config import SystemConfig # 引入类型
+from goose.system_config import SystemConfig # 引入类型
 from goose.resources.types import ResourceMetadata, ResourceKind, ResourceScope
 
 # [修改] 接收 config 参数

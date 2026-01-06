@@ -5,7 +5,7 @@ from typing import AsyncGenerator, Any,Dict,Optional
 from fastapi import Request
 from goose.events import SystemEvents, Event
 from goose.utils.security import create_access_token,decode_access_token
-from goose.config import SystemConfig
+from goose.system_config import SystemConfig
 
 
 def create_access_token_by_config(data: Dict, config: SystemConfig) -> str:

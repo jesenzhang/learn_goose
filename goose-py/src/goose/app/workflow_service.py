@@ -9,7 +9,7 @@ from goose.workflow.scheduler import WorkflowScheduler
 from goose.workflow.converter import WorkflowConverter
 from goose.adapter import AdapterManager
 from goose.workflow import WorkflowDefinition, WorkflowRepository
-from goose.app.user.repository import UserResourceRepository
+from goose.app.user_service import UserResourceRepository
 
 logger = logging.getLogger("goose.app.workflow")
 
@@ -20,17 +20,17 @@ class WorkflowService:
                  user_resource_repository: UserResourceRepository):
         self.repo = workflow_repository
         self.converter = workflow_converter
-        self.auth_repo = user_resource_repository # 引入关联 Repo
+        self.user_res_repo = user_resource_repository # 引入关联 Repo
 
     async def save_workflow(self, workflow: WorkflowDefinition, title: str, user_id: str) -> str:
         if not workflow.id:
             workflow.id = f"wf_{uuid.uuid4().hex[:8]}"
         wid = await self.repo.save(workflow, title)
-        await self.auth_repo.bind(user_id, wid, "workflow")
+        await self.user_res_repo.bind(user_id, wid, "workflow")
         return wid
     
     async def bind_workflow(self, user_id: str, wid: str):
-        await self.auth_repo.bind(user_id, wid, "workflow")
+        await self.user_res_repo.bind(user_id, wid, "workflow")
 
     async def get_workflow(self, wf_id: str) -> WorkflowDefinition:
         return await self.repo.get(wf_id)
@@ -47,7 +47,7 @@ class WorkflowService:
         offset = (page - 1) * size
         
         # 1. 先拿 ID
-        wids = await self.auth_repo.get_resource_ids(user_id, "workflow", limit=size, offset=offset)
+        wids = await self.user_res_repo.get_resource_ids(user_id, "workflow", limit=size, offset=offset)
         
         if not wids:
             return []

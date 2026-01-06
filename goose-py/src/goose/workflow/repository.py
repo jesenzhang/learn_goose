@@ -4,11 +4,12 @@ import json
 import logging
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
-from .checkpointer import WorkflowCheckpointer, WorkflowCheckpoint
+from .checkpointer import WorkflowCheckpointer, WorkflowCheckpointEntity
 from goose.persistence import BaseRepository,with_table,TableSpec,PersistenceManager
 from .protocol import WorkflowDefinition
 import uuid
 from datetime import datetime
+import time
 
 from goose.workflow.checkpointer import WorkflowCheckpointRepository
 
@@ -23,8 +24,8 @@ CREATE TABLE IF NOT EXISTS workflows (
     id TEXT PRIMARY KEY,
     title TEXT,
     definition TEXT, -- JSON structure
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at REAL,
+    updated_at REAL
 );
 """
 
@@ -36,19 +37,19 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     context_data TEXT,      -- JSON: 存储 node_outputs
     status TEXT,            -- running, suspended, completed, failed
     error TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at REAL
 );
 """
 
-class WorkflowDAO(BaseModel):
+class WorkflowEntity(BaseModel):
     id: str
     title: Optional[str] = None
     definition: WorkflowDefinition
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
     
 
-@with_table(name='workflows',model=WorkflowDAO,sql=WORKFLOW_SCHEMA,priority=0,attr_name='workflows_schema')
+@with_table(name='workflows',model=WorkflowEntity,sql=WORKFLOW_SCHEMA,priority=0,attr_name='workflows_schema')
 class WorkflowRepository(BaseRepository,WorkflowCheckpointer):
     """
     专门负责工作流状态的持久化。
@@ -63,8 +64,8 @@ class WorkflowRepository(BaseRepository,WorkflowCheckpointer):
         if not workflow.id:
             workflow.id = f"wf_{uuid.uuid4().hex[:8]}"
         try:
-            workflow_dao = WorkflowDAO(id=workflow.id, title=title, definition=workflow)
-            await self._upsert(WorkflowDAO,workflow_dao)
+            workflow_dao = WorkflowEntity(id=workflow.id, title=title, definition=workflow)
+            await self._upsert(WorkflowEntity,workflow_dao)
         except Exception as e:
             logger.error(f"Failed to upsert workflow {workflow.id}: {e}")
             raise e
@@ -106,7 +107,7 @@ class WorkflowRepository(BaseRepository,WorkflowCheckpointer):
 
     async def get(self, wf_id: str) -> Optional[WorkflowDefinition]:
         try:
-            data:WorkflowDAO = await self._get(WorkflowDAO, wf_id)
+            data:WorkflowEntity = await self._get(WorkflowEntity, wf_id)
             return data.definition
         except Exception as e:
             logger.error(f"Failed to get workflow {wf_id}: {e}")
@@ -128,7 +129,7 @@ class WorkflowRepository(BaseRepository,WorkflowCheckpointer):
     async def get_batch(self, wf_ids: List[str]) -> List[WorkflowDefinition]:
         if not wf_ids: return []
         
-        data_list:List[WorkflowDAO] = await self._get_batch(WorkflowDAO, wf_ids)
+        data_list:List[WorkflowEntity] = await self._get_batch(WorkflowEntity, wf_ids)
         
         return [data.definition for data in data_list]
         
@@ -142,16 +143,16 @@ class WorkflowRepository(BaseRepository,WorkflowCheckpointer):
         # # 保持顺序 (可选)
         # return [dict(r) for r in rows]
     
-    async def list(self, limit: int, offset: int) -> List[WorkflowDefinition]:
+    async def list(self, limit: int=-1, offset: int=0) -> List[WorkflowDefinition]:
         """列出工作流摘要"""
-        data_list:List[WorkflowDAO]  = await self._list(WorkflowDAO, sort_key="updated_at", limit=limit, offset=offset)
+        data_list:List[WorkflowEntity]  = await self._list(WorkflowEntity, sort_key="updated_at", limit=limit, offset=offset)
         return [data.definition for data in data_list]
         
         # sql = "SELECT id, title, created_at, updated_at FROM workflows ORDER BY updated_at DESC LIMIT :limit OFFSET :offset"
         # rows = await self.pm.fetch_all(sql, {"limit": limit, "offset": offset})
         # return [dict(r) for r in rows]
     
-    async def save_checkpoint(self, state: WorkflowCheckpoint):
+    async def save_checkpoint(self, state: WorkflowCheckpointEntity):
         """保存状态"""
         try:
             await self.checkpoint_repo.save_checkpoint(state)
@@ -189,7 +190,7 @@ class WorkflowRepository(BaseRepository,WorkflowCheckpointer):
         #     logger.error(f"❌ FATAL ERROR: Database Save Failed! Reason: {e}")
         #     raise e  # 抛出异常，让 Scheduler 知道出事了
 
-    async def load_checkpoint(self, run_id: str) -> Optional[WorkflowCheckpoint]:
+    async def load_checkpoint(self, run_id: str) -> Optional[WorkflowCheckpointEntity]:
         """加载状态"""
         return await self.checkpoint_repo.load_checkpoint(run_id)
         # # [风格适配] 使用 :key 占位符

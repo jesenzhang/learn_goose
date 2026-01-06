@@ -32,7 +32,7 @@ async def main():
     # 1. 初始化数据库 (SessionStorage)
     print("Step 1: Initializing Database...")
     # 这会自动运行 migrations 创建表
-    await SessionManager.get_storage()
+    await SessionManager.get_repo()
     print("✅ Database initialized.")
 
     # 2. 创建新会话

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any
 
 from goose.server.schemas import ApiResponse, WorkflowReq, PaginatedResponse
-from goose.app.workflow.service import WorkflowService
+from goose.app.workflow_service.workflow import WorkflowService
 from goose.server.deps import get_wf_service, get_current_user_id
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])

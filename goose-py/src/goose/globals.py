@@ -1,10 +1,10 @@
 from dataclasses import dataclass, field
 from typing import Optional, Type, TypeVar, Dict, Callable, Any
 
-from goose.config import SystemConfig
-from goose.events import IEventBus, IEventStore
+from goose.system_config import SystemConfig
+from goose.events import IEventBus, IEventStore,StreamerFactory
 from goose.events.streamer import BaseStreamer
-from goose.persistence.manager import PersistenceManager
+from goose.persistence import init_persistence, get_persistence, shutdown_persistence, PersistenceManager
 from goose.resources.manager import ResourceManager
 from goose.resources.store import ResourceStore
 from goose.resources.builder import ResourceBuilder
@@ -16,20 +16,7 @@ class ExtensionContainer(IoCContainer):
     """存放插件或非核心组件"""
     pass
 
-class StreamerFactory:
-    """
-    负责生产绑定到特定 run_id 的 Streamer 实例。
-    """
-    def __init__(self, bus: IEventBus, store: IEventStore):
-        self._bus = bus
-        self._store = store
 
-    def create(self, run_id: str, streamer_cls: Type[T] = BaseStreamer) -> T:
-        return streamer_cls(
-            run_id=run_id,
-            bus=self._bus,
-            store=self._store
-        )
 
 # --- 1. 定义运行时的"全貌" ---
 @dataclass(frozen=True)

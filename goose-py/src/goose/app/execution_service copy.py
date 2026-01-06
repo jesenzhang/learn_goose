@@ -13,8 +13,8 @@ from goose.session.hook import SessionPersistenceHook
 from goose.resources.manager import ResourceManager
 
 # Repositories
-from goose.app.user.repository import UserResourceRepository
-from .repository import ExecutionRepository
+from goose.user.repository import UserResourceRepository
+from goose.execution.repository import ExecutionRepository
 from goose.workflow.repository import WorkflowRepository
 from goose.session.repository import SessionRepository
 from goose.events import IStreamer, Event

@@ -8,7 +8,7 @@ from goose.workflow.graph import Graph
 from goose.workflow.context import WorkflowContext
 from goose.events import SystemEvents
 from goose.workflow.events import WorkflowEventType
-from goose.workflow.checkpointer import WorkflowCheckpoint, WorkflowCheckpointer
+from goose.workflow.checkpointer import WorkflowCheckpointEntity, WorkflowCheckpointer
 from goose.workflow.repository import WorkflowRepository
 
 # --- Runtime Dependencies ---
@@ -315,7 +315,7 @@ class WorkflowScheduler:
     async def _save_state(self, run_id: str, queue: List[str], context: WorkflowContext, status: str):
         """持久化状态辅助方法"""
         if self._default_checkpointer:
-            state = WorkflowCheckpoint(
+            state = WorkflowCheckpointEntity(
                 run_id=run_id,
                 execution_queue=queue,
                 context_data=context.node_outputs, 

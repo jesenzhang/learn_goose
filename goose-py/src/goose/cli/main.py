@@ -1,7 +1,7 @@
 import asyncio
 import typer
 from goose.system import boot, shutdown, get_runtime
-from goose.config import SystemConfig
+from goose.system_config import SystemConfig
 from goose.workflow.scheduler import WorkflowScheduler
 from goose.cli.renderer import console_renderer
 
