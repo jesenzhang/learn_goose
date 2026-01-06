@@ -6,11 +6,11 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from sqlalchemy import text, event
 from sqlalchemy.engine import Engine
 
-from goose.persistence.backend import StorageBackend
+from .base import SQLDriver
 
 logger = logging.getLogger("goose.persistence.drivers")
 
-class SQLAlchemyBackend(StorageBackend):
+class SQLAlchemyDriver(SQLDriver):
     """
     通用 SQL 后端。
     同时支持 SQLite (本地) 和 PostgreSQL/MySQL (远程)。

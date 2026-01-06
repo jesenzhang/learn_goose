@@ -2,11 +2,10 @@ import aiosqlite
 import logging
 import os
 from typing import List, Any, Dict, Optional
-from .backend import StorageBackend
-
+from .base import SQLDriver
 logger = logging.getLogger("goose.persistence.sqlite")
 
-class SQLiteBackend(StorageBackend):
+class SQLiteDriver(SQLDriver):
     def __init__(self, db_path: str):
         self.db_path = db_path
         # 确保目录存在

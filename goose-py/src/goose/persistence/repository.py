@@ -2,13 +2,13 @@
 
 import json
 import logging
-from typing import List, Dict, Any, ClassVar, Optional,Type,TYPE_CHECKING,Union
+from typing import List, Dict, Any, ClassVar, Optional,Type,TYPE_CHECKING,Union,AsyncGenerator
 from pydantic import BaseModel
 from .spec import TableSpec
-
 if TYPE_CHECKING:
     from goose.persistence.manager import PersistenceManager
-    
+from datetime import datetime
+
 logger = logging.getLogger("goose.persistence")
 
 def with_table(
@@ -80,47 +80,41 @@ class BaseRepository:
     _model_index: ClassVar[Dict[Type[BaseModel], TableSpec]] = {}
     
     def __init__(self, pm:'PersistenceManager' = None):
+        # 如果没传 pm，就尝试获取全局单例
         if pm is None:
-            from goose.persistence.manager import persistence_manager
-            pm = persistence_manager
-        self.pm = pm
-
+            try:
+                from .manager import get_persistence
+                self.pm = get_persistence()
+            except RuntimeError:
+                # 允许在单元测试中不初始化单例，只要手动传入 pm 即可
+                self.pm = None 
+        else:
+            self.pm = pm
+        
+    @property
+    def backend(self):
+        return self.pm.backend
     # ==========================================
     # 1. 核心：属性自省与自动注册
     # ==========================================
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         
-        # 🔍 扫描子类的 __dict__，寻找 TableSpec 类型的属性
-        found_specs = []
-        for attr_name, attr_value in cls.__dict__.items():
-            if isinstance(attr_value, TableSpec):
-                found_specs.append(attr_value)
-                logger.debug(f"🔎 Found table spec '{attr_value.table_name}' in {cls.__name__}")
-
-        cls._model_index = {}
+        if not hasattr(cls, '_model_index'): cls._model_index = {}
         
-        # 📦 注册到 BaseRepository 的全局列表
-        # 注意：显式使用 BaseRepository 防止多文件导入导致的类分裂问题
-        for spec in found_specs:
-            BaseRepository._registered_schemas.append({
-                "sql": spec.schema_sql,
-                "priority": spec.priority,
-                "table": spec.table_name,
-                "source": cls.__name__
-            })
-            cls._model_index[spec.model_class] = spec
+        for _, attr in cls.__dict__.items():
+            if isinstance(attr, TableSpec):
+                BaseRepository._registered_schemas.append({
+                    "sql": attr.schema_sql,
+                    "priority": attr.priority,
+                    "table": attr.table_name
+                })
+                BaseRepository._model_index[attr.model_class] = attr
                 
-    def _get_spec(self, token: Union[TableSpec, Type[BaseModel]]) -> TableSpec:
-        """核心路由：既支持传 Spec 对象，也支持传 Model 类"""
-        if isinstance(token, TableSpec):
-            return token
-        
-        # 如果传的是 Model 类，查表
-        if token in self._model_index:
-            return self._model_index[token]
-            
-        raise ValueError(f"No table registered for model {token}")
+    def _resolve_spec(self, token):
+        if isinstance(token, TableSpec): return token
+        if token in BaseRepository._model_index: return BaseRepository._model_index[token]
+        raise ValueError(f"Spec not found for {token}")
     
     @classmethod
     def get_all_schemas(cls) -> List[str]:
@@ -130,98 +124,106 @@ class BaseRepository:
         return [item['sql'] for item in sorted_items]
 
     
-    # ==========================================
-    # Generic CRUD Helpers (Private Helpers)
-    # Now CRUD operations require passing 'spec' to specify the table
-    # ==========================================
+    # --- Data Mapper ---
+    def _to_db(self, model: BaseModel):
+        d = model.model_dump()
+        for k, v in d.items():
+            if isinstance(v, (dict, list)): d[k] = json.dumps(v, ensure_ascii=False)
+        return d
 
-    def _to_db_params(self, model: BaseModel) -> Dict[str, Any]:
-        """JSON Serialization Helper"""
-        data = model.model_dump()
-        for k, v in data.items():
-            if isinstance(v, (dict, list)):
-                data[k] = json.dumps(v, ensure_ascii=False)
-        return data
+    def _from_db(self, row, spec:TableSpec):
+        if not row: return None
+        d = dict(row)
+        for k, v in d.items():
+            if isinstance(v, str) and v.startswith(("{", "[")):
+                try: d[k] = json.loads(v)
+                except: pass
+        return spec.model_class.model_validate(d)
     
-    def _from_db_row(self, row: Any, spec: TableSpec) -> Optional[BaseModel]:
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[None, None]:
         """
-        DB Row -> Pydantic
-        自动将 JSON 字符串转回 dict/list
+        开启一个事务上下文。
+        对于 SQL 后端，这是真正的 DB 事务；
+        对于 JSONL 后端，这是文件锁。
         """
-        if not row:
-            return None
-        
-        row_dict = dict(row)
-        
-        # 尝试智能解析 JSON 字符串
-        # 这一步是为了应对 SQLite 返回的是字符串而不是原生 JSON 类型
-        for k, v in row_dict.items():
-            if isinstance(v, str) and (v.startswith("{") or v.startswith("[")):
-                try:
-                    row_dict[k] = json.loads(v)
-                except (json.JSONDecodeError, TypeError):
-                    pass # 解析失败则保留原字符串
-        
-        return spec.model_class.model_validate(row_dict)
-
-    # ==========================================
-    # 3. 通用 CRUD (Private Helpers)
-    # 业务层通过 self.spec_attr 调用这些方法
-    # ==========================================
-
-    async def _insert(self,token: Union[TableSpec, Type[BaseModel]], model: BaseModel):
-        spec = self._get_spec(token)
-        data = self._to_db_params(model)
-        cols = ", ".join(data.keys())
-        placeholders = ", ".join([f":{k}" for k in data.keys()])
-        
-        sql = f"INSERT INTO {spec.table_name} ({cols}) VALUES ({placeholders})"
-        await self.pm.execute(sql, data)
-
-    async def _upsert(self, token: Union[TableSpec, Type[BaseModel]], model: BaseModel):
-        """SQLite specific: INSERT OR REPLACE"""
-        spec = self._get_spec(token)
-        data = self._to_db_params(model)
-        cols = ", ".join(data.keys())
-        placeholders = ", ".join([f":{k}" for k in data.keys()])
-        
-        sql = f"INSERT OR REPLACE INTO {spec.table_name} ({cols}) VALUES ({placeholders})"
-        await self.pm.execute(sql, data)
-
-    async def _update(self, token: Union[TableSpec, Type[BaseModel]], model: BaseModel):
-        spec = self._get_spec(token)
-        data = self._to_db_params(model)
-        pk = data.get(spec.pk_field)
-        if pk is None:
-            raise ValueError(f"PK {spec.pk_field} missing for update")
-        
-        # 排除 PK 字段的更新
-        updates = ", ".join([f"{k}=:{k}" for k in data.keys() if k != spec.pk_field])
-        sql = f"UPDATE {spec.table_name} SET {updates} WHERE {spec.pk_field}=:{spec.pk_field}"
-        await self.pm.execute(sql, data)
-
-    async def _get(self, token: Union[TableSpec, Type[BaseModel]], pk_value: Any) -> Optional[BaseModel]:
-        spec = self._get_spec(token)
-        sql = f"SELECT * FROM {spec.table_name} WHERE {spec.pk_field} = :pk"
-        row = await self.pm.fetch_one(sql, {"pk": pk_value})
-        return self._from_db_row(row, spec)
-
-    async def _get_batch(self, token: Union[TableSpec, Type[BaseModel]], pk_values: List[Any]) -> List[Optional[BaseModel]]:
-        spec = self._get_spec(token)
-        sql = f"SELECT * FROM {spec.table_name} WHERE {spec.pk_field} IN ({', '.join([f':{k}' for k in pk_values])})"
-        rows = await self.pm.fetch_all(sql, {"pk": pk_values})
-        return [self._from_db_row(row, spec) for row in rows]
+        async with self.backend.transaction():
+            yield
+            
+   # --- Public Helper Methods ---
     
-    async def _delete(self, token: Union[TableSpec, Type[BaseModel]], pk_value: Any):
-        spec = self._get_spec(token)
-        sql = f"DELETE FROM {spec.table_name} WHERE {spec.pk_field} = :pk"
-        await self.pm.execute(sql, {"pk": pk_value})
-    
+    async def _insert(self, token: Union[TableSpec, Type[BaseModel]], model: BaseModel):
+        spec = self._resolve_spec(token)
+        await self.backend.insert(spec, self._to_db(model))
 
-    async def _list(self, token: Union[TableSpec, Type[BaseModel]], sort_key: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[BaseModel]:
-        """分页列表"""
-        spec = self._get_spec(token)
-        pk_field = spec.pk_field if sort_key is None else sort_key
-        sql = f"SELECT * FROM {spec.table_name} ORDER BY {pk_field} DESC LIMIT :limit OFFSET :offset"  # Fixed typo here
-        rows = await self.pm.fetch_all(sql, {"limit": limit, "offset": offset})
-        return [self._from_db_row(r, spec) for r in rows if r]
+    async def _get(self, token: Union[TableSpec, Type[BaseModel]], pk: Any) -> BaseModel:
+        spec = self._resolve_spec(token)
+        row = await self.backend.get(spec, pk)
+        return self._from_db(row, spec)
+
+    async def _get_batch(self, token, pks: List[Any]) -> List[BaseModel]:
+        spec = self._resolve_spec(token)
+        rows = await self.backend.get_batch(spec, pks)
+        return [self._from_db(r, spec) for r in rows]
+
+    async def _find(self, token, filters: Dict, limit=-1,offset=0) -> List[BaseModel]:
+        """根据过滤条件查询: 
+        await _find(User, {"status": "active"})
+        # 1. 基础写法 (默认相等)
+        filters = {"status": "running"}
+
+        # 2. 复杂写法 (使用操作符)
+        filters = {
+            "age": {"$gt": 18},              # age > 18
+            "score": {"$gte": 60, "$lt": 90},# 60 <= score < 90
+            "role": {"$in": ["admin", "dev"]}, # role IN ('admin', 'dev')
+            "name": {"$like": "%Goose%"}     # name LIKE '%Goose%'
+        }
+        """
+        spec = self._resolve_spec(token)
+        rows = await self.backend.find(spec, filters, limit=limit,offset=offset)
+        return [self._from_db(r, spec) for r in rows]
+    
+    async def _count(self, token, filters: Dict) -> int:
+        """
+        根据过滤条件查询数量: await _count(User, {"status": "active"})
+        # 1. 基础写法 (默认相等)
+        filters = {"status": "running"}
+
+        # 2. 复杂写法 (使用操作符)
+        filters = {
+            "age": {"$gt": 18},              # age > 18
+            "score": {"$gte": 60, "$lt": 90},# 60 <= score < 90
+            "role": {"$in": ["admin", "dev"]}, # role IN ('admin', 'dev')
+            "name": {"$like": "%Goose%"}     # name LIKE '%Goose%'
+        }
+        """
+        spec = self._resolve_spec(token)
+        return await self.backend.count(spec, filters)
+
+    async def _update_by(self, token, filters: Dict, **kwargs) -> int:
+        """批量更新: await _update_by(User, {"role": "guest"}, status="inactive")
+        # 1. 基础写法 (默认相等)
+        filters = {"status": "running"}
+
+        # 2. 复杂写法 (使用操作符)
+        filters = {
+            "age": {"$gt": 18},              # age > 18
+            "score": {"$gte": 60, "$lt": 90},# 60 <= score < 90
+            "role": {"$in": ["admin", "dev"]}, # role IN ('admin', 'dev')
+            "name": {"$like": "%Goose%"}     # name LIKE '%Goose%'
+        }
+        """
+        spec = self._resolve_spec(token)
+        return await self.backend.update_by(spec, filters, kwargs)
+
+    async def _delete_by(self, token, filters: Dict) -> int:
+        spec = self._resolve_spec(token)
+        return await self.backend.delete_by(spec, filters)
+        
+    async def _upsert(self, token, model: BaseModel):
+        spec = self._resolve_spec(token)
+        await self.backend.upsert(spec, self._to_db(model))
+    
+    
