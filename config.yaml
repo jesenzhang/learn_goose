@@ -1,0 +1,56 @@
+# 场景：处理 API 返回的脏数据
+# 原始数据结构假设：
+# {
+#   "payload": {
+#     "order_list": [
+#       {"oid": "A1", "amt": "100.5", "st": 1, "ts": "2023-10-01"},
+#       {"oid": "A2", "amt": "invalid", "st": 0},
+#       {"oid": "A3", "amt": 5000, "st": 1} 
+#     ]
+#   }
+# }
+
+# 1. 提取阶段
+jmespath_expr: "payload.order_list"
+
+# 2. 清洗阶段
+pandas_config:
+  # 重命名：让列名更有语义
+  rename:
+    oid: "order_id"
+    amt: "amount"
+    st: "status"
+    ts: "created_at"
+  
+  # 类型转换：处理脏数据
+  dtypes:
+    amount: "float"
+    status: "int"
+    created_at: "datetime"
+  
+  # 空值填充
+  fillna:
+    amount: 0.0
+    created_at: "1970-01-01"
+  
+  # 逻辑过滤：只保留状态为1(已支付) 且 金额大于 50 的订单
+  query: "status == 1 and amount > 50"
+  
+  # 排序：按金额倒序
+  sort_by: ["-amount"]
+  
+  # 裁剪：只保留需要的列
+  keep_columns: ["order_id", "amount", "created_at"]
+  
+  # 限制：只取前 5 条
+  limit: 5
+
+# 3. 渲染阶段
+template: |
+  **📊 高价值订单 Top 5**
+  
+  | ID | 金额 | 时间 |
+  |---|---|---|
+  {% for item in items %}
+  | {{ item.order_id }} | ${{ item.amount }} | {{ item.created_at }} |
+  {% endfor %}

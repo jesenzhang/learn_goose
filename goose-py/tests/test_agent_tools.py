@@ -81,7 +81,7 @@ CRITICAL INSTRUCTIONS:
 4. Do not output Markdown blocks.
 """
 
-    agent = Agent(name="Goose-Test", provider=provider, tools=registry, system_prompt=system_prompt)
+    agent = Agent(name="Goose-Test", llm=provider, tools=registry, system_prompt=system_prompt)
 
     # 4. 创建会话
     # [修正] 参数顺序修正：working_dir, name

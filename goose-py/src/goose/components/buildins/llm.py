@@ -11,7 +11,9 @@ from goose.utils.template import TemplateRenderer
 from goose.conversation import Message, Role, TextContent
 from goose.components.registry import register_component
 from goose.types import NodeTypes
-from goose.events.types import SystemEvents  # 引入系统事件
+from goose.events.types import SystemEvents
+
+from skill_micro_agent.providers.base import BaseLLM  # 引入系统事件
 
 logger = logging.getLogger("goose.component.llm")
 
@@ -85,7 +87,7 @@ class LLMComponent(Component):
         # 2. [准备] 模型 Provider
         # 从资源管理器获取已初始化的 Provider 实例 (单例)
         try:
-            provider = await context.resources.get_instance(config.model)
+            provider:BaseLLM = await context.resources.get_instance(config.model)
         except Exception as e:
             raise ValueError(f"Failed to load model resource '{config.model}': {e}")
 
@@ -115,7 +117,12 @@ class LLMComponent(Component):
         # 初始化消息历史
         # 注意：Prompt 不包含在 messages 列表中，而是作为 system/user 参数传给 Provider
         # 但为了 ReAct 循环，我们需要维护一个本地的 messages 列表
-        current_messages = [Message.user(user_content)]
+        current_messages: List[Message] = []
+        if system_content:
+            current_messages.append(Message.system(system_content))
+        
+        current_messages.append(Message.user(user_content))
+        
 
         # 4. [执行] ReAct Loop
         current_iter = 0
@@ -132,10 +139,10 @@ class LLMComponent(Component):
             # 使用 provider.stream 获取打字机效果
             # 传递 tools 参数：如果是空列表，传 None，或者取决于 Provider 实现
             # 之前的 OpenAIProvider 修复版支持传空列表，这里传 openai_tools or None 最稳妥
-            async for partial_msg, usage in provider.stream(
-                system=system_content,
-                messages=current_messages, # 传递当前历史（不含 system）
-                tools=openai_tools or None
+            async for partial_msg, usage in provider.astream(
+                messages=current_messages,
+                tools=openai_tools or None,
+                temperature=config.temperature
             ):
                 if partial_msg:
                     # Case A: 文本流

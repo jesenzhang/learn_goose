@@ -5,7 +5,7 @@ from enum import Enum
 
 from goose.session import SessionManager
 from goose.conversation import Message, Role, TextContent, ToolRequest, ToolResponse, CallToolResult, Conversation
-from goose.providers.base import Provider
+from goose.providers.base import BaseLLM
 from goose.toolkit import ToolRegistry
 from .events import (
     EventBus, EventType, StreamerEvent, 
@@ -28,12 +28,12 @@ class Agent:
     def __init__(
         self, 
         name: str, 
-        provider: Provider, 
+        llm: BaseLLM, 
         tools: Optional[ToolRegistry] = None,
         system_prompt: str = "You are a helpful AI assistant."
     ):
         self.name = name
-        self.provider = provider
+        self.provider = llm
         self.tools = tools or ToolRegistry()
         self.system_prompt = system_prompt
         self.max_turns = 10
@@ -148,7 +148,7 @@ class Agent:
                     ai_message = Message.assistant()
                     
                     try:
-                        async for partial, _ in self.provider.stream(
+                        async for partial, _ in self.provider.astream(
                             self.system_prompt, truncated_msgs, tool_defs
                         ):
                             # 流式合并 & 分发

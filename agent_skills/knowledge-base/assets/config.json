@@ -1,0 +1,18 @@
+{
+  "remote": {
+    "enabled": true,
+    "url": "http://192.168.10.198:31700/gchatapi/gllmapi/ai/search/faq",
+    "method": "POST",
+    "timeout": 5,
+    "params": {
+      "p": "w"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  },
+  "local": {
+    "enabled": true,
+    "filename": "local_kb.json"
+  }
+}

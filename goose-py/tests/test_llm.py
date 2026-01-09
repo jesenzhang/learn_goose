@@ -79,7 +79,7 @@ async def main():
         import time
         start_time = time.time()
 
-        async for msg, usage in provider.stream(system_prompt, history):
+        async for msg, usage in provider.astream(system_prompt, history):
             # [调试] 如果超过5秒没反应，打印等待提示
             if not first_token_received and (time.time() - start_time > 5):
                 print("(Waiting for model prefill...)...", end="\n", flush=True)

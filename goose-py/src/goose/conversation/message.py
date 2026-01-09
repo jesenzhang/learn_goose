@@ -23,9 +23,9 @@ class ImageContent(BaseModel):
 
 class RawContent(BaseModel):
     """工具返回的原始内容"""
-    type: Literal["text", "image"] = "text"
+    type: Literal["text", "dataset", "image", "code", "error"] = "text"
     text: Optional[str] = None
-    data: Optional[str] = None
+    data: Optional[Any] = None
     mime_type: Optional[str] = Field(None, alias="mimeType")
 
 # --- 工具调用 (Request) 相关 ---
@@ -69,7 +69,18 @@ class CallToolResult(BaseModel):
             content=[RawContent(type="text", text=error_message)],
             is_error=True
         )
-
+    
+    @classmethod
+    def from_text(cls, text: str):
+        return cls(content=[RawContent(type="text", text=text)])
+    
+    @classmethod
+    def from_artifact(cls, view: str, data: Any, type="dataset"):
+        """便捷构造 Artifact 返回"""
+        return cls(content=[
+            RawContent(type=type, text=view, data=data)
+        ])
+        
 class ToolResponse(BaseModel):
     type: Literal["toolResponse"] = "toolResponse"
     id: str

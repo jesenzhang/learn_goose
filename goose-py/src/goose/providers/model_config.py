@@ -13,16 +13,31 @@ MODEL_LIMITS = {
 DEFAULT_CONTEXT_LIMIT = 128_000
 
 class ModelConfig(BaseModel):
-    """对应 Rust: pub struct ModelConfig"""
-    model_name: str
+    """统一的模型配置对象"""
+    provider: str = "openai"  # openai, ollama, azure...
+    model_name: str = "gpt-4o"      # 模型名称
+    base_url: Optional[str] = None
+    api_key_env: str = "OPENAI_API_KEY"
+    api_key: Optional[str] = None
+    
+    # 运行时参数
     context_limit: Optional[int] = None
-    temperature: Optional[float] = None
+    temperature: float = 0.1
     max_tokens: Optional[int] = None
+    timeout: float = 60.0
     fast_model: Optional[str] = None
-     
+    
     toolshim: bool = False
     toolshim_model: Optional[str] = None
-   
+    
+    # 高级参数
+    organization: Optional[str] = None
+    project: Optional[str] = None
+    extra_headers: Dict[str, str] = Field(default_factory=dict)
+    
+    # Embedding 专用 (可选，或者拆分出 EmbeddingConfig)
+    embedding_model_name: Optional[str] = "text-embedding-3-small"
+    
     def context_window(self) -> int:
         if self.context_limit:
             return self.context_limit

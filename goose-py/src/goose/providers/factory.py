@@ -1,6 +1,6 @@
 import logging
 from typing import Dict, Type, Any, Optional
-from .base import Provider
+from .base import BaseLLM
 
 logger = logging.getLogger("goose.providers.factory")
 
@@ -10,7 +10,7 @@ class ProviderFactory:
     支持动态注册和实例化。
     """
     # 注册表：存储 "provider_name" -> ProviderClass
-    _registry: Dict[str, Type[Provider]] = {}
+    _registry: Dict[str, Type[BaseLLM]] = {}
 
     @classmethod
     def register(cls, name: str):
@@ -19,7 +19,7 @@ class ProviderFactory:
         @ProviderFactory.register("openai")
         class OpenAIProvider(Provider): ...
         """
-        def decorator(provider_cls: Type[Provider]):
+        def decorator(provider_cls: Type[BaseLLM]):
             if name in cls._registry:
                 logger.warning(f"Provider '{name}' already registered. Overwriting.")
             
@@ -30,7 +30,7 @@ class ProviderFactory:
         return decorator
 
     @classmethod
-    def create(cls, provider_name: str, model_config: Dict[str, Any]) -> Provider:
+    def create(cls, provider_name: str, model_config: Dict[str, Any]) -> BaseLLM:
         """
         工厂方法：根据名称创建实例。
         """

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "intro",
+    "questions": ["你是谁"],
+    "type": "static",
+    "answer": "我是 OpsCommander 2.0。"
+  },
+  {
+    "id": "system_status",
+    "questions": ["系统状态", "健康检查", "服务器负载"],
+    "type": "dynamic",
+    "metadata": {
+      "url": "http://192.168.10.236:8111/api/monitor/status",
+      "method": "GET",
+      "params": { "region": "cn-north" }, 
+      "timeout": 5
+    },
+    "answer": "当前 CPU 使用率: {cpu_usage}%，内存: {memory_usage}%" 
+  },
+  {
+    "id": "deploy_log",
+    "questions": ["最近的部署", "发布记录"],
+    "type": "dynamic",
+    "metadata": {
+      "url": "http://192.168.10.236:8111/api/logs/latest",
+      "method": "POST",
+      "headers": { "Authorization": "Bearer {env.API_KEY}" },
+      "body": { "limit": 5, "type": "deploy" }
+    },
+    "answer": "format_list" 
+  }
+]

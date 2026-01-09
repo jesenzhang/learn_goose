@@ -1,0 +1,386 @@
+[
+    {
+        "id": "1",
+        "text": "介绍一下中国大运河的基本情况",
+        "fields": {
+            "is_end": true,
+            "is_faq": false,
+            "recommend": {
+              "library_list": [],
+              "resource_list": [],
+              "resource_file_list": [
+                {
+                  "resource_id": 64,
+                  "resource_type": 3,
+                  "file_name": "北京大运河博物馆_社教课程_《京京小虎话运河——大运河与北京城》课程_课件成品_20240103.pptx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 119.07012
+                },
+                {
+                  "resource_id": 64,
+                  "resource_type": 3,
+                  "file_name": "北京大运河博物馆_社教课程_《京京小虎话运河——大运河与北京城》课程_说课稿_20240102.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 116.32083
+                },
+                {
+                  "resource_id": 64,
+                  "resource_type": 3,
+                  "file_name": "北京大运河博物馆_社教课程_《京京小虎话运河——大运河与北京城》课程_课程方案_20231226.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 113.73335
+                },
+                {
+                  "resource_id": 64,
+                  "resource_type": 3,
+                  "file_name": "北京大运河博物馆_社教课程_《京京小虎话运河——大运河与北京城》课程_知识点_20231213.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 113.73335
+                },
+                {
+                  "resource_id": 63,
+                  "resource_type": 3,
+                  "file_name": "北京大运河博物馆_活动课_策划方案_20231116.doc",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 113.73335
+                },
+                {
+                  "resource_id": 59,
+                  "resource_type": 2,
+                  "file_name": "北京大运河博物馆_社教课程_《京京小虎话运河——大运河与北京城》课程（MG动画）_动画视频_20231213.mp4",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 113.73335
+                },
+                {
+                  "resource_id": 63,
+                  "resource_type": 3,
+                  "file_name": "北京大运河博物馆_活动课_课程成品_20231225.pptx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 113.73335
+                },
+                {
+                  "resource_id": 341,
+                  "resource_type": 3,
+                  "file_name": "洛阳隋唐大运河文化博物馆_AR互动_运河盛景_策划方案_20220726.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 266.8698
+                },
+                {
+                  "resource_id": 341,
+                  "resource_type": 3,
+                  "file_name": "洛阳隋唐大运河文化博物馆_AR互动_运河之窗_策划方案_20220509.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 266.8698
+                },
+                {
+                  "resource_id": 272,
+                  "resource_type": 3,
+                  "file_name": "绍兴市博物馆_社教课程_《通江达海——运河流过我家乡》课程_说课稿_20210906.pdf",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 62.23751
+                },
+                {
+                  "resource_id": 272,
+                  "resource_type": 3,
+                  "file_name": "绍兴市博物馆_社教课程_《通江达海——运河流过我家乡》课程_课程方案_20210223.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 62.23751
+                },
+                {
+                  "resource_id": 137,
+                  "resource_type": 3,
+                  "file_name": "浙江省博物馆_讲解词_浙江一万年_繁盛江南_20230614.doc",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 307.73425
+                }
+              ]
+            },
+            "response": "运河指的是人工开凿的河道，主要用于船只航行和运输货物。在古代，陆路运输主要依靠人拉马驮的方式来进行，不仅运输量小、成本高，还受地形地貌的限制。而水路运输比陆路运输在运输量、成本和便捷性上都有着极大的优势。除航运外，运河还可用于灌溉、分洪、排涝、给水等。因此，中国古代劳动人民开凿了大量运河。我们现在所说的“中国大运河”就是由隋唐大运河、京杭大运河和浙东大运河三部分构成的。中国大运河全长2800公里，地跨北京、天津、河北、山东、河南、安徽、江苏、浙江8个省、直辖市，通达海河、黄河、淮河、长江、钱塘江五大水系，是中国古代南北交通的大动脉。",
+            "history": [],
+            "is_prompt": false
+        }
+    },
+    {
+        "id": "2",
+        "text": "原始瓷器和陶器有关系吗？",
+        "fields": {
+            "is_end": true,
+            "is_faq": false,
+            "recommend": {
+              "library_list": [],
+              "resource_list": [],
+              "resource_file_list": [
+                {
+                  "resource_id": 332,
+                  "resource_type": 3,
+                  "file_name": "江西省博物馆_读本_“虎伢子说江西”系列特色课程_策划文本_20220804.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 457.7384
+                },
+                {
+                  "resource_id": 332,
+                  "resource_type": 3,
+                  "file_name": "江西省博物馆_读本_“虎伢子说江西”系列特色课程_教材1_20230712.pdf",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 457.7384
+                }
+              ]
+            },
+            "response": "陶与瓷，是两个不同的体系，瓷不是从陶演化而来。陶与瓷的本质区别是原料的不同。\n  陶\n  胎体原料：以黏土为主，偶尔也有瓷石或高岭土，比如白陶、印纹硬陶。\n  釉：可有可无\n  烧成温度：800摄氏度左右即可烧结，印纹硬陶需到1150摄氏度左右。\n\n 瓷：\n  胎体原料：只能为瓷土（石）或高岭土。\n  釉：必须有釉，且为高温釉。\n  烧成温度：不能低于1150摄氏度，一般在1200摄氏度左右。\n\n所以，原始瓷与陶有本质区别，只和一种非常特殊的陶有联系，这种陶就是印纹硬陶，二者的胎都是高岭土，但原始瓷胎质更细腻，除此之外，没有联系。在原始瓷出现以后，瓷和陶开始了不同的发展轨迹，而且二者长期并存。",
+            "history": [],
+            "is_prompt": false
+        }
+    },
+    {
+        "id": "3",
+        "text": "什么是水下文化遗产？",
+        "fields": {
+            "is_end": true,
+            "is_faq": false,
+            "recommend":{
+              "library_list": [],
+              "resource_list": [
+                {
+                  "resource_id": 199,
+                  "resource_name": "海南省博物馆社教课程《海底“淘”宝攻略》（文物加工后数据）",
+                  "resource_type": 1,
+                  "image": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/image.png",
+                  "score": 1.6254618
+                }
+              ],
+              "resource_file_list": [
+                {
+                  "resource_id": 201,
+                  "resource_type": 3,
+                  "file_name": "海南省博物馆_社教课程_《海底“淘”宝攻略》课程_策划方案_20230222.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 56.29706
+                },
+                {
+                  "resource_id": 201,
+                  "resource_type": 3,
+                  "file_name": "海南省博物馆_社教课程_《香从何处来》课程_说课稿_20220902.doc",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 56.29706
+                }
+              ]
+            },
+            "response": "水下文化遗产通常是指人类在水域里活动留下的具有一定文化、历史或考古价值遗址。我国水下文化遗产的类型多种多样，有些因为经历沧海桑田的地理变化，被淹没于海底，有些是因为种种原因造成陆地遗物没入水下。例如沉入水下的城市、村落、码头、船只等，它们都属于水下文化遗产。其中沉船遗址最广为人知。",
+            "history": [],
+            "is_prompt": false
+        }
+    },
+    {
+        "id": "4",
+        "text": "鼓浪屿申遗成功是在哪一年？",
+        "fields": {
+            "is_end": true,
+            "is_faq": false,
+            "recommend":{
+              "library_list": [],
+              "resource_list": [
+                {
+                  "resource_id": 47,
+                  "resource_name": "故宫鼓浪屿外国文物馆社教课程（文物加工后数据）",
+                  "resource_type": 1,
+                  "image": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/image.png",
+                  "score": 1.710165
+                }
+              ],
+              "resource_file_list": [
+                {
+                  "resource_id": 32,
+                  "resource_type": 3,
+                  "file_name": "故宫鼓浪屿外国文物馆_社教课程_说课稿_20230303.doc",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 183.56767
+                },
+                {
+                  "resource_id": 32,
+                  "resource_type": 3,
+                  "file_name": "故宫鼓浪屿外国文物馆_文创柜开机动画_动画脚本_20230728.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 183.2956
+                },
+                {
+                  "resource_id": 32,
+                  "resource_type": 3,
+                  "file_name": "故宫鼓浪屿外国文物馆_社教课程_课程方案_20230303.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 180.52165
+                }
+              ]
+            },
+            "response": "2017年7月8日，在波兰召开的联合国教科文组织第41届世界遗产委员会会议上通过了“鼓浪屿：历史国际社区”列入《世界遗产名录》的表决，成为了中国第52个世界遗产项目！",
+            "history": [],
+            "is_prompt": false
+        }
+    },
+    {
+        "id": "4",
+        "text": "避雷针的原理是什么？",
+        "fields": {
+            "is_end": true,
+            "is_faq": false,
+            "recommend":{
+              "library_list": [],
+              "resource_list": [],
+              "resource_file_list": [
+                {
+                  "resource_id": 269,
+                  "resource_type": 3,
+                  "file_name": "湖北省科技馆_AR互动_策划方案（8个）_20221102.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 123.11788
+                },
+                {
+                  "resource_id": 270,
+                  "resource_type": 3,
+                  "file_name": "湖北省科技馆_MG动画_策划方案_20221122.docx",
+                  "content": "",
+                  "view_url": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                  "score": 121.30313
+                }
+              ]
+            },
+            "response": "避雷是由美国科学家富兰克林通过风筝实验，并根据“尖端放电”的原理发明出来的。但其实它的作用并不是避雷，而是引雷。雷雨天气时，高楼上空的云层摩擦会产生大量电荷，而高楼上的避雷针会在静电感应下聚集大量的相反电荷。由于避雷针顶部比较尖，能容纳的电荷总量很少，所以当电荷积累到一定程度时，避雷针与云层之间的空气便会被击穿，电荷便通过避雷针上连接的导线直接引入大地。由此可见，避雷针并不是让被保护物体避免雷击，恰恰相反，避雷针是“引雷”上身，因此它也被称作接闪杆。当然，并不是安装了避雷针就能绝对保险，不同的避雷针也有不同的保护范围和承受上限。因此，我们还是要正确认识避雷针，才能更好的保障自身安全。",
+            "history": [],
+            "is_prompt": false
+        }
+    },
+    {
+      "id": "fun",
+      "text": "当前数字资产的总量是多少？",
+      "fields": {
+          "is_end": true,
+          "is_faq": false,
+          "recommend":{
+            "library_list": [],
+            "resource_list": [],
+            "resource_file_list": [
+              
+            ]
+          },
+          "response": "resource_count",
+          "history": [],
+          "is_prompt": false
+      }
+  },
+  {
+    "id": "fun",
+    "text": "过去3天，新增数字资产的数量及增长率？",
+    "fields": {
+        "is_end": true,
+        "is_faq": false,
+        "recommend":{
+          "library_list": [],
+          "resource_list": [],
+          "resource_file_list": [
+            
+          ]
+        },
+        "response": "resource_rise",
+        "history": [],
+        "is_prompt": false
+    }
+},
+{
+  "id": "fun",
+  "text": "最常被访问或使用的前十大数字资产是什么？",
+  "fields": {
+      "is_end": true,
+      "is_faq": false,
+      "recommend":{
+        "library_list": [],
+        "resource_list": [],
+        "resource_file_list": [
+          
+        ]
+      },
+      "response": "top_ten_resource",
+      "history": [],
+      "is_prompt": false
+  }
+},
+{
+  "id": "fun",
+  "text": "哪些数字资产在过去六个月内未被访问过，可能属于陈旧或冗余？",
+  "fields": {
+      "is_end": true,
+      "is_faq": false,
+      "recommend":{
+        "library_list": [],
+        "resource_list": [],
+        "resource_file_list": [
+          
+        ]
+      },
+      "response": "no_view_resource",
+      "history": [],
+      "is_prompt": false
+  }
+},
+{
+  "id": "fun",
+  "text": "根据使用频率，哪些标签是最常用的？",
+  "fields": {
+      "is_end": true,
+      "is_faq": false,
+      "recommend":{
+        "library_list": [],
+        "resource_list": [],
+        "resource_file_list": [
+          
+        ]
+      },
+      "response": "top_ten_tag",
+      "history": [],
+      "is_prompt": false
+  }
+},
+    
+    {
+        "id": "上传文件1",
+        "text": "",
+        "fields": {
+            "is_end": true,
+            "is_faq": false,
+            "recommend":{
+                "library_list": [],
+                "resource_list": [
+                  {
+                    "resource_id": 25,
+                    "resource_name": "鹰形陶鼎介绍",
+                    "resource_type": 3,
+                    "image": "https://hddemo.hengdawenbo.com/gzcpublic/img/resource_img/document.png",
+                    "score": 1.7248645
+                  }
+                ],
+                "resource_file_list": []
+              },
+            "response": "文章主要报道了在2020年全球疫情期间，由于防疫措施的影响，导致近九成的博物馆暂时关闭，约13%的博物馆面临永久关闭的危机。在此背景下，中国国家博物馆发起了一场名为“全球博物馆珍藏展示在线接力”（Treasure Hunt Relay: Global Museum Director's Choice）的直播活动，旨在通过网络平台展现博物馆的文化力量与全球观众共克时艰。活动于2020年9月6日晚8点拉开帷幕，主题为“手拉手：我们与你同在”。\n直播活动的第一个环节是中国国家博物馆专场上，该馆馆长王春法介绍了五件镇馆之宝。这些文物分别是：陶鹰鼎、错金银云纹铜犀尊、伏羲女娲像立幅、针灸铜人、霁蓝釉粉彩描金莲花纹双燕耳尊。每件文物均具有深厚的历史价值和艺术魅力，代表了中国不同历史时期的文化和技术成就。\n1.陶鹰鼎：来自新石器时代后期，是仰韶文化的象征，形态独特，兼具实用与艺术价值，曾是申奥标志之一，禁止出国展览，且在央视纪录片中亮相。\n2.错金银云纹铜犀尊：西汉时期的金属工艺精品，采用错金银工艺，犀牛形象生动，反映了当时金属工艺水平和犀牛种群消失的生态史。\n3.伏羲女娲像立幅：唐代文物，描绘了中国神话中的创世神祇，展示了唐代的服饰和化妆特色。\n4.针灸铜人：明代中医教学用具，展示了针灸技术的精妙处，虽未详细介绍，但体现了医学价值。\n5.霁蓝釉粉彩描金莲花纹双燕耳尊：乾隆时期瓷器，工艺复杂，象征美好寓意，反映了乾隆时期的艺术审美和盛世自信。\n通过这些精选文物的展示，国家博物馆展现了中国悠久历史文化的多样性、艺术成就，以及各时代的独有特色。文章结尾评价国博选品用心，文物涵盖了陶器、青铜器、绘画、医学工具、瓷器等多个领域，尽管未涵盖玉器，但仍全面呈现了中华文明的辉煌。同时，文章也借文物故事反映了历史的兴衰更迭替，如乾隆盛世后的国力衰退和圆明园的毁坏，以及文物幸存的奇迹。",
+            "history": [],
+            "is_prompt": false
+        }
+    }
+]

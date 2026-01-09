@@ -24,7 +24,7 @@ from goose.components.buildins.llm import LLMComponent, LLMConfig, OutputDefinit
 from goose.components.buildins.code import CodeRunner, CodeConfig, InputMapping
 from goose.components.buildins.control import SelectorComponent, SelectorConfig, ConditionBranch
 from goose.components.buildins.basic import StartComponent,EndComponent,StartConfig,EndConfig
-from goose.providers.base import Provider,ProviderUsage,ProviderFactory
+from goose.providers.base import BaseLLM,ProviderUsage,ProviderFactory
 from goose.conversation import Message
 
 # 日志配置

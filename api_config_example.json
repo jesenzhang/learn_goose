@@ -1,0 +1,66 @@
+{
+  "base_url": "http://192.168.11.11:9980/gzclabelapi",
+  "default_timeout": 30,
+  "default_headers": {
+    "Content-Type": "application/json"
+  },
+  "global_config": {
+    "timeout": 30,
+    "max_retries": 3,
+    "retry_delay": 1.0
+  },
+  "endpoints": [
+    {
+      "name": "search_doc",
+      "method": "post",
+      "path": "/agent/search_doc",
+      "description": "检索文档",
+      "timeout": 10,
+      "params": {
+            "p": "w"
+        }
+    },
+    {
+      "name": "list_users",
+      "method": "get",
+      "path": "users",
+      "description": "获取用户列表",
+      "params": {
+        "page": 1,
+        "limit": 20
+      }
+    },
+    {
+      "name": "create_user",
+      "method": "post",
+      "path": "users",
+      "description": "创建新用户",
+      "params": {
+        "name": "",
+        "email": ""
+      }
+    },
+    {
+      "name": "update_user",
+      "method": "put",
+      "path": "users/{user_id}",
+      "description": "更新用户信息"
+    },
+    {
+      "name": "delete_user",
+      "method": "delete",
+      "path": "users/{user_id}",
+      "description": "删除用户"
+    },
+    {
+      "name": "search_users",
+      "method": "post",
+      "path": "users/search",
+      "description": "搜索用户",
+      "params": {
+        "keyword": "",
+        "filters": {}
+      }
+    }
+  ]
+}

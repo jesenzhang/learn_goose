@@ -2,7 +2,7 @@
 # 可以在这里暴露常用的类，方便外部使用 `import goose`
 from .session import SessionManager, Session
 from .conversation import Message, Conversation
-from .providers import Provider, ProviderUsage, Usage,OpenAIProvider
+from .providers import BaseLLM, BaseEmbedding, BaseReranker,ProviderUsage, Usage,OpenAIProvider
 from .agent import Agent
 from .toolkit import Tool, ToolError, ToolRegistry
 from .prompts import PromptManager
