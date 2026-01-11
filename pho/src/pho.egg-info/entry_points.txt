@@ -1,0 +1,2 @@
+[console_scripts]
+pho = pho.main:run

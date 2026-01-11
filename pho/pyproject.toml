@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pho"
+version = "0.1.0"
+description = "A unified AI agent framework supporting workflows and skills (merged from goose-py and skill_micro_agent)."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+authors = [
+  {name = "Pho Contributors", email = "pho@example.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "aiosqlite>=0.19.0",
+    "openai>=1.0.0",
+    "httpx>=0.24.0",
+    "tenacity>=8.2.0",
+    "frontmatter>=1.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-benchmark",
+    "pytest-cov",
+    "locust",
+    "black",
+    "isort",
+    "mypy",
+]
+
+[project.scripts]
+pho = "pho.main:run"
+pho-api = "pho.api.app:run_server"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+line_length = 100

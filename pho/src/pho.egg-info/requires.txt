@@ -1,0 +1,15 @@
+pydantic>=2.0.0
+aiosqlite>=0.19.0
+openai>=1.0.0
+httpx>=0.24.0
+tenacity>=8.2.0
+frontmatter>=1.0.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+[dev]
+pytest
+pytest-asyncio
+black
+isort
+mypy
