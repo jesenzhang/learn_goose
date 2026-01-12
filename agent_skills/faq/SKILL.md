@@ -1,7 +1,7 @@
 ---
 name: faq
 type: global
-description: Built-in knowledge base for system FAQs, statistics, and resource recommendations.
+description: The PRIMARY source of truth. MUST be checked FIRST for system identity, capabilities, status, and troubleshooting. Unified Knowledge Base engine. Retrieves answers from local static files and remote dynamic APIs. Handles identity, capabilities, and real-time system stats.
 allowed-tools: [query_knowledge_base]
 ---
 

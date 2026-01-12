@@ -233,7 +233,79 @@ def create_router() -> APIRouter:
             logger.error(f"Failed to delete session {session_id}: {e}", exc_info=e)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.post("/chat/{session_id}")
+    @router.post("/chat/{session_id}",
+                 response_class=StreamingResponse,
+                 responses={
+                     200: {
+                         "description": "Stream of events in ndjson format",
+                         "content": {
+                             "application/x-ndjson": {
+                                 "schema": {
+                                     "type": "object",
+                                     "properties": {
+                                         "type": {
+                                             "type": "string",
+                                             "enum": ["token", "tool_start", "tool_end", "tool_artifact", "state_change", "approval_req", "error"]
+                                         },
+                                         "data": {
+                                             "oneOf": [
+                                                 {
+                                                     "type": "string",
+                                                     "description": "For token events - the content token"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "name": {"type": "string", "description": "Tool name"},
+                                                         "args": {"type": "object", "description": "Tool arguments"}
+                                                     },
+                                                     "required": ["name", "args"],
+                                                     "description": "For tool_start events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "id": {"type": "string", "description": "Tool call ID"},
+                                                         "result": {"type": "string", "description": "Tool execution result"}
+                                                     },
+                                                     "required": ["id", "result"],
+                                                     "description": "For tool_end events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "msg": {"type": "string", "description": "Status message"}
+                                                     },
+                                                     "required": ["msg"],
+                                                     "description": "For state_change events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "tool": {"type": "string", "description": "Tool name"},
+                                                         "args": {"type": "object", "description": "Tool arguments"}
+                                                     },
+                                                     "required": ["tool", "args"],
+                                                     "description": "For approval_req events"
+                                                 },
+                                                 {
+                                                     "type": "string",
+                                                     "description": "For error events - error message"
+                                                 }
+                                             ]
+                                         },
+                                         "timestamp": {
+                                             "type": "number",
+                                             "format": "float",
+                                             "description": "Unix timestamp"
+                                         }
+                                     },
+                                     "required": ["type", "data", "timestamp"]
+                                 }
+                             }
+                         }
+                     }
+                 })
     async def chat(session_id: str, req: ChatRequest):
         """
         Send a message to the agent and get streaming response.
@@ -250,7 +322,79 @@ def create_router() -> APIRouter:
             media_type="application/x-ndjson"
         )
 
-    @router.post("/agent/{session_id}/approval")
+    @router.post("/agent/{session_id}/approval",
+                 response_class=StreamingResponse,
+                 responses={
+                     200: {
+                         "description": "Stream of events in ndjson format",
+                         "content": {
+                             "application/x-ndjson": {
+                                 "schema": {
+                                     "type": "object",
+                                     "properties": {
+                                         "type": {
+                                             "type": "string",
+                                             "enum": ["token", "tool_start", "tool_end", "tool_artifact", "state_change", "approval_req", "error"]
+                                         },
+                                         "data": {
+                                             "oneOf": [
+                                                 {
+                                                     "type": "string",
+                                                     "description": "For token events - the content token"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "name": {"type": "string", "description": "Tool name"},
+                                                         "args": {"type": "object", "description": "Tool arguments"}
+                                                     },
+                                                     "required": ["name", "args"],
+                                                     "description": "For tool_start events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "id": {"type": "string", "description": "Tool call ID"},
+                                                         "result": {"type": "string", "description": "Tool execution result"}
+                                                     },
+                                                     "required": ["id", "result"],
+                                                     "description": "For tool_end events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "msg": {"type": "string", "description": "Status message"}
+                                                     },
+                                                     "required": ["msg"],
+                                                     "description": "For state_change events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "tool": {"type": "string", "description": "Tool name"},
+                                                         "args": {"type": "object", "description": "Tool arguments"}
+                                                     },
+                                                     "required": ["tool", "args"],
+                                                     "description": "For approval_req events"
+                                                 },
+                                                 {
+                                                     "type": "string",
+                                                     "description": "For error events - error message"
+                                                 }
+                                             ]
+                                         },
+                                         "timestamp": {
+                                             "type": "number",
+                                             "format": "float",
+                                             "description": "Unix timestamp"
+                                         }
+                                     },
+                                     "required": ["type", "data", "timestamp"]
+                                 }
+                             }
+                         }
+                     }
+                 })
     async def handle_approval(session_id: str, req: ApprovalRequest):
         """
         Handle approval for a pending tool call.
@@ -268,7 +412,79 @@ def create_router() -> APIRouter:
             media_type="application/x-ndjson"
         )
 
-    @router.post("/approve/{session_id}")
+    @router.post("/approve/{session_id}",
+                 response_class=StreamingResponse,
+                 responses={
+                     200: {
+                         "description": "Stream of events in ndjson format",
+                         "content": {
+                             "application/x-ndjson": {
+                                 "schema": {
+                                     "type": "object",
+                                     "properties": {
+                                         "type": {
+                                             "type": "string",
+                                             "enum": ["token", "tool_start", "tool_end", "tool_artifact", "state_change", "approval_req", "error"]
+                                         },
+                                         "data": {
+                                             "oneOf": [
+                                                 {
+                                                     "type": "string",
+                                                     "description": "For token events - the content token"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "name": {"type": "string", "description": "Tool name"},
+                                                         "args": {"type": "object", "description": "Tool arguments"}
+                                                     },
+                                                     "required": ["name", "args"],
+                                                     "description": "For tool_start events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "id": {"type": "string", "description": "Tool call ID"},
+                                                         "result": {"type": "string", "description": "Tool execution result"}
+                                                     },
+                                                     "required": ["id", "result"],
+                                                     "description": "For tool_end events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "msg": {"type": "string", "description": "Status message"}
+                                                     },
+                                                     "required": ["msg"],
+                                                     "description": "For state_change events"
+                                                 },
+                                                 {
+                                                     "type": "object",
+                                                     "properties": {
+                                                         "tool": {"type": "string", "description": "Tool name"},
+                                                         "args": {"type": "object", "description": "Tool arguments"}
+                                                     },
+                                                     "required": ["tool", "args"],
+                                                     "description": "For approval_req events"
+                                                 },
+                                                 {
+                                                     "type": "string",
+                                                     "description": "For error events - error message"
+                                                 }
+                                             ]
+                                         },
+                                         "timestamp": {
+                                             "type": "number",
+                                             "format": "float",
+                                             "description": "Unix timestamp"
+                                         }
+                                     },
+                                     "required": ["type", "data", "timestamp"]
+                                 }
+                             }
+                         }
+                     }
+                 })
     async def quick_approve(session_id: str):
         """
         Quick approve without feedback (auto-approve pending action).

@@ -84,6 +84,7 @@ class StreamingEvent(BaseModel):
 class SessionInfo(BaseModel):
     """Session information."""
     session_id: str = Field(..., description="Session identifier")
+    user_id: Optional[str] = Field(None, description="User ID who owns the session")
     created_at: str = Field(..., description="Creation timestamp")
     updated_at: str = Field(..., description="Last update timestamp")
     message_count: int = Field(..., description="Number of messages")

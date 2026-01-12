@@ -4,11 +4,13 @@ import time
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
-# [关键] 引入我们之前定义的通用 Artifact 协议
-from agent_skills.types import CallToolResult
-from skill_micro_agent.core.agent import AgentContext
+from pydantic.types import AwareDatetime
 
-logger = logging.getLogger(__name__)
+# [关键] 引入我们之前定义的通用 Artifact 协议
+from assistant.conversation import CallToolResult
+from assistant.core.agent import AgentContext
+
+logger = logging.getLogger(__name__)    
 
 # =============================================================================
 # Helper Functions
@@ -51,7 +53,7 @@ async def save_memory(content: str = None, ctx:AgentContext=None) -> CallToolRes
 
     # 1. 去重检查
     try:
-        existing_memories = db.get_memories(session_id, limit=50)
+        existing_memories = await db.get_memories(session_id, limit=50)
         for mem in existing_memories:
             existing_content = mem.get("content", "")
             if _calculate_similarity(existing_content, content) > 0.85:
@@ -65,7 +67,7 @@ async def save_memory(content: str = None, ctx:AgentContext=None) -> CallToolRes
     final_content = f"[{timestamp_str}] {content}"
 
     try:
-        success = db.add_memory(session_id, final_content)
+        success = await db.add_memory(session_id, final_content)
 
         if success:
             # 成功保存：返回 Artifact，Data 包含结构化信息方便后续使用
@@ -106,11 +108,11 @@ async def search_memory(query: str = None, ctx:AgentContext=None) -> CallToolRes
 
         # 策略 A: SQL LIKE
         if hasattr(db, "search_memories"):
-            matches = db.search_memories(state.session_id, query)
+            matches =await db.search_memories(state.session_id, query)
         
         # 策略 B: 内存过滤
         else:
-            all_memories = db.get_memories(state.session_id, limit=1000)
+            all_memories =await db.get_memories(state.session_id, limit=1000)
             for mem in all_memories:
                 content = mem.get("content", "").lower()
                 if query in content:
@@ -150,7 +152,7 @@ async def list_memories(limit: int = 10,ctx:AgentContext=None) -> CallToolResult
         return CallToolResult.failure("System context missing.")
 
     try:
-        memories = db.get_memories(state.session_id, limit=limit)
+        memories = await db.get_memories(state.session_id, limit=limit)
 
         if not memories:
             return CallToolResult.from_text("Memory is empty.")
@@ -187,7 +189,7 @@ async def delete_memory(memory_id: int, ctx:AgentContext=None) -> CallToolResult
             return CallToolResult.failure(f"Invalid memory_id: {memory_id}")
 
         if hasattr(db, "delete_memory"):
-            success = db.delete_memory(mid)
+            success =await db.delete_memory(mid)
             if success:
                 return CallToolResult.from_text(f"🗑️ Memory ID {mid} deleted.")
             else:

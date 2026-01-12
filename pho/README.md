@@ -16,6 +16,8 @@ Pho combines two powerful frameworks:
 
 ✅ **Multi-Style Agent Architecture** - 5 agent patterns in one framework
 ✅ **DAG Workflow Engine** - Visual workflow orchestration with components
+✅ **Multi-User Support** - User authentication, authorization, and session isolation
+✅ **Session Collaboration** - Share sessions with multiple users
 ✅ **Parallel Tool Execution** - 3x speedup for multi-tool scenarios
 ✅ **Response Caching** - Eliminates redundant LLM calls
 ✅ **LLM Connection Pool** - Reduces initialization overhead
@@ -35,7 +37,8 @@ pho/
 │   │   ├── app.py              # Application factory
 │   │   ├── schemas.py          # API models
 │   │   ├── agent_routes.py     # Agent endpoints
-│   │   └── workflow_routes.py  # Workflow endpoints
+│   │   ├── workflow_routes.py  # Workflow endpoints
+│   │   └── auth_middleware.py  # Authentication middleware
 │   ├── agent/                   # Unified agent system
 │   │   ├── core.py             # Core abstractions
 │   │   ├── base.py             # BaseAgent (MINIMAL)
@@ -48,6 +51,9 @@ pho/
 │   │   ├── cache.py            # Response caching
 │   │   ├── inspectors/         # Tool inspection chain
 │   │   └── engines/            # Base engine classes
+│   ├── auth/                    # Authentication & authorization
+│   │   ├── service.py          # User auth service
+│   │   └── __init__.py         # Auth exports
 │   ├── conversation/            # Message models
 │   ├── providers/               # LLM/embedding/reranker
 │   │   └── factory.py          # Provider factory with pooling
@@ -59,6 +65,9 @@ pho/
 │   ├── skills/                  # Skill system
 │   ├── intent/                  # Intent recognition
 │   ├── session/                 # Session management
+│   ├── events/                  # Event system
+│   ├── persistence/             # Database abstraction layer
+│   ├── migration/               # Database migrations
 │   └── utils/                   # Utilities
 ├── tests/
 │   ├── unit/                    # Unit tests
@@ -66,6 +75,8 @@ pho/
 │   ├── benchmark/               # Performance benchmarks
 │   └── load/                    # Load tests (Locust)
 ├── docs/
+│   ├── AGENT_ARCHITECTURE.md   # Agent architecture guide
+│   ├── MULTI_USER.md           # Multi-user support guide
 │   ├── TEST_REPORT_CORRECTED.md # Honest performance report
 │   └── ...
 ├── pyproject.toml
@@ -193,6 +204,96 @@ curl -X POST "http://localhost:8000/api/v1/agent/chat/stream" \
     "stream": true
   }'
 ```
+
+## Multi-User Support
+
+Pho provides built-in multi-user support with authentication, authorization, and session isolation.
+
+**Note**: Multi-user support is a native feature. When you start the service with a new database, all required tables are created automatically. No manual migration is needed.
+
+### Database Tables
+
+The following tables are created automatically on first startup:
+
+| Table | Priority | Description |
+|-------|----------|-------------|
+| `users` | -10 | User accounts with roles |
+| `session_collaborators` | 0 | Session collaboration (sharing) |
+| `sessions` | 0 | Sessions with `user_id` field |
+| `messages` | 1 | Messages with `user_id` field |
+| `workflow_events` | N | Events with `user_id` field |
+| `workflow_checkpoints` | N | Checkpoints with `session_id` field |
+
+### Authentication
+
+```python
+from pho.auth import get_auth_service, get_user_repository, CreateUserRequest, UserRole
+
+# Create a user
+user_repo = get_user_repository()
+user = await user_repo.create_user(CreateUserRequest(
+    username="alice",
+    email="alice@example.com",
+    role=UserRole.USER
+))
+
+# Authenticate and get token
+auth_service = get_auth_service()
+token = await auth_service.create_token(user.id)
+```
+
+### Using with API
+
+Add authentication middleware to your FastAPI app:
+
+```python
+from fastapi import FastAPI
+from pho.api.auth_middleware import AuthenticationMiddleware
+
+app = FastAPI()
+app.add_middleware(AuthenticationMiddleware)
+```
+
+Then protect routes:
+
+```python
+from pho.api.auth_middleware import get_required_user
+from pho.auth import AuthUser
+
+@router.get("/sessions")
+async def list_sessions(user: AuthUser = Depends(get_required_user)):
+    # user.id contains the authenticated user's ID
+    sessions = await session_repo.list_sessions_for_user(user.id)
+    return {"sessions": sessions}
+```
+
+### Session Collaboration
+
+Share sessions with other users:
+
+```python
+from pho.auth import get_collaborator_repository
+
+collab_repo = get_collaborator_repository()
+
+# Add a collaborator
+await collab_repo.add_collaborator(
+    session_id="session_123",
+    user_id="user_456",
+    role="viewer"  # or "editor", "owner"
+)
+
+# List collaborators
+collaborators = await collab_repo.list_collaborators("session_123")
+
+# Check access
+has_access = await session_repo.is_session_accessible(
+    session_id="session_123",
+    user_id="user_456"
+)
+```
+
+For detailed documentation, see [MULTI_USER.md](docs/MULTI_USER.md).
 
 ## Provider Support
 

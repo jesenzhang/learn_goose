@@ -5,6 +5,7 @@ from typing import Optional
 from .backend import PersistenceBackend
 from .backends.jsonl_backend import JsonlBackend
 from .backends.sql_backend import SQLBackend
+from .backends.http_backend import HTTPBackend, parse_db_url
 from .repository import BaseRepository
 
 logger = logging.getLogger("goose.persistence")
@@ -12,9 +13,9 @@ logger = logging.getLogger("goose.persistence")
 class PersistenceManager:
     """
     [Factory & Coordinator] 持久化层管理器
-    
+
     职责：
-    1. 解析 db_url，实例化对应的 Backend (SQL 或 JSONL)。
+    1. 解析 db_url，实例化对应的 Backend (SQL、JSONL 或 HTTP)。
     2. 管理全局数据库连接的生命周期 (Boot/Shutdown)。
     3. 协调 Schema 的自动注册与初始化。
     """
@@ -24,6 +25,9 @@ class PersistenceManager:
         :param db_url: 连接字符串
                - 开发环境: "file://./data" 或 "file:///abs/path/to/data"
                - 生产环境: "sqlite:///goose.db", "postgresql://user:pass@host/db"
+               - HTTP API: "http://localhost:8000" 或 "https://api.example.com"
+               - HTTP API with key: "http://localhost:8000?api_key=xxx"
+               - HTTP API with config: "http://localhost:8000?api_key=xxx&timeout=60"
         """
         self.db_url = db_url
         self._backend: Optional[PersistenceBackend] = None
@@ -40,24 +44,30 @@ class PersistenceManager:
     def _create_backend(self) -> PersistenceBackend:
         """根据 URL Scheme 决定使用哪个后端适配器"""
         uri = self.db_url
-        
-        # 1. JSONL 文件后端
-        if uri.startswith("file://") or uri.endswith(".jsonl"):
+
+        # 1. HTTP API 后端
+        if uri.startswith("http://") or uri.startswith("https://"):
+            base_url, api_key, config_kwargs = parse_db_url(uri)
+            logger.info(f"🌐 persistence: Using HTTP Backend (url={base_url})")
+            return HTTPBackend(base_url=base_url, api_key=api_key, **config_kwargs)
+
+        # 2. JSONL 文件后端
+        elif uri.startswith("file://") or uri.endswith(".jsonl"):
             # 解析路径: file://./data -> ./data
             path = uri.replace("file://", "")
-            if not path: 
+            if not path:
                 path = "./data" # 默认值
-            
+
             logger.info(f"📂 persistence: Using JSONL Backend (path={path})")
             return JsonlBackend(data_dir=path)
-        
-        # 2. SQL 数据库后端 (SQLite, Postgres, MySQL)
-        # 只要包含 "://", 且不是 file://，我们都认为是数据库连接串
+
+        # 3. SQL 数据库后端 (SQLite, Postgres, MySQL)
+        # 只要包含 "://", 且不是 file://、http://、https://，我们都认为是数据库连接串
         elif "://" in uri:
             logger.info(f"🗄️ persistence: Using SQL Backend (url={uri})")
             return SQLBackend(db_url=uri)
-            
-        # 3. 未知协议 fallback
+
+        # 4. 未知协议 fallback
         else:
             logger.warning(f"❓ persistence: Unknown scheme in '{uri}', falling back to JSONL.")
             return JsonlBackend(data_dir="./data")

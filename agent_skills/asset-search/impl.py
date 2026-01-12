@@ -3,8 +3,8 @@ import os
 import httpx
 import asyncio
 from typing import Dict, List
-from agent_skills.types import CallToolResult
-from skill_micro_agent.skills.context import ServiceContext
+from assistant.conversation import CallToolResult
+from assistant.core.agent import AgentContext
 
 import logging
 logger = logging.getLogger(__name__)

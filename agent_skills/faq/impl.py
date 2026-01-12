@@ -7,7 +7,7 @@ import asyncio
 import time
 from typing import Optional, List, Dict
 import logging
-from agent_skills.types import CallToolResult, RawContent
+from assistant.conversation import CallToolResult, RawContent
 
 logger = logging.getLogger(__name__)
 

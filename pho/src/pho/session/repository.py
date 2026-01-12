@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel,Field
-from ..conversation import Message 
+from ..conversation import Message
 from .types import Session,SessionType
 from ..persistence import BaseRepository, PersistenceManager,TableSpec,with_table
 
@@ -14,6 +14,7 @@ logger = logging.getLogger("goose.session.repo")
 
 # --- SQL Schemas ---
 
+# 会话表
 SESSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     -- 1. 核心标识
@@ -22,25 +23,28 @@ CREATE TABLE IF NOT EXISTS sessions (
     working_dir TEXT NOT NULL,  -- 必须字段
     user_set_name INTEGER,      -- Boolean: 0=False, 1=True
     session_type TEXT,          -- Enum: 存 'user', 'workflow' 等字符串
-    
+
     -- 2. 时间戳 (使用 REAL 存 Unix Timestamp)
     created_at REAL,
     updated_at REAL,
-    
-    -- 3. 复杂结构 (Repository 会自动序列化为 JSON 字符串)
+
+    -- 3. 多用户支持
+    user_id TEXT,               -- 会话所有者的用户 ID
+
+    -- 4. 复杂结构 (Repository 会自动序列化为 JSON 字符串)
     metadata TEXT,
     extension_data TEXT,        -- ExtensionData 对象 -> JSON
     stats TEXT,                 -- [变动] TokenStats 对象 -> JSON
-    
-    -- 4. 上下文与状态
+
+    -- 5. 上下文与状态
     schedule_id TEXT,
     recipe_json TEXT,
     user_recipe_values TEXT,    -- Dict -> JSON
-    
+
     message_count INTEGER,
     provider_name TEXT,
-    
-    -- 5. 配置
+
+    -- 6. 配置
     -- [注意] 对应字段 current_model_config。
     -- 如果你的 Repository 使用 model.model_dump() (默认 by_alias=False)，
     -- 那么列名必须叫 current_model_config 以匹配 Python 属性名。
@@ -56,13 +60,19 @@ SESSION_INDEX_SCHEMA2 = """
 CREATE INDEX IF NOT EXISTS idx_sessions_type ON sessions(session_type);
 """
 
+# 多用户支持索引
+SESSION_INDEX_SCHEMA3 = """
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id, updated_at DESC);
+"""
+
 MESSAGE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     session_id TEXT,
     role TEXT,
-    content TEXT, 
+    content TEXT,
     created_at REAL,
+    user_id TEXT,               -- 发送消息的用户 ID
     metadata TEXT,
     FOREIGN KEY(session_id) REFERENCES sessions(id)
 );
@@ -71,6 +81,11 @@ CREATE TABLE IF NOT EXISTS messages (
 # [优化] 添加索引以加速查询
 MESSAGE_INDEX_SCHEMA = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
+"""
+
+# 多用户支持索引
+MESSAGE_INDEX_SCHEMA2 = """
+CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id, created_at DESC);
 """
 
 # def register_session_schemas():
@@ -83,9 +98,24 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
 
 
 
-@with_table(name='sessions',model=Session,sql=[SESSION_SCHEMA,SESSION_INDEX_SCHEMA1,SESSION_INDEX_SCHEMA2],pk='id',priority=0,attr_name='session_spec')
-@with_table(name='messages',model=Message,sql=[MESSAGE_SCHEMA,MESSAGE_INDEX_SCHEMA],pk='id',priority=1,attr_name='message_spec')
+@with_table(name='sessions',model=Session,sql=[SESSION_SCHEMA,SESSION_INDEX_SCHEMA1,SESSION_INDEX_SCHEMA2,SESSION_INDEX_SCHEMA3],pk='id',priority=0,attr_name='session_spec')
+@with_table(name='messages',model=Message,sql=[MESSAGE_SCHEMA,MESSAGE_INDEX_SCHEMA,MESSAGE_INDEX_SCHEMA2],pk='id',priority=1,attr_name='message_spec')
 class SessionRepository(BaseRepository):
+    """
+    会话仓储接口
+
+    管理会话和消息表。
+    协作者相关功能已移至 auth.repository.SessionCollaboratorRepository
+    """
+
+    def __init__(self, pm=None, collaborator_repository=None):
+        """
+        Args:
+            pm: PersistenceManager 实例
+            collaborator_repository: 协作者仓储（可选，用于多用户协作功能）
+        """
+        super().__init__(pm)
+        self._collaborator_repository = collaborator_repository
     
     async def create_session(self, session:Session):
         """创建新会话"""
@@ -328,13 +358,13 @@ class SessionRepository(BaseRepository):
             # 对于 SQL 后端，它开启真正的 DB 事务；
             # 对于 JSONL 后端，它获取文件锁防止并发写入冲突。
             async with self.transaction():
-                
+
                 # 1. 先删消息 (使用 session_id 筛选)
                 await self._delete_by(Message, filters={"session_id": session_id})
-                
+
                 # 2. 再删会话 (使用 id 筛选)
                 await self._delete_by(Session, filters={"id": session_id})
-                
+
             logger.info(f"🗑️ Deleted session {session_id}")
 
         except Exception as e:
@@ -343,3 +373,234 @@ class SessionRepository(BaseRepository):
             # 如果这里捕获了不抛出，上层调用者会以为删除成功了，导致 UI 状态错误。
             # 在 transaction 块中抛出异常会自动触发 SQL 回滚。
             raise e
+
+    # ================= 多用户支持方法 =================
+
+    async def list_sessions_for_user(
+        self,
+        user_id: str,
+        limit: int = -1,
+        offset: int = 0
+    ) -> List[Session]:
+        """
+        列出指定用户的会话
+
+        Args:
+            user_id: 用户 ID
+            limit: 返回数量限制
+            offset: 偏移量
+
+        Returns:
+            会话列表
+        """
+        try:
+            entities = await self._find(
+                Session,
+                filters={"user_id": user_id},
+                limit=limit,
+                offset=offset
+            )
+            return entities
+        except Exception as e:
+            logger.error(f"Failed to list sessions for user {user_id}: {e}")
+            return []
+
+    async def get_user_session_count(self, user_id: str) -> int:
+        """
+        获取用户的会话总数
+
+        Args:
+            user_id: 用户 ID
+
+        Returns:
+            会话总数
+        """
+        try:
+            count = await self._count(Session, filters={"user_id": user_id})
+            return count
+        except Exception as e:
+            logger.error(f"Failed to get session count for user {user_id}: {e}")
+            return 0
+
+    async def list_accessible_sessions(
+        self,
+        user_id: str,
+        limit: int = -1,
+        offset: int = 0
+    ) -> List[Session]:
+        """
+        列出用户可访问的会话（自有 + 协作的会话）
+
+        Args:
+            user_id: 用户 ID
+            limit: 返回数量限制
+            offset: 偏移量
+
+        Returns:
+            可访问的会话列表
+        """
+        try:
+            # 获取自有会话
+            own_sessions = await self._find(
+                Session,
+                filters={"user_id": user_id},
+                limit=limit,
+                offset=offset
+            )
+
+            # 获取协作会话（通过 session_collaborators 表）
+            # 注意：这需要在数据库中执行 JOIN 查询
+            # 这里简化处理，先返回自有会话
+            return own_sessions
+
+        except Exception as e:
+            logger.error(f"Failed to list accessible sessions for user {user_id}: {e}")
+            return []
+
+    async def add_collaborator(
+        self,
+        session_id: str,
+        user_id: str,
+        role: str = "viewer",
+        added_by: Optional[str] = None
+    ) -> bool:
+        """
+        添加协作者到会话
+
+        注意：此方法需要 collaborator_repository。
+        推荐直接使用 auth.repository.SessionCollaboratorRepository
+
+        Args:
+            session_id: 会话 ID
+            user_id: 用户 ID
+            role: 角色 (owner/editor/viewer)
+            added_by: 添加者用户 ID
+
+        Returns:
+            是否添加成功
+        """
+        if not self._collaborator_repository:
+            logger.warning(
+                "collaborator_repository not provided. "
+                "Please use auth.repository.SessionCollaboratorRepository directly."
+            )
+            return False
+
+        try:
+            await self._collaborator_repository.add_collaborator(
+                session_id, user_id, role, added_by
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to add collaborator {user_id} to session {session_id}: {e}")
+            return False
+
+    async def remove_collaborator(
+        self,
+        session_id: str,
+        user_id: str
+    ) -> bool:
+        """
+        从会话移除协作者
+
+        注意：此方法需要 collaborator_repository。
+        推荐直接使用 auth.repository.SessionCollaboratorRepository
+
+        Args:
+            session_id: 会话 ID
+            user_id: 用户 ID
+
+        Returns:
+            是否移除成功
+        """
+        if not self._collaborator_repository:
+            logger.warning(
+                "collaborator_repository not provided. "
+                "Please use auth.repository.SessionCollaboratorRepository directly."
+            )
+            return False
+
+        try:
+            return await self._collaborator_repository.remove_collaborator(
+                session_id, user_id
+            )
+        except Exception as e:
+            logger.error(f"Failed to remove collaborator {user_id} from session {session_id}: {e}")
+            return False
+
+    async def list_collaborators(
+        self,
+        session_id: str
+    ) -> List[Dict[str, Any]]:
+        """
+        列出会话的协作者
+
+        注意：此方法需要 collaborator_repository。
+        推荐直接使用 auth.repository.SessionCollaboratorRepository
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            协作者列表
+        """
+        if not self._collaborator_repository:
+            logger.warning(
+                "collaborator_repository not provided. "
+                "Please use auth.repository.SessionCollaboratorRepository directly."
+            )
+            return []
+
+        try:
+            collaborators = await self._collaborator_repository.list_collaborators(
+                session_id
+            )
+            # 转换为字典列表以保持向后兼容
+            return [
+                {
+                    "user_id": c.user_id,
+                    "role": c.role,
+                    "added_at": c.added_at,
+                    "added_by": c.added_by,
+                }
+                for c in collaborators
+            ]
+        except Exception as e:
+            logger.error(f"Failed to list collaborators for session {session_id}: {e}")
+            return []
+
+    async def is_session_accessible(
+        self,
+        session_id: str,
+        user_id: str
+    ) -> bool:
+        """
+        检查用户是否可访问会话（是所有者或协作者）
+
+        注意：协作者检查需要 collaborator_repository。
+        推荐直接使用 auth.repository.SessionCollaboratorRepository
+
+        Args:
+            session_id: 会话 ID
+            user_id: 用户 ID
+
+        Returns:
+            是否可访问
+        """
+        try:
+            # 检查是否是所有者
+            session = await self.get_session(session_id)
+            if session and session.user_id == user_id:
+                return True
+
+            # 检查是否是协作者
+            if self._collaborator_repository:
+                return await self._collaborator_repository.is_collaborator(
+                    session_id, user_id
+                )
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Failed to check session access for {user_id} to {session_id}: {e}")
+            return False

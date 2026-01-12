@@ -197,6 +197,10 @@ class MessageMetadata(BaseModel):
 class Message(BaseModel):
     """
     支持智能构造的 Message 类
+
+    多用户支持：
+    - user_id: 发送消息的用户 ID
+    - 与 session.user_id 配合实现用户隔离
     """
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8], description="消息ID")
     role: Role = Field(default=Role.USER, description="消息角色")
@@ -205,6 +209,7 @@ class Message(BaseModel):
     metadata: MessageMetadata = Field(default_factory=MessageMetadata)
 
     session_id: Optional[str] = Field(default=None, description="所属会话ID")
+    user_id: Optional[str] = Field(default=None, description="发送消息的用户 ID")
     created_at: float = Field(default_factory=time.time, description="消息创建时间")
 
     # 之前已经有这个了，保持不动

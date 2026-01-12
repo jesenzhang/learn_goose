@@ -6,6 +6,7 @@ This module provides endpoints for:
 - Streaming responses with SSE
 - Session management
 - Approval handling
+- Multi-user authentication and authorization
 """
 
 import asyncio
@@ -16,7 +17,7 @@ import uuid
 from typing import Optional, Dict, Any, AsyncGenerator
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.responses import StreamingResponse
 
 from pho.api.schemas import (
@@ -39,6 +40,8 @@ from pho.agent import (
     AgentEventType,
 )
 from pho.providers import ProviderFactory, ModelConfig
+from pho.api.auth_middleware import get_current_user, get_required_user
+from pho.auth import AuthUser
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +54,13 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 _session_lock = asyncio.Lock()
 
 
-def _create_session(style: AgentStyle) -> str:
-    """Create a new session."""
+def _create_session(style: AgentStyle, user_id: str) -> str:
+    """Create a new session with user association."""
     session_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
     _sessions[session_id] = {
         "session_id": session_id,
+        "user_id": user_id,
         "created_at": now,
         "updated_at": now,
         "messages": [],
@@ -205,35 +209,73 @@ def create_agent_router() -> APIRouter:
     # ========================================================================
 
     @router.get("/sessions", response_model=SessionListResponse)
-    async def list_sessions():
-        """List all sessions."""
+    async def list_sessions(
+        current_user: Optional[AuthUser] = Depends(get_current_user)
+    ):
+        """
+        List sessions accessible to the current user.
+
+        If authenticated, returns user's sessions.
+        If not authenticated, returns empty list.
+        """
         async with _session_lock:
-            sessions = [
-                SessionInfo(
-                    session_id=s["session_id"],
-                    created_at=s["created_at"],
-                    updated_at=s["updated_at"],
-                    message_count=s["message_count"],
-                    style=AgentStyleEnum(s["style"].value),
-                )
-                for s in _sessions.values()
-            ]
-        return SessionListResponse(sessions=sessions, total=len(sessions))
+            if current_user:
+                # Filter sessions by user_id
+                user_sessions = [
+                    SessionInfo(
+                        session_id=s["session_id"],
+                        user_id=s.get("user_id"),
+                        created_at=s["created_at"],
+                        updated_at=s["updated_at"],
+                        message_count=s["message_count"],
+                        style=AgentStyleEnum(s["style"].value),
+                    )
+                    for s in _sessions.values()
+                    if s.get("user_id") == current_user.id
+                ]
+                return SessionListResponse(sessions=user_sessions, total=len(user_sessions))
+            else:
+                # 未认证用户返回空列表
+                return SessionListResponse(sessions=[], total=0)
 
     @router.get("/sessions/{session_id}", response_model=SessionState)
-    async def get_session(session_id: str):
-        """Get session state."""
+    async def get_session(
+        session_id: str,
+        current_user: Optional[AuthUser] = Depends(get_current_user)
+    ):
+        """
+        Get session state.
+
+        Requires authentication and session access permission.
+        """
         session = _get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-        return SessionState(**session)
+
+        # 检查访问权限
+        if current_user and session.get("user_id") == current_user.id:
+            return SessionState(**session)
+
+        raise HTTPException(status_code=403, detail="Access denied to this session")
 
     @router.delete("/sessions/{session_id}")
-    async def delete_session(session_id: str):
-        """Delete a session."""
+    async def delete_session(
+        session_id: str,
+        current_user: AuthUser = Depends(get_required_user)
+    ):
+        """
+        Delete a session.
+
+        Requires authentication and ownership of the session.
+        """
         async with _session_lock:
             if session_id not in _sessions:
                 raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+            session = _sessions[session_id]
+            if session.get("user_id") != current_user.id:
+                raise HTTPException(status_code=403, detail="Not authorized to delete this session")
+
             del _sessions[session_id]
         return {"status": "success", "message": "Session deleted"}
 
@@ -242,7 +284,10 @@ def create_agent_router() -> APIRouter:
     # ========================================================================
 
     @router.post("/chat", response_model=ChatResponse)
-    async def chat(req: ChatRequest):
+    async def chat(
+        req: ChatRequest,
+        current_user: AuthUser = Depends(get_required_user)
+    ):
         """
         Send a message to the agent (non-streaming).
 
@@ -252,6 +297,8 @@ def create_agent_router() -> APIRouter:
         - reasoning: ReactAgent (thought loop)
         - skill_based: ThreePhaseAgent (intent routing)
         - orchestrated: WorkflowAgent (DAG workflow)
+
+        Requires authentication.
         """
         # Map API style to internal style
         style_map = {
@@ -264,16 +311,16 @@ def create_agent_router() -> APIRouter:
         agent_style = style_map.get(req.style, AgentStyle.MINIMAL)
 
         # Get or create session
-        session_id = req.session_id or _create_session(agent_style)
+        session_id = req.session_id or _create_session(agent_style, current_user.id)
         session = _get_session(session_id)
         if not session:
-            session_id = _create_session(agent_style)
+            session_id = _create_session(agent_style, current_user.id)
             session = _sessions[session_id]
 
-        # Create context
+        # Create context with authenticated user
         context = Context(
             session_id=session_id,
-            user_id="api-user",
+            user_id=current_user.id,  # 使用认证用户的 ID
             variables=req.context or {},
         )
 
@@ -322,11 +369,17 @@ def create_agent_router() -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/chat/stream")
-    async def chat_stream(req: ChatRequest, request: Request):
+    async def chat_stream(
+        req: ChatRequest,
+        request: Request,
+        current_user: AuthUser = Depends(get_required_user)
+    ):
         """
         Send a message to the agent (streaming).
 
         Returns Server-Sent Events (SSE) with real-time updates.
+
+        Requires authentication.
         """
         # Map API style to internal style
         style_map = {
@@ -339,16 +392,16 @@ def create_agent_router() -> APIRouter:
         agent_style = style_map.get(req.style, AgentStyle.MINIMAL)
 
         # Get or create session
-        session_id = req.session_id or _create_session(agent_style)
+        session_id = req.session_id or _create_session(agent_style, current_user.id)
         session = _get_session(session_id)
         if not session:
-            session_id = _create_session(agent_style)
+            session_id = _create_session(agent_style, current_user.id)
             session = _sessions[session_id]
 
-        # Create context
+        # Create context with authenticated user
         context = Context(
             session_id=session_id,
-            user_id="api-user",
+            user_id=current_user.id,  # 使用认证用户的 ID
             variables=req.context or {},
         )
 

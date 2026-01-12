@@ -34,19 +34,26 @@ CREATE TABLE IF NOT EXISTS workflow_events (
     data TEXT,
     parent_run_id TEXT,
     producer_id TEXT,
+    user_id TEXT,            -- 多用户支持：触发事件的用户 ID
     timestamp REAL,
     metadata TEXT
 );
-
 """
+
 WORKFLOW_EVENTS_INDEX_SQL = """
 -- [关键] 添加联合索引
 -- 用于快速执行: SELECT * FROM events WHERE run_id = ? ORDER BY seq_id ASC
 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON workflow_events(run_id, seq_id);
 """
 
+# 多用户支持索引
+WORKFLOW_EVENTS_USER_INDEX_SQL = """
+-- 用于按用户查询事件
+CREATE INDEX IF NOT EXISTS idx_events_user_run ON workflow_events(user_id, run_id, timestamp DESC);
+"""
 
-@with_table(name='workflow_events',model=Event,sql=[WORKFLOW_EVENTS_TABLE_SQL,WORKFLOW_EVENTS_INDEX_SQL],pk='id',priority=0,attr_name='event_spec')
+
+@with_table(name='workflow_events',model=Event,sql=[WORKFLOW_EVENTS_TABLE_SQL,WORKFLOW_EVENTS_INDEX_SQL,WORKFLOW_EVENTS_USER_INDEX_SQL],pk='id',priority=0,attr_name='event_spec')
 class SQLEventStore(BaseRepository,IEventStore):
     async def save_event(self, event: Event) -> None:
         try:
