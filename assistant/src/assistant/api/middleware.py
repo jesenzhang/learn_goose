@@ -9,7 +9,7 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
         
         # 1. 尝试从标准 Header 获取 Token
         auth_header = request.headers.get("Authorization")
-        token_str = None
+        token_str = auth_header
         
         if auth_header and auth_header.startswith("Bearer "):
             token_str = auth_header.replace("Bearer ", "")

@@ -209,6 +209,19 @@ def create_router() -> APIRouter:
         """Health check endpoint."""
         return {"status": "ok", "service": "skill-micro-agent"}
 
+    @router.post("/session/{session_title}")
+    async def create_session(session_title: str):
+        """
+        Create a new session.
+        """
+        try:
+            db = get_db()   
+            session_id = await db.create_session(session_title)
+            return {"status": "success", "msg": "Session created", "session_id": session_id}
+        except Exception as e:
+            logger.error(f"Failed to create session {session_title}: {e}", exc_info=e)
+            raise HTTPException(status_code=500, detail=str(e))
+        
     @router.get("/sessions")
     async def list_sessions():
         """
@@ -302,6 +315,8 @@ def create_router() -> APIRouter:
             logger.error(f"Failed to delete session {session_id}: {e}", exc_info=e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    
+    
     @router.post("/chat/{session_id}")
     async def chat(
         session_id: int,

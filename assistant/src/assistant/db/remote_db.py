@@ -87,7 +87,7 @@ class RemoteDatabaseManager:
             headers["Authorization"] = dynamic_token
         elif self.api_key:
             headers["Authorization"] = self.api_key
-            
+        print(dynamic_token)
         return headers
 
     async def _request(
@@ -143,7 +143,7 @@ class RemoteDatabaseManager:
         [Protocol] 加载会话状态
         API: GET /agent/handle/load_state?session_id=...
         """
-        res = await self._request("GET", "/agent/handle/load_state", params={"session_id": session_id, "p":"w"})
+        res = await self._request("GET", f"/agent/handle/load_state", params={"session_id":session_id,"p":"w"})
 
         if res.get("code") == 200 or res.get("status") == 1:
             data = res.get("data")
@@ -165,6 +165,34 @@ class RemoteDatabaseManager:
         except Exception as e:
             logger.error(f"Failed to delete state: {e}")
             return False
+        
+    async def create_session(self, title: str = "New Chat") -> Optional[int]:
+        """
+        [Protocol Extension] 为用户创建新会话
+        API: POST /assistant/session/add
+        """
+        try:
+            # 构造符合业务逻辑的 Payload
+            payload = {
+                "session_name": title
+            }
+
+            res = await self._request("POST", "/assistant/session/add", json=payload)
+
+            # 解析多种可能的返回格式
+            if res.get("code") == 200 or res.get("status") == 1:
+                data = res.get("data")
+                if isinstance(data, dict):
+                    session_id = data.get("session_id") or data.get("id")
+                    return int(session_id) if session_id is not None else None
+                if isinstance(data, (str, int)):
+                    return int(data)
+
+            logger.warning(f"Create session failed: {res}")
+            return None
+        except Exception as e:
+            logger.error(f"create_user_session error: {e}")
+            return None
 
     async def list_sessions(self, limit: int = 20, **kwargs) -> List[Dict]:
         """
@@ -379,36 +407,7 @@ class RemoteDatabaseManager:
                 return filtered[:limit]
         return []
 
-    async def create_user_session(self, user_id: int, title: str = "New Chat") -> Optional[int]:
-        """
-        [Protocol Extension] 为用户创建新会话
-        API: POST /assistant/session/add
-        """
-        try:
-            # 构造符合业务逻辑的 Payload
-            payload = {
-                "user_id": user_id,
-                "title": title,
-                "create_time": datetime.now().isoformat()
-            }
-
-            res = await self._request("POST", "/assistant/session/add", json=payload)
-
-            # 解析多种可能的返回格式
-            if res.get("code") == 200 or res.get("status") == 1:
-                data = res.get("data")
-                if isinstance(data, dict):
-                    session_id = data.get("session_id") or data.get("id")
-                    return int(session_id) if session_id is not None else None
-                if isinstance(data, (str, int)):
-                    return int(data)
-
-            logger.warning(f"Create session failed: {res}")
-            return None
-        except Exception as e:
-            logger.error(f"create_user_session error: {e}")
-            return None
-
+   
     async def delete_user_sessions(self, user_id: int) -> int:
         """
         删除指定用户的所有会话
