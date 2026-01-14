@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar, cast, Protocol,List
 # 引入你的上下文定义
 from ..skills.context import create_context, ServiceContext, AIServices
 from ..core.state import AgentState
+from ..core.context import RequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ class ToolExecutor:
         state: AgentState,
         db: DatabaseProtocol,
         ai_services: Optional[AIServices] = None,
+        request_context: Optional[RequestContext] = None,
         extra_services: Optional[Dict[str, Any]] = None
     ):
         self.session_id = session_id
@@ -89,6 +91,7 @@ class ToolExecutor:
         self.db = db
         self.ai_services = ai_services
         self.extra_services = extra_services or {}
+        self.request_context = request_context
 
     def _create_context(self) -> ServiceContext[AgentState, DatabaseProtocol]:
         """

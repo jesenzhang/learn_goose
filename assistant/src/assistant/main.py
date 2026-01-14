@@ -36,6 +36,7 @@ def create_app() -> FastAPI:
     from assistant.db import configure_db
     from assistant.core.agent import MicroAgent
     from assistant.api.routes import create_router, set_agent
+    from assistant.api.middleware import AuthContextMiddleware
     
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -96,6 +97,8 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan
     )
+    
+    app.add_middleware(AuthContextMiddleware)
 
     # 主路由
     router = create_router()

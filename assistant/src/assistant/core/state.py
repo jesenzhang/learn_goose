@@ -37,22 +37,25 @@ class AgentState(BaseModel):
         pending_tool_call: Tool awaiting human approval
         title: Session title for UI display
         shared_memory: Key-value storage for artifacts and cross-turn data
+        run_config: user provided run configuration for the turn
         updated_at: Last activity timestamp
         last_active: Human-readable last activity time
     """
-    session_id: str
-    user_id: Optional[str] = Field(default=None, description="User identifier for multi-user support")
+    session_id: int
+    user_id: Optional[int] = Field(default=None, description="User identifier for multi-user support")
     status: AgentStatus = AgentStatus.IDLE
-    history: List[Dict] = []
+    history: List[Dict] = Field(default_factory=list, exclude=True)
     active_skill: Optional[str] = Field(default=None, description="Current activated skill context")
     intent_session: Dict[str, Any] = Field(default_factory=dict, description="Internal state for Intent Recognizer")
     current_plan: List[str] = []
     pending_tool_call: Optional[Dict] = None
     title: str = "New Chat"
-    shared_memory: Dict[str, Any] = {}
+    shared_memory: Dict[str, Any] = Field(default_factory=dict)
+    run_config: Dict[str, Any] = Field(default_factory=dict, exclude=True)
     updated_at: float = Field(default_factory=lambda: datetime.now().timestamp())
     last_active: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
+    
     def to_json(self) -> str:
         """Serialize to JSON."""
         return self.model_dump_json()

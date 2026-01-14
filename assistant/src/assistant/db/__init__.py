@@ -73,8 +73,19 @@ class UnifiedDatabase:
             await self._local_db.initialize()
 
     # ================= DatabaseProtocol Implementation =================
-
-    async def save_state(self, session_id: str, state: Dict[str, Any]) -> bool:
+    async def add_message(self, session_id: int, role: str, content: str, metadata: Dict = None, **kwargs) -> bool:
+        """
+        [Protocol] 添加消息
+        API: POST /agent/handle/add_message
+        Body: {session_id, role, content, Metadata: str(json)}
+        """
+        if self._remote_db:
+            return await self._remote_db.add_message(session_id, role, content, metadata, **kwargs)
+        elif self._local_db:
+            return await self._local_db.add_message(session_id, role, content, metadata, **kwargs)
+        return False
+        
+    async def save_state(self, session_id: int, state: Dict[str, Any]) -> bool:
         """保存会话状态"""
         if self._remote_db:
             return await self._remote_db.save_state(session_id, state)
@@ -82,7 +93,7 @@ class UnifiedDatabase:
             return await self._local_db.save_state(session_id, state)
         return False
 
-    async def load_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def load_state(self, session_id: int) -> Optional[Dict[str, Any]]:
         """加载会话状态"""
         if self._remote_db:
             return await self._remote_db.load_state(session_id)
@@ -90,7 +101,7 @@ class UnifiedDatabase:
             return await self._local_db.load_state(session_id)
         return None
 
-    async def delete_state(self, session_id: str) -> bool:
+    async def delete_state(self, session_id: int) -> bool:
         """删除会话状态"""
         if self._remote_db:
             return await self._remote_db.delete_state(session_id)
@@ -106,7 +117,7 @@ class UnifiedDatabase:
             return await self._local_db.list_sessions()
         return []
 
-    async def save_event(self, session_id: str, event: Dict[str, Any]) -> bool:
+    async def save_event(self, session_id: int, event: Dict[str, Any]) -> bool:
         """保存事件"""
         if self._remote_db:
             return await self._remote_db.save_event(session_id, event)
@@ -116,7 +127,7 @@ class UnifiedDatabase:
 
     async def load_events(
         self,
-        session_id: str,
+        session_id: int,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ):
@@ -127,7 +138,7 @@ class UnifiedDatabase:
             return await self._local_db.load_events(session_id, limit, since)
         return []
 
-    async def delete_events(self, session_id: str, before: Optional[str] = None) -> int:
+    async def delete_events(self, session_id: int, before: Optional[str] = None) -> int:
         """删除事件"""
         if self._remote_db:
             return await self._remote_db.delete_events(session_id, before)
@@ -160,7 +171,7 @@ class UnifiedDatabase:
 
     # ================= Multi-User Methods =================
 
-    async def save_state_for_user(self, user_id: str, session_id: str, state: Dict[str, Any]) -> bool:
+    async def save_state_for_user(self, user_id: int, session_id: int, state: Dict[str, Any]) -> bool:
         """为指定用户保存会话状态"""
         if self._remote_db and hasattr(self._remote_db, 'save_state_for_user'):
             return await self._remote_db.save_state_for_user(user_id, session_id, state)
@@ -168,7 +179,7 @@ class UnifiedDatabase:
             return await self._local_db.save_state_for_user(user_id, session_id, state)
         return False
 
-    async def load_state_for_user(self, user_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+    async def load_state_for_user(self, user_id: int, session_id: int) -> Optional[Dict[str, Any]]:
         """加载指定用户的会话状态"""
         if self._remote_db and hasattr(self._remote_db, 'load_state_for_user'):
             return await self._remote_db.load_state_for_user(user_id, session_id)
@@ -176,7 +187,7 @@ class UnifiedDatabase:
             return await self._local_db.load_state_for_user(user_id, session_id)
         return None
 
-    async def list_sessions_for_user(self, user_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def list_sessions_for_user(self, user_id: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """列出指定用户的会话"""
         if self._remote_db and hasattr(self._remote_db, 'list_sessions_for_user'):
             return await self._remote_db.list_sessions_for_user(user_id, limit)
@@ -184,7 +195,7 @@ class UnifiedDatabase:
             return await self._local_db.list_sessions_for_user(user_id, limit)
         return []
 
-    async def delete_user_sessions(self, user_id: str) -> int:
+    async def delete_user_sessions(self, user_id: int) -> int:
         """删除指定用户的所有会话"""
         if self._remote_db and hasattr(self._remote_db, 'delete_user_sessions'):
             return await self._remote_db.delete_user_sessions(user_id)
@@ -192,7 +203,7 @@ class UnifiedDatabase:
             return await self._local_db.delete_user_sessions(user_id)
         return 0
 
-    async def get_user_stats(self, user_id: str) -> Dict[str, Any]:
+    async def get_user_stats(self, user_id: int) -> Dict[str, Any]:
         """获取用户统计信息"""
         if self._remote_db and hasattr(self._remote_db, 'get_user_stats'):
             return await self._remote_db.get_user_stats(user_id)
@@ -210,7 +221,7 @@ class UnifiedDatabase:
 
     # ================= Memory Methods =================
 
-    async def add_memory(self, user_id: str, content: str) -> bool:
+    async def add_memory(self, user_id: int, content: str) -> bool:
         """添加记忆"""
         if self._remote_db and hasattr(self._remote_db, 'add_memory'):
             return await self._remote_db.add_memory(user_id, content)
@@ -218,7 +229,7 @@ class UnifiedDatabase:
             return await self._local_db.add_memory(user_id, content)
         return False
 
-    async def get_memories(self, user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_memories(self, user_id: int, limit: int = 100) -> List[Dict[str, Any]]:
         """获取记忆"""
         if self._remote_db and hasattr(self._remote_db, 'get_memories'):
             return await self._remote_db.get_memories(user_id, limit)
@@ -226,7 +237,7 @@ class UnifiedDatabase:
             return await self._local_db.get_memories(user_id, limit)
         return []
 
-    async def search_memories(self, user_id: str, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    async def search_memories(self, user_id: int, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """搜索记忆"""
         if self._remote_db and hasattr(self._remote_db, 'search_memories'):
             return await self._remote_db.search_memories(user_id, query, limit)

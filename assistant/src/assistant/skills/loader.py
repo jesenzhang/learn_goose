@@ -71,13 +71,15 @@ class SkillLoader:
                 logger.error(f"❌ Error loading skill '{skill_id}': {e}", exc_info=True)
 
         logger.info(f"✅ Loaded {len(self._skills)} skills.")
+        for skill_id, skill in self._skills.items():
+            logger.info(f"✅ Loaded skill '{skill_id}': {skill.name}")
 
     def _load_single_skill(self, skill_id: str, path: Path) -> None:
         """Load a specific skill folder."""
         # 1. Check skills_config for enabled/disabled status
         specific_config:SkillConfig = self.skills_config.get(skill_id)
-        # 策略：显式禁用 (enabled=False) 才跳过
-        if specific_config and specific_config.enabled is False:
+        # 策略：显式启用 (enabled=true) 才加载
+        if not specific_config or (specific_config and specific_config.enabled is False):
             logger.info(f"⏭️  Skipping disabled skill '{skill_id}'")
             return
 
@@ -171,35 +173,6 @@ class SkillLoader:
                 logger.warning(f"Metadata parse error in {path.name}: {e}")
         return {}
 
-    def _scan_functions(self, skill_id: str, path: Path) -> Dict[str, Callable]:
-        """Scan scripts/ and impl.py for standalone functions."""
-        collected_funcs = {}
-
-        # A. Scan scripts/ directory
-        scripts_dir = path / "scripts"
-        if scripts_dir.exists():
-            # Temporarily add to sys.path to resolve internal imports
-            str_path = str(scripts_dir)
-            sys.path.insert(0, str_path)
-            try:
-                for file in scripts_dir.glob("*.py"):
-                    if not file.name.startswith("_"):
-                        mod_name = f"skills.{skill_id}.scripts.{file.stem}"
-                        funcs = self._import_funcs_from_file(mod_name, file)
-                        collected_funcs.update(funcs)
-            finally:
-                if str_path in sys.path:
-                    sys.path.remove(str_path)
-
-        # B. Scan impl.py (for standalone functions mixed with class)
-        impl_path = path / "impl.py"
-        if impl_path.exists():
-            mod_name = f"skills.{skill_id}.impl"
-            funcs = self._import_funcs_from_file(mod_name, impl_path)
-            collected_funcs.update(funcs)
-
-        return collected_funcs
-
     def _import_funcs_from_file(self, name: str, path: Path) -> Dict[str, Callable]:
         """Import module and return public functions."""
         try:
@@ -217,33 +190,88 @@ class SkillLoader:
             logger.warning(f"Import error {path}: {e}")
             return {}
 
+    def _check_dependencies(self, meta: Dict[str, Any], skill_id: str):
+        """Log warnings if dependencies are required."""
+        # Claude Skills often list PyPI requirements
+        deps = meta.get("requirements") or meta.get("dependencies")
+        if deps:
+            logger.info(f"ℹ️  Skill '{skill_id}' lists dependencies: {deps}")
+            
+            # 可以在这里做自动 pip install (慎用) 或仅检查 import
+    # -------------------------------------------------------------------------
+    # FIXED: Package-based Loading (Resolves Relative Import Issues)
+    # -------------------------------------------------------------------------
+
+    def _prepare_sys_path(self, path: Path) -> str:
+        """Helper to inject parent dir into sys.path."""
+        # path is ".../agent_skills/skill_name"
+        # we need ".../agent_skills" in sys.path
+        skills_root = path.parent.resolve()
+        str_root = str(skills_root)
+        if str_root not in sys.path:
+            sys.path.insert(0, str_root)
+        return str_root
+
     def _try_load_skill_class(self, skill_id: str, path: Path) -> Optional[SkillBase]:
-        """Attempt to instantiate a SkillBase subclass from impl.py."""
+        """Attempt to instantiate SkillBase from impl.py using import_module."""
         impl_path = path / "impl.py"
         if not impl_path.exists():
             return None
-        
+
+        self._prepare_sys_path(path)
+
         try:
-            # Use a distinct module name to avoid conflicts
-            mod_name = f"skills.{skill_id}.impl_class"
-            spec = importlib.util.spec_from_file_location(mod_name, impl_path)
-            if not spec or not spec.loader:
-                return None
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            # e.g. "google_conductor.impl"
+            module_name = f"{skill_id}.impl"
+            
+            if module_name in sys.modules:
+                module = importlib.reload(sys.modules[module_name])
+            else:
+                module = importlib.import_module(module_name)
 
             for item_name in dir(module):
                 item = getattr(module, item_name)
-                # Find class that inherits SkillBase but isn't SkillBase/GenericSkill
                 if (inspect.isclass(item) and 
                     issubclass(item, SkillBase) and 
                     item is not SkillBase and 
                     item is not GenericSkill):
                     return item()
         except Exception as e:
-            logger.warning(f"Class load error in {skill_id}: {e}")
+            logger.error(f"❌ Class load error in {skill_id}: {e}", exc_info=True)
+        
         return None
 
+    
+    def _scan_functions(self, skill_id: str, path: Path) -> Dict[str, Callable]:
+        """Scan impl.py using package loading."""
+        collected_funcs = {}
+        
+        # 1. Scan scripts/ (Keep legacy file-based loading for scripts if needed)
+        scripts_dir = path / "scripts"
+        if scripts_dir.exists():
+            # ... (保持原有的 scripts 扫描逻辑不变，或者也尝试改为包加载) ...
+            pass 
+
+        # 2. Scan impl.py (FIXED)
+        impl_path = path / "impl.py"
+        if impl_path.exists():
+            self._prepare_sys_path(path)
+            try:
+                module_name = f"{skill_id}.impl"
+                if module_name in sys.modules:
+                    module = importlib.reload(sys.modules[module_name])
+                else:
+                    module = importlib.import_module(module_name)
+                
+                # Filter functions defined in this module only
+                for n, f in inspect.getmembers(module, inspect.isfunction):
+                    if not n.startswith("_") and f.__module__ == module.__name__:
+                        collected_funcs[n] = f
+            except Exception as e:
+                logger.warning(f"⚠️  Error scanning functions in '{impl_path}': {e}")
+
+        return collected_funcs
+    
     def _attach_functions_to_instance(self, instance: SkillBase, functions: Dict[str, Callable]):
         """Inject scripts/*.py functions into a SkillBase instance."""
         for name, func in functions.items():
@@ -355,6 +383,9 @@ class SkillLoader:
     def get_all_tools_schema(self, active_skill: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Generate OpenAI Tool Schemas based on current context.
+
+        Args:
+            active_skill: 当前激活的技能
         """
         schemas = []
         added = set()
@@ -366,10 +397,10 @@ class SkillLoader:
 
         # 1. Routing Tools (Dynamic)
         routable_skills = [
-            name for name, sk in self._skills.items() 
+            name for name, sk in self._skills.items()
             if sk.skill_type == SkillType.CONTEXTUAL
         ]
-        
+
         if routable_skills:
             schemas.append({
                 "type": "function",
@@ -385,7 +416,7 @@ class SkillLoader:
                     }
                 }
             })
-        
+
         if active_skill:
             schemas.append({
                 "type": "function",
@@ -397,12 +428,14 @@ class SkillLoader:
             })
 
         # 2. Global Tools
+        logger.debug(f"🔧 Adding {len(self._global_tools)} global tools")
         for tool in self._global_tools.values():
             add(tool)
 
         # 3. Active Skill Tools
         if active_skill and active_skill in self._skills:
             skill = self._skills[active_skill]
+            logger.info(f"🔧 Active skill '{active_skill}' type={skill.skill_type}")
             if skill.skill_type == SkillType.CONTEXTUAL:
                 for tool in skill.get_tools():
                     add(tool)
@@ -477,4 +510,68 @@ class SkillLoader:
 
         logger.debug("Registered builtin skill tools: activate_skill, exit_skill")
 
-    
+    # -------------------------------------------------------------------------
+    # Lifecycle Management
+    # -------------------------------------------------------------------------
+
+    async def unload_skill(self, skill_name: str) -> bool:
+        """
+        Unload a skill dynamically.
+        1. Calls on_deactivate (cleanup).
+        2. Removes from registries.
+        3. Removes from sys.modules (Hot-reload support).
+        """
+        if skill_name not in self._skills:
+            logger.warning(f"Skill '{skill_name}' not found, cannot unload.")
+            return False
+
+        skill = self._skills[skill_name]
+        logger.info(f"🔻 Unloading skill: {skill_name}")
+
+        # 1. Resource Cleanup (Async hook)
+        # 假设 GenericSkill 也有 on_deactivate 即使是空的
+        if hasattr(skill, 'on_deactivate'):
+            try:
+                # 注意：这里需要传入 context，如果没有 ctx，可能需要调整设计
+                # 或者让 on_deactivate 接受 Optional[Context]
+                if inspect.iscoroutinefunction(skill.on_deactivate):
+                    await skill.on_deactivate(None) 
+                else:
+                    skill.on_deactivate(None)
+            except Exception as e:
+                logger.error(f"Error executing on_deactivate for {skill_name}: {e}")
+
+        # 2. Remove from Global Tools Registry
+        if skill.skill_type == SkillType.GLOBAL:
+            for tool_name in skill._tools.keys():
+                self._global_tools.pop(tool_name, None)
+
+        # 3. Remove from Skill Tools Registry
+        self._skill_tools.pop(skill_name, None)
+
+        # 4. Remove from Main Registry
+        self._skills.pop(skill_name, None)
+
+        # 5. Clean sys.modules (Optional but good for Hot Reload)
+        # 这能让下次 import 时重新读取文件
+        to_remove = [m for m in sys.modules if m.startswith(f"{skill_name}.")]
+        if skill_name in sys.modules:
+            to_remove.append(skill_name)
+        
+        for m in to_remove:
+            del sys.modules[m]
+
+        logger.info(f"✅ Skill '{skill_name}' unloaded.")
+        return True
+
+    async def reload_skill(self, skill_name: str):
+        """Hot reload a specific skill."""
+        await self.unload_skill(skill_name)
+        
+        # Re-scan specifically this folder
+        # 注意：你需要实现 _find_path_by_name 或者约定 skill_id == folder_name
+        skill_path = self.skills_dir / skill_name
+        if skill_path.exists():
+            self._load_single_skill(skill_name, skill_path)
+            return True
+        return False

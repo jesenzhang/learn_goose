@@ -37,6 +37,8 @@ class HDResorceLayoutResult(BaseModel):
 class HDResourceLayoutFields(BaseModel):
     fields : Optional[HDResorceLayoutResult] = None
 
+from assistant.skills.context import ServiceContext
+from assistant.skills.tool import CallToolResult, skill_tool
 
 class HDLayout():
     def __init__(self,config:LayoutConfig|Dict,*args,**kwargs ) -> None:
@@ -307,9 +309,39 @@ class HDLayout():
 
 layout_service = HDLayout(LayoutConfig(api="http://192.168.10.236:8111"))
 
-async def process_pdf_parser(file_path:str,server_type:str = 'show'):
+@skill_tool(
+    description="Parse a PDF file to extract text.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string", 
+                "description": "Path to PDF. Check user input first, then shared_memory['_current_file_path']."
+            },
+            "server_type": {"type": "string", "default": "show"}
+        },
+        "required": []  # file_path 设为非必填，允许代码层兜底
+    }
+)
+async def process_pdf_parser(file_path: str = None,server_type:str = 'show',ctx:ServiceContext=None):
+    """
+    PDF 解析工具，包含多级路径查找策略。
+    """
     try:
-        layoutResult = await layout_service(file_path=file_path,server_type=server_type)
+        # 1. 尝试从参数获取 (LLM 传入)
+        final_path = file_path
+        # 2. 尝试从 Shared Memory 获取 (如果 LLM 没传)
+        if not final_path and ctx:
+            final_path = ctx.get_state_value("_current_file_path")
+        # 3. 尝试从 Request Context 透传获取 (如果 Shared Memory 也没存)
+        if not final_path and ctx and ctx.request:
+            final_path = ctx.request.file_path
+            
+        # 4. 最终检查
+        if not final_path:
+            return "无法获取文件路径：请提供文件路径或确保已上传文件。"
+        
+        layoutResult = await layout_service(file_path=final_path,server_type=server_type)
         if layoutResult:
             if layoutResult.status == 1:
                 doc_content=layoutResult.layout_text

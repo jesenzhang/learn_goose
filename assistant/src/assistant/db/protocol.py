@@ -16,7 +16,7 @@ class DatabaseProtocol(Protocol):
     所有方法都是异步的，确保在异步上下文中不会阻塞事件循环
     """
 
-    async def save_state(self, session_id: str, state: Dict[str, Any]) -> bool:
+    async def save_state(self, session_id: int, state: Dict[str, Any]) -> bool:
         """
         保存会话状态
 
@@ -29,7 +29,7 @@ class DatabaseProtocol(Protocol):
         """
         ...
 
-    async def load_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def load_state(self, session_id: int) -> Optional[Dict[str, Any]]:
         """
         加载会话状态
 
@@ -41,7 +41,7 @@ class DatabaseProtocol(Protocol):
         """
         ...
 
-    async def delete_state(self, session_id: str) -> bool:
+    async def delete_state(self, session_id: int) -> bool:
         """
         删除会话状态
 
@@ -62,7 +62,7 @@ class DatabaseProtocol(Protocol):
         """
         ...
 
-    async def save_event(self, session_id: str, event: Dict[str, Any]) -> bool:
+    async def save_event(self, session_id: int, event: Dict[str, Any]) -> bool:
         """
         保存事件
 
@@ -77,7 +77,7 @@ class DatabaseProtocol(Protocol):
 
     async def load_events(
         self,
-        session_id: str,
+        session_id: int,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -94,7 +94,7 @@ class DatabaseProtocol(Protocol):
         """
         ...
 
-    async def delete_events(self, session_id: str, before: Optional[str] = None) -> int:
+    async def delete_events(self, session_id: int, before: Optional[str] = None) -> int:
         """
         删除事件
 
@@ -145,8 +145,8 @@ class MultiUserDatabaseProtocol(Protocol):
 
     async def save_state_for_user(
         self,
-        user_id: str,
-        session_id: str,
+        user_id: int,
+        session_id: int,
         state: Dict[str, Any]
     ) -> bool:
         """
@@ -164,8 +164,8 @@ class MultiUserDatabaseProtocol(Protocol):
 
     async def load_state_for_user(
         self,
-        user_id: str,
-        session_id: str
+        user_id: int,
+        session_id: int
     ) -> Optional[Dict[str, Any]]:
         """
         加载指定用户的会话状态
@@ -181,7 +181,7 @@ class MultiUserDatabaseProtocol(Protocol):
 
     async def list_sessions_for_user(
         self,
-        user_id: str,
+        user_id: int,
         limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
@@ -196,7 +196,7 @@ class MultiUserDatabaseProtocol(Protocol):
         """
         ...
 
-    async def delete_user_sessions(self, user_id: str) -> int:
+    async def delete_user_sessions(self, user_id: int) -> int:
         """
         删除指定用户的所有会话
 
@@ -208,7 +208,7 @@ class MultiUserDatabaseProtocol(Protocol):
         """
         ...
 
-    async def get_user_stats(self, user_id: str) -> Dict[str, Any]:
+    async def get_user_stats(self, user_id: int) -> Dict[str, Any]:
         """
         获取用户统计信息
 
@@ -238,7 +238,7 @@ class MemoryProtocol(Protocol):
     记忆操作协议 - 可选的记忆存储功能
     """
 
-    async def add_memory(self, user_id: str, content: str) -> bool:
+    async def add_memory(self, user_id: int, content: str) -> bool:
         """
         添加记忆
 
@@ -251,7 +251,7 @@ class MemoryProtocol(Protocol):
         """
         ...
 
-    async def get_memories(self, user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_memories(self, user_id: int, limit: int = 100) -> List[Dict[str, Any]]:
         """
         获取记忆
 
@@ -264,7 +264,7 @@ class MemoryProtocol(Protocol):
         """
         ...
 
-    async def search_memories(self, user_id: str, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    async def search_memories(self, user_id: int, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """
         搜索记忆
 

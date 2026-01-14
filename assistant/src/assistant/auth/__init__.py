@@ -1,44 +1,59 @@
 """
-认证和授权模块
+Authentication Module - 可插拔的用户认证系统
 
-提供用户认证、角色管理和权限检查功能
+支持两种认证模式：
+1. Local (本地模式): 使用 assistant 内置数据库和用户验证
+2. External (外置模式): 通过 token 进行认证，用户管理在外部系统
+
+设计原则：
+- Protocol-based: 基于协议定义，确保接口一致性
+- Pluggable: 支持运行时切换认证提供者
+- Separation of concerns: 认证逻辑与业务逻辑分离
 """
 
-from .models import (
-    UserRole,
-    User,
-    AuthUser,
-    CreateUserRequest,
-    UpdateUserRequest,
-    Permission,
+from .protocol import (
+    # Enums
+    AuthMode,
+
+    # Data Classes
+    UserInfo,
+    AuthConfig,
+
+    # Protocols
+    AuthProvider,
+    TokenAuth,
+    UserAuth,
 )
-from .service import (
-    UserRepository,
-    AuthenticationService,
-    AuthorizationService,
-    get_auth_service,
-    get_authz_service,
+
+from .local_provider import LocalAuthProvider
+from .external_provider import ExternalAuthProvider
+from .registry import (
+    AuthProviderRegistry,
+    init_registry,
+    get_registry,
+    reset_registry,
 )
 
 __all__ = [
-    # 枚举
-    "UserRole",
-    "Permission",
+    # Enum
+    "AuthMode",
 
-    # 用户模型
-    "User",
-    "AuthUser",
+    # Data Classes
+    "UserInfo",
+    "AuthConfig",
 
-    # 请求模型
-    "CreateUserRequest",
-    "UpdateUserRequest",
+    # Protocols
+    "AuthProvider",
+    "TokenAuth",
+    "UserAuth",
 
-    # 服务
-    "UserRepository",
-    "AuthenticationService",
-    "AuthorizationService",
+    # Implementations
+    "LocalAuthProvider",
+    "ExternalAuthProvider",
 
-    # 全局函数
-    "get_auth_service",
-    "get_authz_service",
+    # Registry
+    "AuthProviderRegistry",
+    "init_registry",
+    "get_registry",
+    "reset_registry",
 ]

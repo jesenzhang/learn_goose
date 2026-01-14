@@ -12,7 +12,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
 from dataclasses import dataclass, field
 from enum import Enum
-
+import inspect
+from functools import wraps
 
 class SkillType(str, Enum):
     """Skill availability scope."""
@@ -176,15 +177,42 @@ def skill_tool(
         parameters: Parameter schema (optional)
     """
     def decorator(func: Callable) -> Callable:
-        # Store metadata on function
-        func._is_skill_tool = True
-        func._tool_metadata = ToolMetadata(
+        # 1. 分析原始函数的参数签名
+        sig = inspect.signature(func)
+        valid_params = set(sig.parameters.keys())
+        has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+        # 2. 创建 Wrapper 进行参数过滤
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # args[0] 是 self (因为是类方法)
+            
+            # 过滤 kwargs
+            if has_var_keyword:
+                filtered_kwargs = kwargs
+            else:
+                filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+            
+            # 执行
+            if inspect.iscoroutinefunction(func):
+                return await func(*args, **filtered_kwargs)
+            else:
+                return func(*args, **filtered_kwargs)
+
+        # 3. 附加元数据
+        # 注意：这里把 metadata 挂在 wrapper 上，而不是原 func 上，
+        # 因为 SkillBase._register_tools 获取的是 getattr(self, name)，拿到的是 wrapper
+        wrapper._is_skill_tool = True
+        wrapper._tool_metadata = ToolMetadata(
             name=name or func.__name__,
             description=description or func.__doc__ or "No description",
             parameters=parameters or {},
-            is_sensitive=sensitive
+            is_sensitive=sensitive,
+            # Handler 会在 SkillBase._register_tools 里被再次赋值为 bound method
+            # 这里先留空或者指向 wrapper 自身
+            handler=None 
         )
-        return func
+        return wrapper
 
     return decorator
 

@@ -6,7 +6,7 @@ import asyncio
 from typing import List, Dict, Any,Optional
 from pydantic import BaseModel,Field
 
-from skill_micro_agent.skills.context import ServiceContext
+from assistant.skills.context import ServiceContext
 # --- 配置 ---
 # --- 路径定义 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

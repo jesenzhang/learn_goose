@@ -120,6 +120,11 @@ class ConfigLoader:
         """Get skills configuration dict."""
         return self.config.skills_config.root
 
+    @property
+    def hooks(self) -> Dict[str, Any]:
+        """Get hooks configuration dict."""
+        return self.config.hooks_config.root
+
     def is_sensitive(self, tool_name: str) -> bool:
         return tool_name in self.config.security.sensitive_tools
 

@@ -8,10 +8,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 D:\miniforge3\python.exe
 ```
+或者
+```
+D:\conda\envs\agent\python.exe
+```
 
 When running Python commands, use:
 ```bash
 "D:\miniforge3\python.exe" <script>
+```
+或者
+```bash
+"D:\conda\envs\agent\python.exe" <script>
 ```
 
 Or activate conda base environment first:

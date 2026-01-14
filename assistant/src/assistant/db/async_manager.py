@@ -64,14 +64,14 @@ class AsyncDatabaseManager:
         if self._initialized:
             return
 
-        await self._migrate_add_user_id()
+        await self._migrate_to_int_ids()
 
         async with self._transaction() as conn:
             # Sessions Table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT,
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER,
                     state TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -83,7 +83,7 @@ class AsyncDatabaseManager:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
+                    session_id INTEGER NOT NULL,
                     event TEXT NOT NULL,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -95,7 +95,7 @@ class AsyncDatabaseManager:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS memories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
                     content TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -106,8 +106,8 @@ class AsyncDatabaseManager:
         self._initialized = True
         logger.info(f"Database initialized at {self.db_path}")
 
-    async def _migrate_add_user_id(self):
-        """迁移：添加 user_id 字段"""
+    async def _migrate_to_int_ids(self):
+        """迁移：将 session_id 和 user_id 从 TEXT 改为 INTEGER"""
         try:
             conn = await self._get_connection()
 
@@ -122,46 +122,154 @@ class AsyncDatabaseManager:
                 logger.debug("Sessions table does not exist yet, skipping migration")
                 return
 
-            # 检查 user_id 列是否存在
+            # 检查表结构
             cursor = await conn.execute("PRAGMA table_info(sessions)")
             columns = await cursor.fetchall()
-            column_names = [col[1] for col in columns]
+            column_info = {col[1]: col[2] for col in columns}  # column_name: type
 
-            if 'user_id' not in column_names:
-                logger.info("Migrating database: adding user_id column to sessions")
+            # 检查 id 和 user_id 是否为 TEXT 类型
+            needs_migration = (
+                column_info.get('id') == 'TEXT' or
+                column_info.get('user_id', '') == 'TEXT'
+            )
 
-                # 1. 添加 user_id 列
-                await conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
+            if needs_migration:
+                logger.info("Migrating database: converting id and user_id to INTEGER")
 
-                # 2. 创建索引
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_sessions_user "
-                    "ON sessions(user_id, updated_at DESC)"
-                )
+                # 创建新表
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions_new (
+                        id INTEGER PRIMARY KEY,
+                        user_id INTEGER,
+                        state TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
 
-                # 3. 为现有数据设置默认用户
-                await conn.execute(
-                    "UPDATE sessions SET user_id = 'default' WHERE user_id IS NULL"
-                )
+                # 迁移数据：尝试转换 TEXT id 为 INTEGER
+                cursor = await conn.execute("SELECT id, user_id, state, created_at, updated_at FROM sessions")
+                rows = await cursor.fetchall()
+
+                for row in rows:
+                    old_id, old_user_id, state, created_at, updated_at = row
+
+                    # 尝试将 TEXT id 转换为 INTEGER
+                    new_id = None
+                    if old_id and str(old_id).isdigit():
+                        new_id = int(old_id)
+                    elif old_id:
+                        # 如果不是纯数字，使用 hash 作为新 id
+                        new_id = abs(hash(str(old_id)))
+
+                    # 尝试将 TEXT user_id 转换为 INTEGER
+                    new_user_id = None
+                    if old_user_id and str(old_user_id).isdigit():
+                        new_user_id = int(old_user_id)
+                    elif old_user_id:
+                        # 如果不是纯数字，使用 hash 作为新 id
+                        new_user_id = abs(hash(str(old_user_id)))
+
+                    if new_id is not None:
+                        await conn.execute(
+                            "INSERT INTO sessions_new (id, user_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                            (new_id, new_user_id, state, created_at, updated_at)
+                        )
+
+                # 删除旧表并重命名新表
+                await conn.execute("DROP TABLE sessions")
+                await conn.execute("ALTER TABLE sessions_new RENAME TO sessions")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, updated_at DESC)")
+
+                # 同样迁移 events 表
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS events_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id INTEGER NOT NULL,
+                        event TEXT NOT NULL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    )
+                """)
+
+                cursor = await conn.execute("SELECT id, session_id, event, timestamp FROM events")
+                rows = await cursor.fetchall()
+
+                for row in rows:
+                    old_ev_id, old_session_id, event, timestamp = row
+
+                    # 尝试将 TEXT session_id 转换为 INTEGER
+                    new_session_id = None
+                    if old_session_id and str(old_session_id).isdigit():
+                        new_session_id = int(old_session_id)
+                    elif old_session_id:
+                        new_session_id = abs(hash(str(old_session_id)))
+
+                    if new_session_id is not None:
+                        await conn.execute(
+                            "INSERT INTO events_new (id, session_id, event, timestamp) VALUES (?, ?, ?, ?)",
+                            (old_ev_id, new_session_id, event, timestamp)
+                        )
+
+                await conn.execute("DROP TABLE events")
+                await conn.execute("ALTER TABLE events_new RENAME TO events")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, timestamp DESC)")
+
+                # 同样迁移 memories 表
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS memories_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    )
+                """)
+
+                cursor = await conn.execute("SELECT id, user_id, content, created_at FROM memories")
+                rows = await cursor.fetchall()
+
+                for row in rows:
+                    old_mem_id, old_user_id, content, created_at = row
+
+                    # 尝试将 TEXT user_id 转换为 INTEGER
+                    new_user_id = None
+                    if old_user_id and str(old_user_id).isdigit():
+                        new_user_id = int(old_user_id)
+                    elif old_user_id:
+                        new_user_id = abs(hash(str(old_user_id)))
+
+                    if new_user_id is not None:
+                        await conn.execute(
+                            "INSERT INTO memories_new (id, user_id, content, created_at) VALUES (?, ?, ?, ?)",
+                            (old_mem_id, new_user_id, content, created_at)
+                        )
+
+                await conn.execute("DROP TABLE memories")
+                await conn.execute("ALTER TABLE memories_new RENAME TO memories")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, created_at DESC)")
 
                 await conn.commit()
-                logger.info("Multi-user support migration completed")
+                logger.info("ID type migration to INTEGER completed")
             else:
-                logger.debug("Multi-user support already enabled")
+                logger.debug("ID columns already INTEGER type")
 
         except Exception as e:
             logger.error(f"Migration check failed: {e}", exc_info=e)
 
     # ================= Session Operations =================
-
-    async def save_state(self, session_id: str, state: Dict[str, Any]) -> bool:
+    async def add_message(self, session_id: int, role: str, content: str, metadata: Dict = None, **kwargs) -> bool:
+        
+        return True
+    
+    async def save_state(self, session_id: int, state: Dict[str, Any]) -> bool:
         """保存会话状态（向后兼容）"""
         user_id = state.get('user_id')
         if user_id:
             return await self.save_state_for_user(user_id, session_id, state)
         return await self.save_state_legacy(session_id, state)
 
-    async def save_state_legacy(self, session_id: str, state: Dict[str, Any]) -> bool:
+    async def save_state_legacy(self, session_id: int, state: Dict[str, Any]) -> bool:
         """保存会话状态（原有方式）"""
         try:
             # 更新时间戳
@@ -183,8 +291,8 @@ class AsyncDatabaseManager:
 
     async def save_state_for_user(
         self,
-        user_id: str,
-        session_id: str,
+        user_id: int,
+        session_id: int,
         state: Dict[str, Any]
     ) -> bool:
         """为指定用户保存会话状态"""
@@ -206,9 +314,9 @@ class AsyncDatabaseManager:
             logger.error(f"Save state failed: {e}")
             return False
 
-    async def load_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def load_state(self, session_id: int) -> Optional[Dict[str, Any]]:
         """加载会话状态（向后兼容）"""
-        state = await self.load_state_for_user("default", session_id)
+        state = await self.load_state_for_user(0, session_id)
         if state:
             return state
 
@@ -227,8 +335,8 @@ class AsyncDatabaseManager:
 
     async def load_state_for_user(
         self,
-        user_id: str,
-        session_id: str
+        user_id: int,
+        session_id: int
     ) -> Optional[Dict[str, Any]]:
         """加载指定用户的会话状态"""
         try:
@@ -274,7 +382,7 @@ class AsyncDatabaseManager:
 
     async def list_sessions_for_user(
         self,
-        user_id: str,
+        user_id: int,
         limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """列出指定用户的会话"""
@@ -308,7 +416,7 @@ class AsyncDatabaseManager:
             logger.error(f"List sessions for user {user_id} failed: {e}")
             return []
 
-    async def delete_state(self, session_id: str) -> bool:
+    async def delete_state(self, session_id: int) -> bool:
         """删除会话状态"""
         try:
             async with self._transaction() as conn:
@@ -321,7 +429,7 @@ class AsyncDatabaseManager:
             logger.error(f"Delete state failed: {e}")
             return False
 
-    async def delete_user_sessions(self, user_id: str) -> int:
+    async def delete_user_sessions(self, user_id: int) -> int:
         """删除指定用户的所有会话"""
         try:
             async with self._transaction() as conn:
@@ -362,7 +470,7 @@ class AsyncDatabaseManager:
 
     # ================= Event Operations =================
 
-    async def save_event(self, session_id: str, event: Dict[str, Any]) -> bool:
+    async def save_event(self, session_id: int, event: Dict[str, Any]) -> bool:
         """保存事件"""
         try:
             if 'timestamp' not in event:
@@ -383,7 +491,7 @@ class AsyncDatabaseManager:
 
     async def load_events(
         self,
-        session_id: str,
+        session_id: int,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -412,7 +520,7 @@ class AsyncDatabaseManager:
             logger.error(f"Load events failed: {e}")
             return []
 
-    async def delete_events(self, session_id: str, before: Optional[str] = None) -> int:
+    async def delete_events(self, session_id: int, before: Optional[str] = None) -> int:
         """删除事件"""
         try:
             query = "DELETE FROM events WHERE session_id = ?"
@@ -434,7 +542,7 @@ class AsyncDatabaseManager:
 
     # ================= Memory Operations =================
 
-    async def add_memory(self, user_id: str, content: str) -> bool:
+    async def add_memory(self, user_id: int, content: str) -> bool:
         """添加记忆"""
         try:
             async with self._transaction() as conn:
@@ -445,7 +553,7 @@ class AsyncDatabaseManager:
             logger.error(f"Add memory failed: {e}")
             return False
 
-    async def get_memories(self, user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_memories(self, user_id: int, limit: int = 100) -> List[Dict[str, Any]]:
         """获取记忆"""
         try:
             async with self._transaction() as conn:
@@ -459,7 +567,7 @@ class AsyncDatabaseManager:
             logger.error(f"Get memories failed: {e}")
             return []
 
-    async def search_memories(self, user_id: str, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    async def search_memories(self, user_id: int, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """搜索记忆"""
         try:
             async with self._transaction() as conn:
@@ -489,7 +597,7 @@ class AsyncDatabaseManager:
 
     # ================= User Statistics =================
 
-    async def get_user_stats(self, user_id: str) -> Dict[str, Any]:
+    async def get_user_stats(self, user_id: int) -> Dict[str, Any]:
         """获取用户统计信息"""
         try:
             async with self._transaction() as conn:
@@ -534,7 +642,7 @@ class AsyncDatabaseManager:
                     SELECT user_id, COUNT(*) as session_count,
                            MAX(updated_at) as last_active
                     FROM sessions
-                    WHERE user_id IS NOT NULL AND user_id != 'default'
+                    WHERE user_id IS NOT NULL AND user_id != 0
                     GROUP BY user_id
                     ORDER BY last_active DESC
                 """)
@@ -563,7 +671,7 @@ class AsyncDatabaseManager:
 
                 # 总用户数
                 cursor = await conn.execute(
-                    "SELECT COUNT(DISTINCT user_id) FROM sessions WHERE user_id IS NOT NULL AND user_id != 'default'"
+                    "SELECT COUNT(DISTINCT user_id) FROM sessions WHERE user_id IS NOT NULL AND user_id != 0"
                 )
                 total_users = (await cursor.fetchone())[0]
 

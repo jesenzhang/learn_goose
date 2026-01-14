@@ -71,9 +71,25 @@ agent:
     - 如果用户请求涉及敏感操作，等待用户批准
     - 如果需要更多信息才能帮助用户，主动询问
 
+
     现在，请根据用户的输入开始工作。
 
 
+artifact_manager:
+    enabled: true
+    default_storage: hybrid    # memory, file, hybrid, database
+    # 全局清理配置
+    cleanup_interval: 3600
+    ttl: 86400
+    # 会话级别限制
+    max_items_per_session: 50
+    max_bytes_per_session: 52428800  # 50MB
+    # 各存储类型的特定配置
+    storage_configs:
+      hybrid:
+        memory_threshold: 10240
+        file_threshold: 102400
+        compression: true
 
 # ================= 安全策略配置 =================
 security:
@@ -84,12 +100,26 @@ security:
     - "write_file"
     - "delete_file"
 
+# ================= 数据库配置 =================
+database:
+  # 数据库模式配置
+  use_remote: true                  # 是否使用远程数据库
+  remote_db_url: "http://192.168.11.11:9980/gzclabeldebugaapi"                  # 远程数据库 URL
+  remote_db_api_key: null              # 远程数据库 API 密钥 (作为 token 使用)
+  remote_db_timeout: 30                 # 远程数据库请求超时（秒）
+  local_db_path: "agent_ultra.db"         # 本地数据库路径（use_remote=false 时使用）
+
 
 # ================= Skills 配置 =================
 # 独立的技能配置项，支持：
 # - 启用/禁用技能
 # - 每个技能的敏感工具配置（优先级高于全局 security.sensitive_tools）
 skills_config:
+  faq:
+    enabled: true
+    mode: "global"
+    sensitive_tools: []
+
   file-manager:
     enabled: true
     mode: "global"
@@ -98,108 +128,282 @@ skills_config:
   # 文博相关技能（启用）
   memory-local:
     enabled: true
+    mode: "global"
     description: "长期记忆存储工具"
     sensitive_tools:
       - "delete_memory"   # 删除记忆需要审批
 
-  asset-search:
+  # 统一的资源搜索技能（包含 V1 和 V2 API）
+  asset_knowledge_search:
     enabled: true
     sensitive_tools: []
 
-  faq:
-    enabled: true
-    sensitive_tools: []
 
+    
   calculator:
     enabled: true
     sensitive_tools: []
 
   clipboard:
     enabled: true
+    mode: "global"
     sensitive_tools:
       - "clear_clipboard"  # 清空剪贴板需要审批
 
-  # 系统工具（禁用 - 与文博场景无关）
-  system-health:
-    enabled: false
 
-  docx:
-    enabled: false
+hooks_config:
+    # FAQ 拦截 - 最高优先级
+    faq_interceptor:
+      enabled: true
+      priority: 10
+      hook_type: "filter"
+      conditions:
+        min_length: 2
+        max_length: 200
+      params:
+        faq_tool_name: "query_faq"
+      fail_on_error: false
 
-  pdf:
-    enabled: false
+    # 敏感词过滤 - 优先级 20
+    sensitive_word_filter:
+      enabled: true
+      priority: 20
+      hook_type: "filter"
+      params:
+        words: ["暴力", "恐怖", "色情"]
+        action: "intercept"
+        replacement: "***"
 
-  xlsx:
-    enabled: false
+    # Prompt 注入检测 - 优先级 30
+    prompt_injection_detector:
+      enabled: true
+      priority: 30
+      hook_type: "validator"
 
-  pptx:
-    enabled: false
+    # 输入验证 - 优先级 50
+    input_validator:
+      enabled: true
+      priority: 50
+      hook_type: "validator"
+      params:
+        max_length: 5000
+        min_length: 1
 
-  collection-query:
-    enabled: false
+    # 请求日志 - 优先级 190
+    request_logger:
+      enabled: true
+      priority: 190
+      hook_type: "observer"
+      params:
+        log_level: "INFO"
+        log_details: true
 
+    # 统计收集 - 优先级 195
+    statistics_collector:
+      enabled: true
+      priority: 195
+      hook_type: "observer"
 
 # ================= 意图定义 (Intents) =================
 # 定义文博场景的业务意图和所需参数
+# 意图执行时会调用 asset_knowledge_search 技能下的相应接口
 intents:
-  # 意图1：推荐文物藏品
-  recommend_exhibits:
-    description: "用户希望获得文物或藏品推荐。可能包含特征描述（如红色的、古代的、打仗用的）或模糊需求（如好看的、珍贵的）。"
+  # ==================== 藏品相关意图 ====================
+
+  # 意图1：搜索藏品（V2 API - 推荐）
+  search_exhibits:
+    description: "用户希望搜索文物或藏品。使用 V2 智能检索 API，支持语义搜索和自然语言理解。适用于：'找一些青铜器'、'战国的剑'、'玉器藏品'等。"
     slots:
-      category:
-        type: "str"
-        description: "类别筛选：exhibits(展品)、artifacts(文物)、relics(遗物)"
-        default: "exhibits"
       keywords:
         type: "str"
-        description: "用户描述的关键词，如红色、古代、兵器等"
+        description: "搜索关键词，如青铜器、剑、玉器等"
         required: true
-      features:
-        type: "list"
-        description: "提取的特征形容词列表"
-        default: []
+      filters:
+        type: "dict"
+        description: "过滤条件，如 {era: '战国', material: '青铜'}"
+        default: {}
       count:
         type: "int"
-        description: "需要的数量"
+        description: "返回结果数量"
         default: 5
 
     execution:
       mode: "skill"
-      skill_name: "asset-search" # 切换到这个技能
-      
-      # [核心配置] 这里定义的参数会被注入到 shared_memory
-      # 我们约定以 "_instruction_" 开头的参数用于生成系统指令
+      skill_name: "asset_knowledge_search"
       skill_params:
         _instruction_template: >
           【系统指令】
-          用户意图：寻找藏品。
+          用户意图：搜索藏品。
           已提取参数：
           - 关键词: "{keywords}"
-          - 分类: "{category}"
-          - 特征: {features}
+          - 过滤条件: {filters}
           - 数量: {count}
-          
-          请直接调用 `asset-search` 技能下的工具（如 search_exhibits）执行搜索，并根据结果回答用户。
 
-          
-  # 意图2：推荐文档资料
-  recommend_documents:
-    description: "用户希望查找或推荐相关的文档资料，如PDF、图片、视频等。"
+          请调用 V2 API 工具 `search_exhibits_v2` 执行智能检索，该工具提供更好的语义搜索和重排序功能。
+          根据返回的藏品信息，向用户介绍相关藏品。
+
+  # 意图2：推荐文档/研究资料（V2 API - 推荐）
+  search_documents:
+    description: "用户希望查找文档资料或研究内容。使用 V2 智能检索 API，支持 LLM 生成的摘要。适用于：'青铜铸造工艺'、'汉代历史'、'研究资料'等。"
     slots:
       keywords:
         type: "str"
         description: "文档关键词或主题"
         required: true
-      doc_type:
-        type: "str"
-        description: "文档类型：pdf, image, video, all"
-        default: "all"
+      tags:
+        type: "list"
+        description: "标签过滤，如 ['研究', '论文', '历史']"
+        default: []
       count:
         type: "int"
-        description: "需要的数量"
+        description: "返回结果数量"
         default: 5
 
-  # 意图3：查找服务设施
+    execution:
+      mode: "skill"
+      skill_name: "asset_knowledge_search"
+      skill_params:
+        _instruction_template: >
+          【系统指令】
+          用户意图：搜索文档资料。
+          已提取参数：
+          - 关键词: "{keywords}"
+          - 标签: {tags}
+          - 数量: {count}
+
+          请调用 V2 API 工具 `search_resources_v2` 执行智能检索，该工具提供 LLM 生成的摘要和语义搜索功能。
+          根据返回的文档摘要，向用户介绍相关资料。
+
+  # ==================== 资产管理意图（V1 API） ====================
+
+  # 意图3：精确资产搜索（V1 API）
+  search_assets:
+    description: "用户需要进行精确的资产搜索，指定了文件类型或资产类型。使用 V1 ES-based API。适用于：'找所有图片'、'搜索视频文件'、'查看专题库'等。"
+    slots:
+      keywords:
+        type: "str"
+        description: "搜索关键词"
+        required: true
+      types:
+        type: "list"
+        description: "搜索范围：['资产', '资产文件', '专题库']"
+        default: ["资产", "资产文件"]
+      resource_types:
+        type: "list"
+        description: "资源类型：['图片', '视频', '文档', '音频', '3D', '其他']"
+        default: []
+
+    execution:
+      mode: "skill"
+      skill_name: "asset_knowledge_search"
+      skill_params:
+        _instruction_template: >
+          【系统指令】
+          用户意图：精确资产搜索。
+          已提取参数：
+          - 关键词: "{keywords}"
+          - 搜索范围: {types}
+          - 资源类型: {resource_types}
+
+          请调用 V1 API 工具 `search_assets` 执行精确搜索，该工具支持按类型过滤。
+
+  # 意图4：智能资产推荐（V1 API）
+  recommend_assets:
+    description: "用户的请求比较模糊或开放，希望获得推荐。使用 V1 推荐引擎。适用于：'推荐一些资源'、'有什么好东西'等。"
+    slots:
+      keywords:
+        type: "str"
+        description: "用户描述的关键词"
+        required: true
+      intent_targets:
+        type: "list"
+        description: "意图目标，如 ['文件', '资产', '专题库']"
+        default: []
+
+    execution:
+      mode: "skill"
+      skill_name: "asset_knowledge_search"
+      skill_params:
+        _instruction_template: >
+          【强制指令】必须调用 `recommend_assets` 工具
+
+          用户意图：智能资产推荐
+          关键词："{keywords}"
+          目标类型：{intent_targets}
+
+          【重要】你当前处于 asset_knowledge_search 技能模式，必须调用 `recommend_assets` 工具来执行推荐。
+          不要调用 query_faq 或其他工具，直接调用 recommend_assets 即可。
+
+
+  # ==================== 统计相关意图（V1 API） ====================
+
+  # 意图6：查看资源统计
+  view_statistics:
+    description: "用户希望查看系统统计数据。适用于：'有多少资产？'、'最受欢迎的文件'、'统计数据'等。"
+    slots:
+      stat_type:
+        type: "str"
+        description: "统计类型：resource_library_count(总数), resource_top(Top排行), resource_count_by_type(按类型), resource_file_count_by_ext(按格式)等"
+        required: true
+      start_at:
+        type: "str"
+        description: "开始日期，格式 YYYY-MM-DD"
+        default: "None"
+      end_at:
+        type: "str"
+        description: "结束日期，格式 YYYY-MM-DD"
+        default: "None"
+
+    execution:
+      mode: "skill"
+      skill_name: "asset_knowledge_search"
+      skill_params:
+        _instruction_template: >
+          【系统指令】
+          用户意图：查看资源统计。
+          统计类型: "{stat_type}"
+          时间范围: {start_at} 至 {end_at}
+
+          请调用 V1 API 工具 `search_resource_statistic` 获取统计数据。
+
+  # 意图7：知识图谱总览
+  view_kg_overview:
+    description: "用户希望了解知识图谱的整体情况。适用于：'知识图谱有多少实体？'、'图谱概况'等。"
+    slots: {}
+
+    execution:
+      mode: "skill"
+      skill_name: "asset_knowledge_search"
+      skill_params:
+        _instruction_template: >
+          【系统指令】
+          用户意图：查看知识图谱总览。
+
+          请调用 V1 API 工具 `search_kg_overview` 获取图谱统计信息。
+
+  # 意图8：查询文档内容（需要已知文件ID）
+  view_document:
+    description: "用户提供了具体的文件ID，希望查看文档内容。适用于：'查看文件xxx的内容'等。"
+    slots:
+      file_ids:
+        type: "str"
+        description: "文件ID（单个或逗号分隔的多个）"
+        required: true
+
+    execution:
+      mode: "skill"
+      skill_name: "asset_knowledge_search"
+      skill_params:
+        _instruction_template: >
+          【系统指令】
+          用户意图：查看文档内容。
+          文件ID: "{file_ids}"
+
+          请调用 V1 API 工具 `search_doc` 获取文档详细内容。
+
+  # ==================== 其他意图 ====================
+
+  # 意图9：查找服务设施
   find_service:
     description: "用户想找博物馆内的服务设施，如卫生间、电梯、休息区、餐厅等。"
     slots:
@@ -216,20 +420,7 @@ intents:
         description: "位置偏好，如靠近入口、在东侧等"
         default: null
 
-  # 意图4：查看统计数据
-  view_statistics:
-    description: "用户希望查看参观统计数据，如人流量、热门展品、停留时间等。"
-    slots:
-      stat_type:
-        type: "str"
-        description: "统计类型：visitor_flow(人流)、popular_exhibits(热门展品)、dwell_time(停留时间)等"
-        required: true
-      time_range:
-        type: "str"
-        description: "时间范围：today(今天)、week(本周)、month(本月)、all(全部)"
-        default: "today"
-
-  # 意图5：查询展览信息
+  # 意图10：查询展览信息
   query_exhibition:
     description: "用户想了解特定展览的信息，如展览内容、时间、地点等。"
     slots:
@@ -242,7 +433,7 @@ intents:
         description: "需要的信息类型：overview(概览)、artifacts(展品列表)、schedule(时间安排)、location(位置)"
         default: "overview"
 
-  # 意图6：路线规划
+  # 意图11：路线规划
   plan_route:
     description: "用户希望规划参观路线，可能包含时间限制、兴趣偏好等。"
     slots:
@@ -263,7 +454,7 @@ intents:
         description: "起始点"
         default: "入口"
 
-  # 意图7：通用闲聊
+  # 意图12：通用闲聊
   general_chat:
     description: "用户只是打招呼、闲聊或没有明确的业务需求。"
     slots:
@@ -275,6 +466,19 @@ intents:
         type: "str"
         description: "识别的用户情绪：positive(积极)、neutral(中性)、negative(消极)、curious(好奇)"
         default: "neutral"
+
+# ==================== 意图与工具映射说明 ====================
+# V2 API（智能检索）：
+#   - search_exhibits_v2: 搜索藏品（语义理解更好）
+#   - search_resources_v2: 搜索文档/研究资料（带LLM摘要）
+#
+# V1 API（结构化查询）：
+#   - search_assets: 精确资产搜索（支持类型过滤）
+#   - recommend_assets: 智能资产推荐
+#   - retrieve_knowledge: 知识图谱问答
+#   - search_resource_statistic: 资源统计
+#   - search_kg_overview: 知识图谱总览
+#   - search_doc: 查询文档内容（需要文件ID）
 
 # ================= 全局工具 =================
 # 在任何状态下都能调用的通用工具

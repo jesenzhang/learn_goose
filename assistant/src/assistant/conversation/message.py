@@ -13,11 +13,11 @@ class Role(str, Enum):
     TOOL = "tool"
 
 class TextContent(BaseModel):
-    type: Literal["text"] = "text"
+    type: str = "text"
     text: str
 
 class ImageContent(BaseModel):
-    type: Literal["image"] = "image"
+    type: str = "image"
     data: str
     mime_type: str = Field(alias="mimeType")
     
@@ -26,10 +26,15 @@ class ImageContent(BaseModel):
 
 class RawContent(BaseModel):
     """工具返回的原始内容"""
-    type: Literal["text", "dataset", "image", "code", "error"] = "text"
+    type: str = "text"
     text: Optional[str] = None
     data: Optional[Any] = None
     mime_type: Optional[str] = Field(None, alias="mimeType")
+    
+    # 3. Artifact 增强信息 [NEW]
+    title: Optional[str] = None       # Artifact 标题 (e.g., "2024年销售报表")
+    id: Optional[str] = None          # Artifact ID (用于后续引用或交互)
+    metadata: Optional[Dict[str, Any]] = None # 元数据 (e.g., source, timestamp, confidence)
     
     # [FIX] 允许 mime_type 或 mimeType
     model_config = ConfigDict(populate_by_name=True)
@@ -57,7 +62,7 @@ class ToolCall(BaseModel):
         return self.status == "error"
     
 class ToolRequest(BaseModel):
-    type: Literal["toolRequest"] = "toolRequest"
+    type: str = "toolRequest"
     id: str
     tool_call: ToolCall = Field(alias="toolCall")
     metadata: Optional[Dict[str, Any]] = None
@@ -82,6 +87,8 @@ class CallToolResult(BaseModel):
     content: List[RawContent] = Field(default_factory=list)
     is_error: bool = Field(default=False, alias="isError")
 
+    metadata: Optional[Dict[str, Any]] = None
+
     # [FIX] 允许 is_error 或 isError
     model_config = ConfigDict(populate_by_name=True)
 
@@ -101,13 +108,33 @@ class CallToolResult(BaseModel):
         return cls(content=[RawContent(type="text", text=text)])
     
     @classmethod
-    def from_artifact(cls, view: str, data: Any, type="dataset"):
+    def from_artifact(cls, view: str, data: Any, type="dataset", title: str = None, id: str = None, metadata: Dict = None):
+        """
+        [NEW] 快速构造 Artifact 结果的辅助方法
+        
+        Args:
+            view (str): 给 LLM 看的文本摘要/Markdown。
+            data (Any): 给前端渲染用的完整数据。
+            type (str): Artifact 类型 (e.g., 'table', 'chart', 'recommendation_list')。
+            title (str): 标题。
+            metadata (Dict): 额外元数据。
+        """
+        # 如果没有指定文本，默认使用 JSON 字符串 (作为兜底)
+        text_representation = view
+        
         return cls(content=[
-            RawContent(type=type, text=view, data=data)
+            RawContent(
+                type=type, 
+                text=text_representation, 
+                data=data, 
+                title=title,
+                id=id,
+                metadata=metadata
+            )
         ])
         
 class ToolResponse(BaseModel):
-    type: Literal["toolResponse"] = "toolResponse"
+    type: str = "toolResponse"
     id: str
     tool_result: CallToolResult = Field(alias="toolResult")
     metadata: Optional[Dict[str, Any]] = None
@@ -127,7 +154,7 @@ class ToolResponse(BaseModel):
 
 # --- 其他内容定义 (同样加上 ConfigDict) ---
 class FrontendToolRequest(BaseModel):
-    type: Literal["frontendToolRequest"] = "frontendToolRequest"
+    type:str = "frontendToolRequest"
     id: str
     tool_call: ToolCall = Field(alias="toolCall")
     
@@ -135,7 +162,7 @@ class FrontendToolRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 class ToolConfirmationRequest(BaseModel):
-    type: Literal["toolConfirmationRequest"] = "toolConfirmationRequest"
+    type: str = "toolConfirmationRequest"
     id: str
     tool_call_id: str = Field(alias="toolCallId")
     tool_name: str = Field(alias="toolName")
@@ -154,23 +181,23 @@ class ActionRequiredData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 class ActionRequired(BaseModel):
-    type: Literal["actionRequired"] = "actionRequired"
+    type: str = "actionRequired"
     data: ActionRequiredData
 
 class ThinkingContent(BaseModel):
-    type: Literal["thinking"] = "thinking"
+    type:str= "thinking"
     thinking: str
     signature: Optional[str] = None
 
 class RedactedThinkingContent(BaseModel):
-    type: Literal["redactedThinking"] = "redactedThinking"
+    type: str = "redactedThinking"
 
 class SystemNotificationType(str, Enum):
     THINKING = "thinkingMessage"
     INLINE = "inlineMessage"
 
 class SystemNotification(BaseModel):
-    type: Literal["systemNotification"] = "systemNotification"
+    type: str = "systemNotification"
     notification_type: SystemNotificationType = Field(alias="notificationType")
     msg: str
 

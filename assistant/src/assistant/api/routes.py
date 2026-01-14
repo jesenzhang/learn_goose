@@ -6,6 +6,7 @@ This module provides:
 - Session management
 - State retrieval
 - Approval handling
+- Authentication endpoints
 """
 
 import asyncio
@@ -13,7 +14,7 @@ import json
 import logging
 from typing import Optional, Dict, Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -29,12 +30,34 @@ logger = logging.getLogger(__name__)
 class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
     message: str = Field(..., description="User message to send to agent")
-
+    file_path : Optional[str] = None
+    server_type : Optional[str] = 'show'
+    page_content: Optional[Dict[str,Any]] = None
+    deep_thinking: Optional[bool] = False
+    is_deep_research: Optional[bool] = False
 
 class ApprovalRequest(BaseModel):
     """Request model for approval endpoint."""
     approved: bool = Field(..., description="Whether the action is approved")
     feedback: Optional[str] = Field(default="", description="Optional feedback for rejection")
+
+
+# Auth Models
+class LoginRequest(BaseModel):
+    """Request model for login endpoint."""
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
+
+class RegisterRequest(BaseModel):
+    """Request model for registration endpoint."""
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
+    display_name: Optional[str] = Field(default=None, description="Display name")
+    email: Optional[str] = Field(default=None, description="Email address")
+
+class ValidateTokenRequest(BaseModel):
+    """Request model for token validation."""
+    token: str = Field(..., description="Authentication token")
 
 
 # Global agent instance (set by main.py)
@@ -79,11 +102,11 @@ def _format_sse(data: Dict[str, Any], event_type: Optional[str] = None) -> str:
     return buffer
 
 async def event_generator(
-    session_id: str,
-    input_text: Optional[str] = None,
+    session_id: int,
+    input_data: Optional[Dict] = None,
     resume: bool = False,
     approval_data: Optional[ApprovalRequest] = None,
-    user_id: Optional[str] = None,
+    user_id: Optional[int] = None,
     format: str = "ndjson"
 ) -> AsyncGenerator[str, None]:
     """
@@ -101,30 +124,29 @@ async def event_generator(
         NDJSON: JSON-formatted event strings with newline
         SSE: SSE-formatted strings with data: prefix and double newline
     """
-    agent = get_agent()
-    db = get_db()
-
-    # Create event queue
-    q: asyncio.Queue = asyncio.Queue()
-
-    async def listener(event: Event):
-        await q.put(event)
-
-    # Subscribe to events
-    unsubscribe = agent.events.subscribe(listener, weak=True)
-
-    # Start agent task
-    task = asyncio.create_task(
-        agent.run_task(
-            session_id,
-            user_input=input_text,
-            resume=resume,
-            approval_data=approval_data.model_dump() if approval_data else None,
-            user_id=user_id
-        )
-    )
-
+    
+    # 1. 设置上下文
     try:
+        agent = get_agent()
+        db = get_db()
+        q: asyncio.Queue = asyncio.Queue()
+        async def listener(event: Event):
+            await q.put(event)
+
+        # Subscribe to events
+        unsubscribe = agent.events.subscribe(listener, weak=True)
+
+        # Start agent task
+        task = asyncio.create_task(
+            agent.run_task(
+                session_id,
+                input_data=input_data,
+                resume=resume,
+                approval_data=approval_data.model_dump() if approval_data else None,
+                user_id=user_id
+            )
+        )
+
         while True:
             try:
                 # Wait for event with short timeout
@@ -178,7 +200,6 @@ async def event_generator(
         if not task.done():
             task.cancel()
 
-
 def create_router() -> APIRouter:
     """Create and configure the API router."""
     router = APIRouter()
@@ -204,7 +225,7 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/agent/{session_id}/state")
-    async def get_session_state(session_id: str):
+    async def get_session_state(session_id: int):
         """
         Get complete state for a session.
 
@@ -229,7 +250,7 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/agent/{session_id}/memories")
-    async def get_session_memories(session_id: str):
+    async def get_session_memories(session_id: int):
         """
         Get memories for a session.
 
@@ -259,7 +280,7 @@ def create_router() -> APIRouter:
             return []
 
     @router.delete("/agent/{session_id}")
-    async def delete_session(session_id: str):
+    async def delete_session(session_id: int):
         """
         Delete/reset a session.
 
@@ -283,7 +304,7 @@ def create_router() -> APIRouter:
 
     @router.post("/chat/{session_id}")
     async def chat(
-        session_id: str,
+        session_id: int,
         req: ChatRequest,
         format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
     ):
@@ -300,13 +321,13 @@ def create_router() -> APIRouter:
         """
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
-            event_generator(session_id, input_text=req.message, format=format),
+            event_generator(session_id, input_data=req.model_dump(), format=format),
             media_type=media_type
         )
 
     @router.post("/agent/{session_id}/approval")
     async def handle_approval(
-        session_id: str,
+        session_id: int,
         req: ApprovalRequest,
         format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
     ):
@@ -330,7 +351,7 @@ def create_router() -> APIRouter:
 
     @router.post("/approve/{session_id}")
     async def quick_approve(
-        session_id: str,
+        session_id: int,
         format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
     ):
         """
@@ -354,8 +375,8 @@ def create_router() -> APIRouter:
 
     @router.post("/users/{user_id}/chat/{session_id}")
     async def chat_for_user(
-        user_id: str,
-        session_id: str,
+        user_id: int,
+        session_id: int,
         req: ChatRequest,
         format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
     ):
@@ -373,12 +394,12 @@ def create_router() -> APIRouter:
         """
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
-            event_generator(session_id, input_text=req.message, user_id=user_id, format=format),
+            event_generator(session_id,input_data=req.model_dump(), user_id=user_id, format=format),
             media_type=media_type
         )
 
     @router.get("/users/{user_id}/sessions")
-    async def list_user_sessions(user_id: str, limit: Optional[int] = None):
+    async def list_user_sessions(user_id: int, limit: Optional[int] = None):
         """
         List all sessions for a specific user.
 
@@ -404,7 +425,7 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/users/{user_id}/stats")
-    async def get_user_statistics(user_id: str):
+    async def get_user_statistics(user_id: int):
         """
         Get statistics for a specific user.
 
@@ -433,7 +454,7 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete("/users/{user_id}")
-    async def delete_user_data(user_id: str):
+    async def delete_user_data(user_id: int):
         """
         Delete all data for a specific user.
 
@@ -492,4 +513,213 @@ def create_router() -> APIRouter:
             logger.error(f"Failed to list users: {e}", exc_info=e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    # ================= Artifact Management Endpoints =================
+
+    @router.get("/sessions/{session_id}/artifacts/{artifact_id}")
+    async def get_artifact(session_id: int, artifact_id: str):
+        """
+        Get artifact data by ID.
+
+        Args:
+            session_id: Session identifier
+            artifact_id: Artifact identifier
+
+        Returns:
+            Artifact data
+        """
+        from ..core.artifact_storage import get_manager
+
+        artifact_mgr = get_manager()
+        if artifact_mgr is None:
+            raise HTTPException(status_code=503, detail="Artifact manager not available")
+
+        try:
+            data = await artifact_mgr.load(
+                session_id=session_id,
+                artifact_id=artifact_id,
+            )
+
+            if data is None:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+
+            return {
+                "id": artifact_id,
+                "session_id": session_id,
+                "data": data,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get artifact {artifact_id}: {e}", exc_info=e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get("/sessions/{session_id}/artifacts")
+    async def list_artifacts(session_id: int):
+        """
+        List all artifacts for a session.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            List of artifact references
+        """
+        from ..core.artifact_storage import get_manager
+
+        artifact_mgr = get_manager()
+        if artifact_mgr is None:
+            raise HTTPException(status_code=503, detail="Artifact manager not available")
+
+        try:
+            refs = await artifact_mgr.list_all(session_id=session_id)
+
+            return {
+                "session_id": session_id,
+                "artifacts": [
+                    {
+                        "id": ref.id,
+                        "type": ref.type,
+                        "text": ref.text,
+                        "size": ref.size,
+                        "storage_type": ref.storage_type.value,
+                        "created_at": ref.created_at,
+                    }
+                    for ref in refs
+                ],
+            }
+        except Exception as e:
+            logger.error(f"Failed to list artifacts for {session_id}: {e}", exc_info=e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get("/sessions/{session_id}/artifacts/stats")
+    async def get_artifact_stats(session_id: int):
+        """
+        Get artifact statistics for a session.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Artifact statistics
+        """
+        from ..core.artifact_storage import get_manager
+
+        artifact_mgr = get_manager()
+        if artifact_mgr is None:
+            raise HTTPException(status_code=503, detail="Artifact manager not available")
+
+        try:
+            stats = await artifact_mgr.get_stats(session_id=session_id)
+            return stats
+        except Exception as e:
+            logger.error(f"Failed to get artifact stats for {session_id}: {e}", exc_info=e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.delete("/sessions/{session_id}/artifacts/{artifact_id}")
+    async def delete_artifact(session_id: int, artifact_id: str):
+        """
+        Delete an artifact by ID.
+
+        Args:
+            session_id: Session identifier
+            artifact_id: Artifact identifier
+
+        Returns:
+            Deletion confirmation
+        """
+        from ..core.artifact_storage import get_manager
+
+        artifact_mgr = get_manager()
+        if artifact_mgr is None:
+            raise HTTPException(status_code=503, detail="Artifact manager not available")
+
+        try:
+            success = await artifact_mgr.delete(
+                session_id=session_id,
+                artifact_id=artifact_id,
+            )
+
+            if not success:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+
+            # Also remove from shared memory if it exists
+            db = get_db()
+            state_data = await db.load_state(session_id)
+            if state_data:
+                state = AgentState(**state_data)
+                if artifact_id in state.shared_memory:
+                    del state.shared_memory[artifact_id]
+                    await db.save_state(session_id, state.model_dump())
+
+            return {"deleted": artifact_id}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to delete artifact {artifact_id}: {e}", exc_info=e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.delete("/sessions/{session_id}/artifacts")
+    async def cleanup_session_artifacts(session_id: int):
+        """
+        Clean up all artifacts for a session.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Cleanup confirmation with count
+        """
+        from ..core.artifact_storage import get_manager
+
+        artifact_mgr = get_manager()
+        if artifact_mgr is None:
+            raise HTTPException(status_code=503, detail="Artifact manager not available")
+
+        try:
+            count = await artifact_mgr.cleanup_session(session_id=session_id)
+
+            # Also remove from shared memory
+            db = get_db()
+            state_data = await db.load_state(session_id)
+            if state_data:
+                state = AgentState(**state_data)
+                removed_count = 0
+                for key in list(state.shared_memory.keys()):
+                    if key.startswith("art_"):
+                        del state.shared_memory[key]
+                        removed_count += 1
+                await db.save_state(session_id, state.model_dump())
+                logger.info(f"Removed {removed_count} artifact refs from shared memory")
+
+            return {"session_id": session_id, "cleaned": count}
+        except Exception as e:
+            logger.error(f"Failed to cleanup artifacts for {session_id}: {e}", exc_info=e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get("/artifacts/health")
+    async def artifact_health_check():
+        """
+        Health check for artifact manager.
+
+        Returns:
+            Health status of all session storage backends
+        """
+        from ..core.artifact_storage import get_manager
+
+        artifact_mgr = get_manager()
+        if artifact_mgr is None:
+            return {"status": "disabled", "message": "Artifact manager not available"}
+
+        try:
+            health = await artifact_mgr.health_check()
+            return {
+                "status": "ok",
+                "sessions": health,
+            }
+        except Exception as e:
+            logger.error(f"Artifact health check failed: {e}", exc_info=e)
+            raise HTTPException(status_code=500, detail=str(e))
+
     return router
+
+

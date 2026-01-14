@@ -93,7 +93,7 @@ async def _call_search_api(search_type: str, search_word: str,filter:Dict = None
 
 # ================= 公开工具函数 =================
 
-async def search_exhibits(query: str, top_k: int = 5, ctx: ServiceContext = None):
+async def search_exhibits(query: str, top_k: int = 5, ctx: AgentContext = None):
     """
     Search for museum exhibits (physical artifacts).
     """
@@ -124,7 +124,7 @@ async def search_exhibits(query: str, top_k: int = 5, ctx: ServiceContext = None
         type="dataset"
     )
 
-async def search_resources(query: str, top_k: int = 5,ctx: ServiceContext = None):
+async def search_resources(query: str, top_k: int = 5,ctx: AgentContext = None):
     """
     Search for digital assets and documents (e.g., papers, descriptions).
     """
