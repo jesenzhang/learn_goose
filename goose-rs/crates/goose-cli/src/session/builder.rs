@@ -10,9 +10,7 @@ use goose::config::{
 use goose::providers::create;
 use goose::recipe::{Response, SubRecipe};
 
-use goose::agents::extension::PlatformExtensionContext;
 use goose::session::session_manager::SessionType;
-use goose::session::SessionManager;
 use goose::session::{EnabledExtensionsState, ExtensionState};
 use rustyline::EditMode;
 use std::collections::HashSet;
@@ -147,12 +145,15 @@ async fn offer_extension_debugging_help(
     // Create a minimal agent for debugging
     let debug_agent = Agent::new();
 
-    let session = SessionManager::create_session(
-        std::env::current_dir()?,
-        "CLI Session".to_string(),
-        SessionType::Hidden,
-    )
-    .await?;
+    let session = debug_agent
+        .config
+        .session_manager
+        .create_session(
+            std::env::current_dir()?,
+            "CLI Session".to_string(),
+            SessionType::Hidden,
+        )
+        .await?;
 
     debug_agent.update_provider(provider, &session.id).await?;
 
@@ -202,7 +203,7 @@ async fn offer_extension_debugging_help(
     Ok(())
 }
 
-fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig]) {
+fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig], interactive: bool) {
     let missing: Vec<_> = saved_extensions
         .iter()
         .filter(|ext| get_extension_by_name(&ext.name()).is_none())
@@ -216,16 +217,27 @@ fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig]) {
             .collect::<Vec<_>>()
             .join(", ");
 
-        if !cliclack::confirm(format!(
-            "Extension(s) {} from previous session are no longer available. Restore for this session?",
-            names
-        ))
-        .initial_value(true)
-        .interact()
-        .unwrap_or(false)
-        {
-            println!("{}", style("Resume cancelled.").yellow());
-            process::exit(0);
+        if interactive {
+            if !cliclack::confirm(format!(
+                "Extension(s) {} from previous session are no longer available. Restore for this session?",
+                names
+            ))
+            .initial_value(true)
+            .interact()
+            .unwrap_or(false)
+            {
+                println!("{}", style("Resume cancelled.").yellow());
+                process::exit(0);
+            }
+        } else {
+            eprintln!(
+                "{}",
+                style(format!(
+                    "Warning: Extension(s) {} from previous session are no longer available, continuing without them.",
+                    names
+                ))
+                .yellow()
+            );
         }
     }
 }
@@ -241,10 +253,12 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     goose::posthog::set_session_context("cli", session_config.resume);
 
     let config = Config::global();
+    let agent: Agent = Agent::new();
+    let session_manager = agent.config.session_manager.clone();
 
     let (saved_provider, saved_model_config) = if session_config.resume {
         if let Some(ref session_id) = session_config.session_id {
-            match SessionManager::get_session(session_id, false).await {
+            match session_manager.get_session(session_id, false).await {
                 Ok(session_data) => (session_data.provider_name, session_data.model_config),
                 Err(_) => (None, None),
             }
@@ -299,8 +313,6 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             .with_temperature(temperature)
     };
 
-    let agent: Agent = Agent::new();
-
     agent
         .apply_recipe_components(
             session_config.sub_recipes,
@@ -337,17 +349,14 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let session_id: String = if session_config.no_session {
         let working_dir = std::env::current_dir().expect("Could not get working directory");
-        let session = SessionManager::create_session(
-            working_dir,
-            "CLI Session".to_string(),
-            SessionType::Hidden,
-        )
-        .await
-        .expect("Could not create session");
+        let session = session_manager
+            .create_session(working_dir, "CLI Session".to_string(), SessionType::Hidden)
+            .await
+            .expect("Could not create session");
         session.id
     } else if session_config.resume {
         if let Some(session_id) = session_config.session_id {
-            match SessionManager::get_session(&session_id, false).await {
+            match session_manager.get_session(&session_id, false).await {
                 Ok(_) => session_id,
                 Err(_) => {
                     output::render_error(&format!(
@@ -358,7 +367,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 }
             }
         } else {
-            match SessionManager::list_sessions().await {
+            match session_manager.list_sessions().await {
                 Ok(sessions) if !sessions.is_empty() => sessions[0].id.clone(),
                 _ => {
                     output::render_error("Cannot resume - no previous sessions found");
@@ -378,16 +387,11 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             process::exit(1);
         });
 
-    agent
-        .extension_manager
-        .set_context(PlatformExtensionContext {
-            session_id: Some(session_id.clone()),
-            extension_manager: Some(Arc::downgrade(&agent.extension_manager)),
-        })
-        .await;
-
     if session_config.resume {
-        let session = SessionManager::get_session(&session_id, false)
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
             .await
             .unwrap_or_else(|e| {
                 output::render_error(&format!("Failed to read session metadata: {}", e));
@@ -397,22 +401,34 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         let current_workdir =
             std::env::current_dir().expect("Failed to get current working directory");
         if current_workdir != session.working_dir {
-            let change_workdir = cliclack::confirm(format!("{} The original working directory of this session was set to {}. Your current directory is {}. Do you want to switch back to the original working directory?", style("WARNING:").yellow(), style(session.working_dir.display()).cyan(), style(current_workdir.display()).cyan()))
-                    .initial_value(true)
-                    .interact().expect("Failed to get user input");
+            if session_config.interactive {
+                let change_workdir = cliclack::confirm(format!("{} The original working directory of this session was set to {}. Your current directory is {}. Do you want to switch back to the original working directory?", style("WARNING:").yellow(), style(session.working_dir.display()).cyan(), style(current_workdir.display()).cyan()))
+                        .initial_value(true)
+                        .interact().expect("Failed to get user input");
 
-            if change_workdir {
-                if !session.working_dir.exists() {
-                    output::render_error(&format!(
-                        "Cannot switch to original working directory - {} no longer exists",
-                        style(session.working_dir.display()).cyan()
-                    ));
-                } else if let Err(e) = std::env::set_current_dir(&session.working_dir) {
-                    output::render_error(&format!(
-                        "Failed to switch to original working directory: {}",
-                        e
-                    ));
+                if change_workdir {
+                    if !session.working_dir.exists() {
+                        output::render_error(&format!(
+                            "Cannot switch to original working directory - {} no longer exists",
+                            style(session.working_dir.display()).cyan()
+                        ));
+                    } else if let Err(e) = std::env::set_current_dir(&session.working_dir) {
+                        output::render_error(&format!(
+                            "Failed to switch to original working directory: {}",
+                            e
+                        ));
+                    }
                 }
+            } else {
+                eprintln!(
+                    "{}",
+                    style(format!(
+                        "Warning: Working directory differs from session (current: {}, session: {}). Staying in current directory.",
+                        current_workdir.display(),
+                        session.working_dir.display()
+                    ))
+                    .yellow()
+                );
             }
         }
     }
@@ -428,12 +444,20 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let extensions_to_run: Vec<_> = if let Some(extensions) = session_config.extensions_override {
         extensions.into_iter().collect()
     } else if session_config.resume {
-        match SessionManager::get_session(&session_id, false).await {
+        match agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+        {
             Ok(session_data) => {
                 if let Some(saved_state) =
                     EnabledExtensionsState::from_extension_data(&session_data.extension_data)
                 {
-                    check_missing_extensions_or_exit(&saved_state.extensions);
+                    check_missing_extensions_or_exit(
+                        &saved_state.extensions,
+                        session_config.interactive,
+                    );
                     saved_state.extensions
                 } else {
                     get_enabled_extensions()
@@ -484,6 +508,15 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     spinner.clear();
 
     for (name, err) in offer_debug {
+        eprintln!(
+            "{}",
+            style(format!(
+                "Warning: Failed to start extension '{}' ({}), continuing without it",
+                name, err
+            ))
+            .yellow()
+        );
+
         if let Err(debug_err) = offer_extension_debugging_help(
             &name,
             &err.to_string(),
