@@ -103,6 +103,7 @@ class ToolExecutor:
             state=self.state,
             db=self.db,
             ai_services=self.ai_services,
+            req_ctx=self.request_context,
             **self.extra_services
         )
         return ctx

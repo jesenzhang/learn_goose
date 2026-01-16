@@ -150,7 +150,7 @@ class ArtifactStorage(ABC):
     3. 可观测性 - 提供统计和日志记录
     """
 
-    def __init__(self, config: StorageConfig, session_id: str):
+    def __init__(self, config: StorageConfig, session_id: str|int):
         """
         初始化存储后端
 
@@ -159,8 +159,8 @@ class ArtifactStorage(ABC):
             session_id: 会话 ID，用于隔离不同会话的数据
         """
         self.config = config
-        self.session_id = session_id
-        self.logger = logger.getChild(f"{self.__class__.__name__}[{session_id[:8]}]")
+        self.session_id = str(session_id)
+        self.logger = logger.getChild(f"{self.__class__.__name__}[{self.session_id}]")
 
     # ========================================================================
     # 核心操作 (必须实现)

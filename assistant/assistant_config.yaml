@@ -113,42 +113,97 @@ database:
 # ================= Skills 配置 =================
 # 独立的技能配置项，支持：
 # - 启用/禁用技能
+# - 技能级别配置（mode, label, description）
+# - 工具级别配置（tools_config，用于覆盖工具的显示名称等属性）
 # - 每个技能的敏感工具配置（优先级高于全局 security.sensitive_tools）
 skills_config:
   faq:
     enabled: true
     mode: "global"
+    label: "常见问题"
     sensitive_tools: []
+  
+  planning-with-files:
+    enabled: true
 
   file-manager:
     enabled: true
     mode: "global"
+    label: "文件管理"
     sensitive_tools: ["write_file"]
+    # 工具级别配置示例：覆盖工具的中文显示名称
+    tools_config:
+      list_files:
+        label: "列出文件"
+      read_file:
+        label: "读取文件"
+      write_file:
+        label: "写入文件"
 
   # 文博相关技能（启用）
   memory-local:
     enabled: true
     mode: "global"
+    label: "长期记忆"
     description: "长期记忆存储工具"
     sensitive_tools:
       - "delete_memory"   # 删除记忆需要审批
+    # 工具级别配置示例
+    tools_config:
+      save_memory:
+        label: "保存记忆"
+      search_memory:
+        label: "搜索记忆"
+      delete_memory:
+        label: "删除记忆"
 
   # 统一的资源搜索技能（包含 V1 和 V2 API）
   asset_knowledge_search:
     enabled: true
+    label: "资源检索"
     sensitive_tools: []
+    # 工具级别配置示例
+    tools_config:
+      search_exhibits_v2:
+        label: "搜索藏品"
+      search_resources_v2:
+        label: "搜索文档"
+      search_assets:
+        label: "精确搜索"
+      recommend_assets:
+        label: "智能推荐"
+      search_resource_statistic:
+        label: "查询资源统计数据"
+      search_kg_overview:
+        label: "查询知识图谱概况"
+      lookup_doc_content:
+        label: "查看文档内容"
+      page_content_qa:
+        label: "当前页面问答"
 
-
-    
   calculator:
     enabled: true
+    label: "计算器"
     sensitive_tools: []
+    # 工具级别配置示例
+    tools_config:
+      calculate:
+        label: "计算"
 
   clipboard:
     enabled: true
     mode: "global"
+    label: "剪贴板"
     sensitive_tools:
       - "clear_clipboard"  # 清空剪贴板需要审批
+    # 工具级别配置示例
+    tools_config:
+      read_from_clipboard:
+        label: "读取剪贴板"
+      write_to_clipboard:
+        label: "写入剪贴板"
+      clear_clipboard:
+        label: "清空剪贴板"
 
 
 hooks_config:
@@ -208,6 +263,36 @@ hooks_config:
 # 定义文博场景的业务意图和所需参数
 # 意图执行时会调用 asset_knowledge_search 技能下的相应接口
 intents:
+  # ==================== 特殊通用意图 ====================
+
+  # [新增] 自主执行意图 (The "Catch-All" Planner)
+  # 当用户的需求不符合任何具体的 search/view 意图时，或者作为复合任务的后续步骤（如"然后写文章"）
+  adhoc_execution:
+    description: >
+      用于处理意图列表中未明确定义的通用任务，例如：写作、总结、分析、推理、翻译、格式转换等。
+      通常用于复合任务的第二步（例如：先搜索，然后【写文章】）。
+    
+    slots:
+      instruction:
+        type: "str"
+        description: "具体的执行指令，越详细越好。例如：'基于搜索结果写一篇关于澳门的文章'"
+        required: true
+      context_source:
+        type: "str"
+        description: "依赖的上下文来源"
+        default: "conversation_history"
+
+    execution:
+      mode: "llm"  # 这里使用 llm 模式，表示直接让 Agent 自由发挥
+      # 不需要指定具体的 skill_name，或者指定为通用的 chat skill
+      skill_name: "general" 
+      skill_params:
+        _instruction_template: >
+          【自主执行指令】
+          任务：{instruction}
+          
+          请利用当前的上下文（包括之前的 Tool 调用结果、shared_memory），尽你所能完成上述任务。
+          你可以调用任何允许的工具（如 read_from_clipboard, write_file 等），或者直接生成文本回复。
   # ==================== 藏品相关意图 ====================
 
   # 意图1：搜索藏品（V2 API - 推荐）
@@ -290,7 +375,19 @@ intents:
         default: ["资产", "资产文件"]
       resource_types:
         type: "list"
-        description: "资源类型：['图片', '视频', '文档', '音频', '3D', '其他']"
+        # [关键修改] 增加映射逻辑说明
+        description: >
+          资源物理文件类型过滤。请根据用户描述进行映射：
+          - 提到 "图片"、"照片"、"图"、"JPG"、"PNG" -> 映射为 '图片'
+          - 提到 "视频"、"影片"、"录像"、"MP4" -> 映射为 '视频'
+          - 提到 "文档"、"资料"、"文本"、"PDF"、"Word" -> 映射为 '文档'
+          - 提到 "音频"、"声音"、"录音"、"MP3" -> 映射为 '音频'
+          - 提到 "3D"、"模型"、"三维" -> 映射为 '3D'
+          - 提到 "其他"、"压缩包" -> 映射为 '其他'
+          
+          注意：若用户未提及具体文件类型（如"搜索青铜器"），请保持为空列表（表示不过滤）。
+        
+        # 这里默认给空列表，通常后端逻辑是 空=全部
         default: []
 
     execution:
@@ -308,17 +405,52 @@ intents:
           请调用 V1 API 工具 `search_assets` 执行精确搜索，该工具支持按类型过滤。
 
   # 意图4：智能资产推荐（V1 API）
+  # 意图4：智能资产推荐（V1 API）
   recommend_assets:
-    description: "用户的请求比较模糊或开放，希望获得推荐。使用 V1 推荐引擎。适用于：'推荐一些资源'、'有什么好东西'等。"
+    description: >
+      用户希望获得资源推荐，查询比较模糊或开放，或者包含多种跨类型的资源需求。
+      适用于：'推荐一些关于龙的资源'、'看看有没有相关的视频和图片'、'找点好东西'等。
     slots:
       keywords:
         type: "str"
-        description: "用户描述的关键词"
+        description: "用户描述的关键词，提取核心实体或主题。"
         required: true
+      
       intent_targets:
         type: "list"
-        description: "意图目标，如 ['文件', '资产', '专题库']"
+        # [关键修改] 这里的描述变成了“映射指南”，指导 LLM 如何填槽
+        description: >
+          目标资源类型列表。请根据用户描述中的关键词进行严格映射：
+          - 提到 "图片"、"照片"、"图"、"高清图" -> 映射为 '图片'
+          - 提到 "视频"、"影像"、"片子" -> 映射为 '视频'
+          - 提到 "文档"、"文章"、"资料"、"PDF" -> 映射为 '文档'
+          - 提到 "音频"、"解说"、"声音" -> 映射为 '音频'
+          - 提到 "3D"、"模型"、"三维" -> 映射为 '3D'
+          - 提到 "专题"、"合集" -> 映射为 '专题库'
+          - 提到 "文物"、"藏品"、"展品" -> 映射为 '藏品'
+          - 提到 "文件"、"素材" -> 映射为 '资产'
+          
+          注意：
+          1. 支持多选，如 "图片和视频" -> ['图片', '视频']
+          2. 若用户未指定具体类型（如 "搜索青铜器"），请使用默认值（包含所有类型）。
+        
+        # 默认包含所有，确保不漏
+        default: ['图片','视频','文档','音频','3D','其他','专题库','资产','藏品']
+      
+      # [2] 新增：资源类型精准过滤 (专门用于 V1 资产的过滤)
+      resource_types:
+        type: "list"
+        description: >
+          物理文件类型过滤（用于精确筛选资产）。请根据关键词映射：
+          - 提到 "图片"、"照片"、"高清图" -> 映射为 '图片'
+          - 提到 "视频"、"影片"、"录像" -> 映射为 '视频'
+          - 提到 "文档"、"PDF"、"资料" -> 映射为 '文档'
+          - 提到 "音频"、"解说" -> 映射为 '音频'
+          - 提到 "3D"、"模型" -> 映射为 '3D'
+          
+          注意：如果用户未明确指定“文件格式”或“类型”，请保持为空列表 []，表示不过滤。
         default: []
+
 
     execution:
       mode: "skill"
@@ -330,9 +462,12 @@ intents:
           用户意图：智能资产推荐
           关键词："{keywords}"
           目标类型：{intent_targets}
+          资源类型过滤：{resource_types}
 
-          【重要】你当前处于 asset_knowledge_search 技能模式，必须调用 `recommend_assets` 工具来执行推荐。
-          不要调用 query_faq 或其他工具，直接调用 recommend_assets 即可。
+          【执行逻辑】
+          1. 你当前处于多路召回模式。
+          2. 请直接调用 `recommend_assets`，将提取到的 `keywords`、`intent_targets`、`resource_types` 列表准确传入。
+          3. 工具会根据类型自动从 藏品库(V2)、资源库(V2) 和 资产库(V1) 中聚合结果。
 
 
   # ==================== 统计相关意图（V1 API） ====================
@@ -401,62 +536,44 @@ intents:
 
           请调用 V1 API 工具 `search_doc` 获取文档详细内容。
 
-  # ==================== 其他意图 ====================
+  # 意图9：对当前页面内容提问
+  page_content_qa:
+    # [关键修改]：
+    # 1. 移除 shared_memory 等技术细节，改用自然语言描述用户行为。
+    # 2. 增加 explicit examples (示例)，覆盖不同的提问方式。
+    description: >
+      用户希望针对“当前正在浏览的页面”、“当前网页”或“当前文档”的内容进行提问、总结或提取信息。
+      当用户提到“当前页面”、“这个网页”、“这篇文章”、“页面内容”等关键词，或者要求“总结”、“概括”当前显示的内容时触发。
+      
+      示例用户输入：
+      - "当前页面讲的是什么内容？"
+      - "简述当前页面的内容"
+      - "总结一下这个网页的要点"
+      - "这个页面里提到了哪些价格信息？"
+      - "分析一下当前文章的观点"
+    keywords: ["当前页面", "这个网页", "网页内容", "页面内容", "文章讲了什么"]
+    slots: {}
 
-  # 意图9：查找服务设施
-  find_service:
-    description: "用户想找博物馆内的服务设施，如卫生间、电梯、休息区、餐厅等。"
-    slots:
-      facility_type:
-        type: "str"
-        description: "设施类型：toilet(卫生间)、elevator(电梯)、restaurant(餐厅)、rest_area(休息区)等"
-        required: true
-      floor:
-        type: "int"
-        description: "楼层限制"
-        default: null
-      location:
-        type: "str"
-        description: "位置偏好，如靠近入口、在东侧等"
-        default: null
-
-  # 意图10：查询展览信息
-  query_exhibition:
-    description: "用户想了解特定展览的信息，如展览内容、时间、地点等。"
-    slots:
-      exhibition_name:
-        type: "str"
-        description: "展览名称或关键词"
-        required: true
-      detail_type:
-        type: "str"
-        description: "需要的信息类型：overview(概览)、artifacts(展品列表)、schedule(时间安排)、location(位置)"
-        default: "overview"
-
-  # 意图11：路线规划
-  plan_route:
-    description: "用户希望规划参观路线，可能包含时间限制、兴趣偏好等。"
-    slots:
-      duration:
-        type: "int"
-        description: "预计参观时长（分钟）"
-        default: 120
-      interests:
-        type: "list"
-        description: "感兴趣的类别或主题"
-        default: []
-      accessibility:
-        type: "bool"
-        description: "是否需要无障碍路线"
-        default: false
-      start_point:
-        type: "str"
-        description: "起始点"
-        default: "入口"
+    execution:
+      mode: "skill"
+      skill_name: "asset_knowledge_search"
+      skill_params:
+        _instruction_template: >
+          【系统指令】
+          用户意图：当前页面问答。
+          
+          上下文提示：用户的输入是针对浏览器当前页面的内容。
+          请务必执行以下步骤：
+          1. 调用工具 `page_content_qa` 读取 当前页面的内容。
+          2. 基于读取到的文本内容，回答用户的问题。
+          3. 如果读取内容为空，请告知用户无法获取页面内容。
 
   # 意图12：通用闲聊
   general_chat:
-    description: "用户只是打招呼、闲聊或没有明确的业务需求。"
+    description: > 
+      仅用于纯粹的打招呼（你好）、情感表达（太棒了）或与博物馆业务完全无关的闲聊。
+      【绝对禁止】：如果用户提到任何具体的文物、历史、文件、统计数据或页面内容，必须分发给对应的具体意图，绝对不能归类为 general_chat。
+      
     slots:
       question:
         type: "str"
@@ -466,6 +583,8 @@ intents:
         type: "str"
         description: "识别的用户情绪：positive(积极)、neutral(中性)、negative(消极)、curious(好奇)"
         default: "neutral"
+
+
 
 # ==================== 意图与工具映射说明 ====================
 # V2 API（智能检索）：

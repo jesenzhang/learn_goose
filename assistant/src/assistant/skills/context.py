@@ -229,6 +229,7 @@ def create_context(
     state: Optional[T_State] = None,
     db: Optional[T_DB] = None,
     ai_services: Union[AIServices, Dict[str, Any], None] = None,
+    req_ctx: Optional['RequestContext'] = None,
     **services
 ) ->"ServiceContext[T_State, T_DB]":  # 返回值绑定泛型
     """
@@ -246,6 +247,8 @@ def create_context(
         elif isinstance(ai_services, dict):
             # 兼容旧字典
             builder.with_ai_services_dict(ai_services)
+    if req_ctx:
+        builder.with_request_context(req_ctx)
         
     for k, v in services.items():
         builder.with_service(k, v)

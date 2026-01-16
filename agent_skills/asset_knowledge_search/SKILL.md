@@ -1,7 +1,7 @@
 ---
 name: asset_knowledge_search
 description: Search the internal digital asset system with both V1 (ES-based) and V2 (AI-powered) APIs for assets, files, exhibits, documents, libraries, knowledge graph data, statistics, and document content.
-allowed-tools: [search_assets, recommend_assets, retrieve_knowledge, search_resource_statistic, search_kg_overview, search_doc, search_exhibits_v2, search_resources_v2]
+allowed-tools: [search_assets, recommend_assets, retrieve_knowledge, search_resource_statistic, search_kg_overview, lookup_doc_content, search_exhibits_v2, search_resources_v2,page_content_qa]
 ---
 
 # Asset & Knowledge Search Skill
@@ -12,7 +12,7 @@ This skill provides **two versions** of search APIs:
 
 | Version | API Type | Use Case | Tools |
 |---------|----------|----------|-------|
-| **V1** | ES-based (Elasticsearch) | Structured asset management, general file search, system statistics | `search_assets`, `recommend_assets`, `retrieve_knowledge`, `search_resource_statistic`, `search_kg_overview`, `search_doc` |
+| **V1** | ES-based (Elasticsearch) | Structured asset management, general file search, system statistics | `search_assets`, `recommend_assets`, `retrieve_knowledge`, `search_resource_statistic`, `search_kg_overview`, `lookup_doc_content` |
 | **V2** | AI-powered (RAG + LLM) | Intelligent exhibit search, document content search with summaries | `search_exhibits_v2`, `search_resources_v2` |
 
 **Key Difference**: V2 APIs provide better semantic search with LLM-generated summaries, while V1 APIs are better for structured queries and system-wide statistics.
@@ -68,13 +68,13 @@ Use this when the user asks for **knowledge graph statistics** or information ab
 - **Examples**: "What's in our knowledge graph?", "How many entities are there?", "Show me the graph overview".
 - **Action**: Call `search_kg_overview`.
 
-### 6. Document Content Query (`search_doc`)
+### 6. Document Content Query (`lookup_doc_content`)
 Use this when the user provides **specific file IDs** and wants to view the actual document content.
 - **Parameters**:
     - `resource_file_ids`: Single file ID string or list of file IDs (required)
     - `token`: Authentication token (optional, for restricted content)
 - **Examples**: "Show me content of file ID 12345", "Get content for these files: [id1, id2]".
-- **Action**: Call `search_doc` with the file IDs.
+- **Action**: Call `lookup_doc_content` with the file IDs.
 - **Note**: This tool requires the user to already know the file IDs from previous search results.
 
 ---
@@ -123,6 +123,18 @@ Use this when the user provides **specific file IDs** and wants to view the actu
     - "Research on bronze casting techniques" → `search_resources_v2(query="青铜铸造工艺")`
     - "Historical background of the Han Dynasty" → `search_resources_v2(query="汉代历史背景")`
     - "Documents about the Jade Cabbage" → `search_resources_v2(query="翠玉白菜")`
+
+---
+
+## Context-Aware Tools
+
+### 9. Current Page QA (`page_content_qa`)
+Use this when the user asks questions specifically about the **content they are currently looking at** on their screen/browser. This tool does not search the database; it analyzes the text currently rendered on the user's device.
+
+- **Parameters**:
+    - `question`: The user's question regarding the page content (required).
+- **Trigger Phrases**: "current page", "this page", "summarize this", "text on screen".
+- **Action**: Call `page_content_qa`.
 
 ---
 
@@ -176,7 +188,7 @@ When using `search_assets`, you **MUST** use the exact string values for lists:
 
 **User**: "查看文件ID为'abc123'的文档内容"
 **Assistant**: (Thought: User provides specific file ID and wants content.)
-**Tool Call**: `search_doc(resource_file_ids='abc123')`
+**Tool Call**: `lookup_doc_content(resource_file_ids='abc123')`
 
 **User**: "统计一下上个月的视频文件数量"
 **Assistant**: (Thought: User wants file count by format with date range.)
@@ -213,3 +225,14 @@ When using `search_assets`, you **MUST** use the exact string values for lists:
 **User**: "青铜器的制作工艺有什么资料？"
 **Option A (V1 - Knowledge Graph)**: `retrieve_knowledge(query="青铜器制作工艺")`
 **Option B (V2 - Document Search)**: `search_resources_v2(query="青铜器制作工艺")` ← Better for document content with summaries
+
+
+### Context-Aware Examples
+
+**User**: "简述当前页面的内容"
+**Assistant**: (Thought: User wants a summary of the current view.)
+**Tool Call**: `page_content_qa(question="简述当前页面的内容")`
+
+**User**: "这个页面里有没有提到'青铜器'？"
+**Assistant**: (Thought: User wants to extract specific info from the current page.)
+**Tool Call**: `page_content_qa(question="这个页面里有没有提到'青铜器'？")`

@@ -162,12 +162,13 @@ class ArtifactManager:
         if self.config.enabled:
             self._start_cleanup_task()
 
-    async def get_storage(self, session_id: str) -> ArtifactStorage:
+    async def get_storage(self, session_id: str|int) -> ArtifactStorage:
         """
         获取或创建会话的存储后端
 
         根据配置选择默认存储类型，但也支持临时覆盖。
         """
+        session_id = str(session_id)
         if session_id in self._session_storages:
             return self._session_storages[session_id]
 
@@ -187,7 +188,7 @@ class ArtifactManager:
 
     async def store(
         self,
-        session_id: str,
+        session_id: str|int,
         artifact_id: str,
         artifact_type: str,
         data: Any,
@@ -227,7 +228,7 @@ class ArtifactManager:
             storage_type=storage_type or self.config.default_storage,
             metadata=metadata or {},
         )
-
+        session_id = str(session_id)
         # 获取存储后端
         storage = await self.get_storage(session_id)
 
@@ -236,7 +237,7 @@ class ArtifactManager:
 
         return ref
 
-    async def load(self, session_id: str, artifact_id: str) -> Optional[Any]:
+    async def load(self, session_id: str|int, artifact_id: str) -> Optional[Any]:
         """
         加载 artifact 数据
 
@@ -249,7 +250,7 @@ class ArtifactManager:
         """
         if not self.config.enabled:
             return None
-
+        session_id = str(session_id)
         storage = self._session_storages.get(session_id)
         if storage is None:
             # 尝试从数据库加载旧格式的引用
@@ -273,15 +274,16 @@ class ArtifactManager:
         # 从存储加载
         return await storage.load(ref)
 
-    async def load_by_ref(self, session_id: str, ref: ArtifactRef) -> Optional[Any]:
+    async def load_by_ref(self, session_id: str|int, ref: ArtifactRef) -> Optional[Any]:
         """根据引用对象加载数据"""
+        session_id = str(session_id)
         storage = self._session_storages.get(session_id)
         if storage is None:
             return None
 
         return await storage.load(ref)
 
-    async def delete(self, session_id: str, artifact_id: str) -> bool:
+    async def delete(self, session_id: str|int, artifact_id: str) -> bool:
         """
         删除 artifact 数据
 
@@ -295,6 +297,8 @@ class ArtifactManager:
         if not self.config.enabled:
             return False
 
+        session_id = str(session_id)
+        
         storage = self._session_storages.get(session_id)
         if storage is None:
             # 处理旧格式
@@ -307,16 +311,18 @@ class ArtifactManager:
                          storage_type=storage.config.storage_type, metadata={})
         return await storage.delete(ref)
 
-    async def delete_by_ref(self, session_id: str, ref: ArtifactRef) -> bool:
+    async def delete_by_ref(self, session_id: str|int, ref: ArtifactRef) -> bool:
         """根据引用对象删除"""
+        session_id = str(session_id)
         storage = self._session_storages.get(session_id)
         if storage is None:
             return False
 
         return await storage.delete(ref)
 
-    async def exists(self, session_id: str, artifact_id: str) -> bool:
+    async def exists(self, session_id: str|int, artifact_id: str) -> bool:
         """检查 artifact 是否存在"""
+        session_id = str(session_id)
         storage = self._session_storages.get(session_id)
         if storage is None:
             return False
@@ -325,7 +331,7 @@ class ArtifactManager:
                          storage_type=storage.config.storage_type, metadata={})
         return await storage.exists(ref)
 
-    async def cleanup_session(self, session_id: str) -> int:
+    async def cleanup_session(self, session_id: str|int) -> int:
         """
         清理会话的所有 artifacts
 
@@ -335,6 +341,7 @@ class ArtifactManager:
         Returns:
             清理的数量
         """
+        session_id = str(session_id)
         storage = self._session_storages.get(session_id)
         if storage is None:
             return 0
@@ -350,7 +357,7 @@ class ArtifactManager:
         self.logger.info(f"Cleaned up session {session_id}: {count} artifacts")
         return count
 
-    async def cleanup_old(self, session_id: str, older_than_seconds: Optional[int] = None) -> int:
+    async def cleanup_old(self, session_id: str|int, older_than_seconds: Optional[int] = None) -> int:
         """
         清理过期的 artifacts
 
@@ -361,6 +368,7 @@ class ArtifactManager:
         Returns:
             清理的数量
         """
+        session_id = str(session_id)
         storage = self._session_storages.get(session_id)
         if storage is None:
             return 0
@@ -370,7 +378,7 @@ class ArtifactManager:
 
         return await storage.cleanup_old(older_than_seconds)
 
-    async def get_stats(self, session_id: str) -> Dict[str, Any]:
+    async def get_stats(self, session_id: str|int) -> Dict[str, Any]:
         """
         获取会话的统计信息
 
@@ -380,14 +388,16 @@ class ArtifactManager:
         Returns:
             统计信息
         """
+        session_id = str(session_id)
         storage = self._session_storages.get(session_id)
         if storage is None:
             return {}
 
         return await storage.get_stats()
 
-    async def list_all(self, session_id: str) -> List[ArtifactRef]:
+    async def list_all(self, session_id: str|int) -> List[ArtifactRef]:
         """列出会话的所有 artifacts"""
+        session_id = str(session_id)
         storage = self._session_storages.get(session_id)
         if storage is None:
             return []
@@ -471,12 +481,12 @@ class ArtifactManager:
             cleanup_interval=self.config.cleanup_interval,
         )
 
-    def _load_legacy_ref(self, session_id: str, artifact_id: str) -> Optional[ArtifactRef]:
+    def _load_legacy_ref(self, session_id: str|int, artifact_id: str) -> Optional[ArtifactRef]:
         """加载旧格式的引用（从 shared_memory）"""
         # 这个方法由外部调用，从 shared_memory 中提取旧格式的引用
         return None
 
-    async def _load_with_storage(self, session_id: str, ref: ArtifactRef) -> Optional[Any]:
+    async def _load_with_storage(self, session_id: str|int, ref: ArtifactRef) -> Optional[Any]:
         """使用存储后端加载引用数据"""
         storage = self._session_storages.get(session_id)
         if storage is None:
@@ -484,7 +494,7 @@ class ArtifactManager:
 
         return await storage.load(ref)
 
-    async def _cleanup_legacy_refs(self, session_id: str) -> int:
+    async def _cleanup_legacy_refs(self, session_id: str|int) -> int:
         """清理旧的引用（从数据库）"""
         # 如果使用 DatabaseStorage，可能需要清理旧格式的引用
         return 0

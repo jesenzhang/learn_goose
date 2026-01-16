@@ -49,6 +49,7 @@ class AgentState(BaseModel):
     intent_session: Dict[str, Any] = Field(default_factory=dict, description="Internal state for Intent Recognizer")
     current_plan: List[str] = []
     pending_tool_call: Optional[Dict] = None
+    intent_queue: List[Dict] = Field(default_factory=list) # 存储待执行的意图列表
     title: str = "New Chat"
     shared_memory: Dict[str, Any] = Field(default_factory=dict)
     run_config: Dict[str, Any] = Field(default_factory=dict, exclude=True)

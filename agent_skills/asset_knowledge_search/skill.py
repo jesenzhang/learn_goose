@@ -176,7 +176,7 @@ class AssetSearchSkill:
         )
 
     # --- 核心功能：推荐 (Tool Implementation) ---
-    async def recommend_assets(self, query: str, intent_targets: List[str] = None, ctx: ServiceContext = None) -> CallToolResult:
+    async def recommend_assets(self, query: str, intent_targets: List[str] = ['图片','视频','文档','音频','3D','其他','专题库','资产','藏品'], ctx: ServiceContext = None) -> CallToolResult:
         """
         [Tool] 资产推荐逻辑
         """
@@ -391,7 +391,7 @@ class AssetSearchSkill:
 
     # --- 核心功能：文档内容查询 (Tool Implementation) ---
 
-    async def search_doc(self, resource_file_ids: Union[str, List[str]], token: Optional[str] = None) -> CallToolResult:
+    async def lookup_doc_content(self, resource_file_ids: Union[str, List[str]], token: Optional[str] = None) -> CallToolResult:
         """
         [Tool] 查询文档内容
 

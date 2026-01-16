@@ -26,6 +26,7 @@ class ToolMetadata:
     """Metadata for a tool function."""
     name: str
     description: str
+    label: Optional[str] = None  # 中文显示名称，用于前端渲染
     parameters: Dict[str, Any] = field(default_factory=dict)
     is_sensitive: bool = False
     handler: Optional[Callable] = None
@@ -66,6 +67,7 @@ class SkillBase(ABC):
     # Class-level metadata (override in subclasses)
     name: str = ""
     description: str = ""
+    label: Optional[str] = None  # 技能中文显示名称
     skill_type: SkillType = SkillType.CONTEXTUAL
     version: str = "1.0.0"
 
@@ -158,6 +160,7 @@ class SkillBase(ABC):
 def skill_tool(
     name: Optional[str] = None,
     description: Optional[str] = None,
+    label: Optional[str] = None,  # 中文显示名称
     sensitive: bool = False,
     parameters: Optional[Dict[str, Any]] = None
 ):
@@ -166,13 +169,14 @@ def skill_tool(
 
     Usage:
         class MySkill(SkillBase):
-            @skill_tool(description="Does something cool")
+            @skill_tool(description="Does something cool", label="做很酷的事情")
             async def my_tool(self, arg: str, ctx: ServiceContext) -> str:
                 return f"Result: {arg}"
 
     Args:
         name: Tool name (defaults to method name)
         description: Tool description for LLM
+        label: 中文显示名称，用于前端渲染
         sensitive: Whether tool requires approval
         parameters: Parameter schema (optional)
     """
@@ -206,11 +210,12 @@ def skill_tool(
         wrapper._tool_metadata = ToolMetadata(
             name=name or func.__name__,
             description=description or func.__doc__ or "No description",
+            label=label,  # 中文显示名称
             parameters=parameters or {},
             is_sensitive=sensitive,
             # Handler 会在 SkillBase._register_tools 里被再次赋值为 bound method
             # 这里先留空或者指向 wrapper 自身
-            handler=None 
+            handler=None
         )
         return wrapper
 

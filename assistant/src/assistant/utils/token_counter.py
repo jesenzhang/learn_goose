@@ -167,7 +167,7 @@ class TokenCounter:
 
         # 2. Messages (使用 count_message 复用逻辑)
         for message in messages:
-            if not message.metadata.agent_visible:
+            if not message.visible.agent_visible:
                 continue
             num_tokens += self.count_message(message)
         

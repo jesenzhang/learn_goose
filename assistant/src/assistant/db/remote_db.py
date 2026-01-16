@@ -18,8 +18,29 @@ from ..utils.ctx_vars import get_auth_token
 logger = logging.getLogger(__name__)
 
 
+class APIError(Exception):
+    """API 错误异常类"""
+    def __init__(self, code: int, message: str, detail: Any = None):
+        self.code = code
+        self.message = message
+        self.detail = detail
+        super().__init__(f"[{code}] {message}")
+
+
 class RemoteDatabaseManager:
     """远端数据库管理器 - 通过 HTTP API 操作远端数据库"""
+
+    # 错误代码映射
+    ERROR_MESSAGES = {
+        400: "请求参数错误",
+        401: "未授权，请检查 Token 或 API Key",
+        403: "禁止访问",
+        404: "资源不存在",
+        405: "验证不通过",
+        500: "服务器内部错误",
+        502: "网关错误",
+        503: "服务暂不可用",
+    }
 
     def __init__(
         self,
@@ -79,16 +100,46 @@ class RemoteDatabaseManager:
     def _get_headers(self) -> Dict[str, str]:
         """获取请求头"""
         headers = {"Content-Type": "application/json"}
-        
+
         # 获取 Token
         dynamic_token = get_auth_token()
-        
+
         if dynamic_token:
             headers["Authorization"] = dynamic_token
         elif self.api_key:
             headers["Authorization"] = self.api_key
         print(dynamic_token)
         return headers
+
+    def _handle_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        通用处理 API 响应的错误代码
+
+        Args:
+            response: API 返回的响应字典
+
+        Returns:
+            处理后的响应字典
+
+        Raises:
+            APIError: 当响应中包含错误代码时抛出
+        """
+        code = response.get("code")
+        # 兼容 status 字段
+        status = response.get("status")
+
+        # 检查 code 字段的错误
+        if code is not None and code != 200:
+            error_msg = self.ERROR_MESSAGES.get(code, f"未知错误 (code={code})")
+            message = response.get("msg") or response.get("message") or error_msg
+            raise APIError(code, message, detail=response.get("data"))
+
+        # 检查 status 字段的错误（兼容某些接口使用 status=0 表示错误）
+        if status is not None and status != 1:
+            message = response.get("msg") or response.get("message") or self.ERROR_MESSAGES.get(status, "操作失败")
+            raise APIError(status, message, detail=response.get("data"))
+
+        return response
 
     async def _request(
         self,
@@ -108,12 +159,22 @@ class RemoteDatabaseManager:
                 params=params
             )
             response.raise_for_status()
-            return response.json()
+
+            # 获取响应数据并处理错误代码
+            result = response.json()
+
+            # 使用通用错误处理函数
+            return self._handle_response(result)
+
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP Error: {e.response.status_code} - {e.response.text}")
             raise
         except httpx.RequestError as e:
             logger.error(f"Request Error: {e}")
+            raise
+        except APIError as e:
+            # 重新抛出 APIError，保持原有的错误信息
+            logger.error(f"API Error [{e.code}]: {e.message}")
             raise
 
         
@@ -126,7 +187,7 @@ class RemoteDatabaseManager:
         try:
             # API 要求 state 字段是 JSON 字符串
             state_str = json.dumps(state, ensure_ascii=False)
-            
+
             payload = {
                 "session_id": session_id,
                 "state": state_str
@@ -136,35 +197,49 @@ class RemoteDatabaseManager:
             return res.get("code") == 200 or res.get("status") == 1
         except Exception as e:
             logger.error(f"save_state error: {e}")
-            return False
+            # 抛出异常以便上层捕获和发送错误事件
+            raise RuntimeError(f"保存会话状态失败: {str(e)}")
 
     async def load_state(self, session_id: int) -> Optional[Dict]:
         """
         [Protocol] 加载会话状态
         API: GET /agent/handle/load_state?session_id=...
-        """
-        res = await self._request("GET", f"/agent/handle/load_state", params={"session_id":session_id,"p":"w"})
 
-        if res.get("code") == 200 or res.get("status") == 1:
-            data = res.get("data")
-            # 容错：有些 API 会把 JSON 存成字符串返回
-            if isinstance(data, str):
-                try:
-                    return json.loads(data)
-                except json.JSONDecodeError:
-                    pass
-            return data
-        return None
+        Returns:
+            Dict: 成功时返回状态数据
+            None: 失败时返回 None
+        """
+        try:
+            res = await self._request("GET", f"/agent/handle/load_state", params={"session_id":session_id,"p":"w"})
+
+            if res.get("code") == 200 or res.get("status") == 1:
+                data = res.get("data")
+                # 容错：有些 API 会把 JSON 存成字符串返回
+                if isinstance(data, str):
+                    try:
+                        return json.loads(data)
+                    except json.JSONDecodeError:
+                        pass
+                return data
+            else:
+                # API 返回错误，抛出异常让上层处理
+                error_msg = res.get("msg") or res.get("message") or "加载会话状态失败"
+                logger.warning(f"Load state failed for session {session_id}: {res}")
+                raise RuntimeError(error_msg)
+        except Exception as e:
+            logger.error(f"Unexpected error in load_state: {e}")
+            raise e
 
     async def delete_state(self, session_id: int) -> bool:
         """删除会话状态"""
         try:
-            await self._request("DELETE", f"/states/{session_id}")
+            await self._request("DELETE", f"/states/{session_id}", params={"p":"w"})
             logger.debug(f"Deleted state for session {session_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to delete state: {e}")
-            return False
+            # 抛出异常以便上层捕获和发送错误事件
+            raise RuntimeError(f"删除会话状态失败: {str(e)}")
         
     async def create_session(self, title: str = "New Chat") -> Optional[int]:
         """
@@ -177,7 +252,7 @@ class RemoteDatabaseManager:
                 "session_name": title
             }
 
-            res = await self._request("POST", "/assistant/session/add", json=payload)
+            res = await self._request("POST", "/assistant/session/add", json=payload, params={"p":"w"})
 
             # 解析多种可能的返回格式
             if res.get("code") == 200 or res.get("status") == 1:
@@ -192,7 +267,8 @@ class RemoteDatabaseManager:
             return None
         except Exception as e:
             logger.error(f"create_user_session error: {e}")
-            return None
+            # 抛出异常以便上层捕获和发送错误事件
+            raise RuntimeError(f"创建会话失败: {str(e)}")
 
     async def list_sessions(self, limit: int = 20, **kwargs) -> List[Dict]:
         """
@@ -200,7 +276,7 @@ class RemoteDatabaseManager:
         API: GET /assistant/session/list
         """
         # API 似乎不支持 limit 参数，只支持 p=w
-        res = await self._request("GET", "/assistant/session/list")
+        res = await self._request("GET", "/assistant/session/list", params={"p":"w"})
 
         if res.get("code") == 200 or res.get("status") == 1:
             data = res.get("data", [])
@@ -223,11 +299,12 @@ class RemoteDatabaseManager:
                 "event": event_str
             }
 
-            res = await self._request("POST", "/agent/handle/save_event", json=payload)
+            res = await self._request("POST", "/agent/handle/save_event", json=payload, params={"p":"w"})
             return res.get("code") == 200 or res.get("status") == 1
         except Exception as e:
             logger.error(f"save_event error: {e}")
-            return False
+            # 抛出异常以便上层捕获和发送错误事件
+            raise RuntimeError(f"保存事件失败: {str(e)}")
 
     async def load_events(
         self,
@@ -247,7 +324,7 @@ class RemoteDatabaseManager:
             事件列表
         """
         try:
-            params = {}
+            params = {"p": "w"}
             if limit:
                 params["limit"] = limit
             if since:
@@ -256,7 +333,8 @@ class RemoteDatabaseManager:
             return result.get("events", [])
         except Exception as e:
             logger.error(f"Failed to load events: {e}")
-            return []
+            # 抛出异常以便上层捕获和发送错误事件
+            raise RuntimeError(f"加载事件失败: {str(e)}")
 
     async def delete_events(self, session_id: int, before: Optional[str] = None) -> int:
         """
@@ -273,11 +351,12 @@ class RemoteDatabaseManager:
             data = {"session_id": session_id}
             if before:
                 data["before"] = before
-            result = await self._request("DELETE", f"/events/{session_id}", json=data)
+            result = await self._request("DELETE", f"/events/{session_id}", json=data, params={"p":"w"})
             return result.get("deleted_count", 0)
         except Exception as e:
             logger.error(f"Failed to delete events: {e}")
-            return 0
+            # 抛出异常以便上层捕获和发送错误事件
+            raise RuntimeError(f"删除事件失败: {str(e)}")
 
     async def health_check(self) -> bool:
         """健康检查"""
@@ -313,23 +392,21 @@ class RemoteDatabaseManager:
         """
         [Protocol] 添加消息
         API: POST /agent/handle/add_message
-        Body: {session_id, role, content, Metadata: str(json)}
+        Body: {session_id, role, content, metadata: str(json)}
         """
+        metadata_str = json.dumps(metadata or {}, ensure_ascii=False)
+
+        payload = {
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "metadata": metadata_str
+        }
         try:
-            metadata_str = json.dumps(metadata or {}, ensure_ascii=False)
-
-            payload = {
-                "session_id": session_id,
-                "role": role,
-                "content": content,
-                # 【关键适配】API 字段首字母大写
-                "Metadata": metadata_str
-            }
-
-            res = await self._request("POST", "/agent/handle/add_message", json=payload)
+            res = await self._request("POST", "/agent/handle/add_message", json=payload, params={"p":"w"})
             return res.get("code") == 200 or res.get("status") == 1
         except Exception as e:
-            logger.error(f"add_message error: {e}")
+            logger.error(f"add_message error: {e} {payload}")
             return False
 
     # ================= Multi-User Support Methods =================

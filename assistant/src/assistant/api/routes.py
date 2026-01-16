@@ -13,12 +13,14 @@ import asyncio
 import json
 import logging
 from typing import Optional, Dict, Any, AsyncGenerator
+import time
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from pydantic.v1.types import NoneStrBytes
 
-from ..core.events import EventManager, Event
+from ..core.events import EventType, Event
 from ..core.state import AgentState
 from ..db import get_db
 from ..core.agent import MicroAgent
@@ -32,7 +34,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., description="User message to send to agent")
     file_path : Optional[str] = None
     server_type : Optional[str] = 'show'
-    page_content: Optional[Dict[str,Any]] = None
+    page_content: Optional[str] = None
     deep_thinking: Optional[bool] = False
     is_deep_research: Optional[bool] = False
 
@@ -107,7 +109,8 @@ async def event_generator(
     resume: bool = False,
     approval_data: Optional[ApprovalRequest] = None,
     user_id: Optional[int] = None,
-    format: str = "ndjson"
+    format: str = "ndjson",
+    heart_beat: float = 15.0
 ) -> AsyncGenerator[str, None]:
     """
     Generate events for agent execution in NDJSON or SSE format.
@@ -124,6 +127,9 @@ async def event_generator(
         NDJSON: JSON-formatted event strings with newline
         SSE: SSE-formatted strings with data: prefix and double newline
     """
+    
+    task =None
+    unsubscribe = None
     
     # 1. 设置上下文
     try:
@@ -146,11 +152,16 @@ async def event_generator(
                 user_id=user_id
             )
         )
-
+        last_activity_time = time.time()
+        CHECK_INTERVAL = 0.5
+        
         while True:
+            now = time.time()
+            is_heartbeat_due = (now - last_activity_time) >= heart_beat
+            
             try:
                 # Wait for event with short timeout
-                event = await asyncio.wait_for(q.get(), timeout=0.05)
+                event = await asyncio.wait_for(q.get(), timeout=CHECK_INTERVAL)
                 event_data = event.model_dump(mode='json')
                 # 获取事件类型
                 evt_type = event_data.get("type")
@@ -161,53 +172,129 @@ async def event_generator(
                 else:
                     # NDJSON format (default): {...}\n
                     yield json.dumps(event_data, ensure_ascii=False) + "\n"
-
+                    
+                # 重置最后活动时间
+                last_activity_time = time.time()
                 q.task_done()
-                continue
+                
             except asyncio.TimeoutError:
-                logger.debug("Timeout waiting for event")
+                # === B. 短轮询超时 (0.5s 内无消息) ===
+                # 优先级检查：如果此时任务已经结束且队列空了，就不发心跳了，直接退出
+                if task.done() and q.empty():
+                    break
+                
+                # 2. 检查心跳：如果任务还没停，且距离上次活动超过 15s
+                if is_heartbeat_due:
+                    # 发送心跳包
+                    if format == "sse":
+                        # SSE 标准心跳 (注释行)
+                        yield ": keep-alive\n\n"
+                    else:
+                        # NDJSON 业务心跳
+                        # 构造符合 Event 结构的 Ping 包
+                        ping_event = Event(
+                            type=EventType.PING,
+                            data="keep-alive" # 或者 None，视前端约定而定
+                        )
+                        yield json.dumps(ping_event.model_dump(mode='json'), ensure_ascii=False) + "\n"
+                
+                    # 重置最后活动时间 (就像我们刚发送了一个真实事件一样)
+                    last_activity_time = time.time()
+                    logger.debug(f"💓 Heartbeat sent for {session_id}")
 
-            # Exit if queue empty and task done
+            # === 3. 循环末尾检查：任务是否完成 ===
+            # 注意：如果 task 结束了但队列里还有东西，上面的 try 块会先处理消息
+            # 只有当 q.empty() 且 task.done() 时才真正退出
             if q.empty() and task.done():
                 if task.exception():
                     error = task.exception()
                     logger.error(f"Task failed: {error}", exc_info=error)
-                    error_data = {"type": "error", "data": str(error)}
+                    err_event = Event(
+                        type=EventType.ERROR,
+                        data=str(error)
+                    )
+                    error_data = err_event.model_dump(mode='json')
                     if format == "sse":
-                        yield _format_sse(error_data, "error")
+                        yield _format_sse(error_data,EventType.ERROR)
                     else:
                         yield json.dumps(error_data, ensure_ascii=False) + "\n"
                 else:
                     logger.debug(f"Task completed for session {session_id}")
                     # Send end event for SSE
-                    if format == "sse":
-                        yield _format_sse({"type": "done", "data": "[DONE]"}, "done")
+                
+                if format == "sse":
+                    yield "data: [DONE]\n\n"
                 break
-
             await asyncio.sleep(0.01)
 
     except Exception as e:
         logger.error(f"Generator error: {e}", exc_info=e)
-        error_data = {"type": "error", "data": str(e)}
+        fatal_err_event = Event(
+            type=EventType.ERROR,
+            data=str(e)
+        )
+        error_data=fatal_err_event.model_dump(mode='json')
         if format == "sse":
-            yield _format_sse(error_data, "error")
+            yield _format_sse(error_data, EventType.ERROR)
         else:
             yield json.dumps(error_data, ensure_ascii=False) + "\n"
 
     finally:
         # Cleanup
-        unsubscribe()
-        if not task.done():
-            task.cancel()
+        if unsubscribe: unsubscribe()
+        if not task.done(): task.cancel()
 
 def create_router() -> APIRouter:
     """Create and configure the API router."""
     router = APIRouter()
+    # 常量定义
+    STREAMING_HEADERS = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "Content-Encoding": "none"
+    }
 
     @router.get("/health")
     async def health_check():
         """Health check endpoint."""
         return {"status": "ok", "service": "skill-micro-agent"}
+
+    @router.get("/skills")
+    async def list_skills():
+        """
+        List all available skills with their labels and metadata.
+
+        Returns:
+            List of skills with name, label (Chinese display name), description, and type
+        """
+        try:
+            agent = get_agent()
+            gen = agent.current_generation
+            if not gen or not gen.skill_loader:
+                return {"skills": []}
+
+            skills_info = []
+            for skill_name, skill in gen.skill_loader._skills.items():
+                skills_info.append({
+                    "name": skill_name,
+                    "label": skill.label or skill_name,  # 如果没有 label，使用 name 作为 fallback
+                    "description": skill.description,
+                    "type": skill.skill_type.value,
+                    "tools": [
+                        {
+                            "name": tool.name,
+                            "label": tool.label or tool.name,
+                            "description": tool.description,
+                            "is_sensitive": tool.is_sensitive
+                        }
+                        for tool in skill.get_tools()
+                    ]
+                })
+            return {"skills": skills_info}
+        except Exception as e:
+            logger.error(f"Failed to list skills: {e}", exc_info=e)
+            raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/session/{session_title}")
     async def create_session(session_title: str):
@@ -334,10 +421,12 @@ def create_router() -> APIRouter:
         Returns:
             Streaming response with events in NDJSON or SSE format
         """
+        
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
             event_generator(session_id, input_data=req.model_dump(), format=format),
-            media_type=media_type
+            media_type=media_type,
+            headers=STREAMING_HEADERS
         )
 
     @router.post("/agent/{session_id}/approval")
@@ -361,7 +450,8 @@ def create_router() -> APIRouter:
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
             event_generator(session_id, resume=True, approval_data=req, format=format),
-            media_type=media_type
+            media_type=media_type,
+            headers=STREAMING_HEADERS
         )
 
     @router.post("/approve/{session_id}")
@@ -383,7 +473,8 @@ def create_router() -> APIRouter:
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
             event_generator(session_id, resume=True, approval_data=approval, format=format),
-            media_type=media_type
+            media_type=media_type,
+            headers=STREAMING_HEADERS
         )
 
     # ================= Multi-User Endpoints =================
@@ -410,7 +501,8 @@ def create_router() -> APIRouter:
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
             event_generator(session_id,input_data=req.model_dump(), user_id=user_id, format=format),
-            media_type=media_type
+            media_type=media_type,
+            headers=STREAMING_HEADERS
         )
 
     @router.get("/users/{user_id}/sessions")

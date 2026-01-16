@@ -11,7 +11,7 @@ class RequestContext(BaseModel):
     token: Optional[str] = None
     server_type: str = 'show'
     file_path: Optional[str] = None
-    page_content: Optional[Dict[str, Any]] = None
+    page_content: Optional[str] = None
     
     # 控制标志
     deep_thinking: bool = False

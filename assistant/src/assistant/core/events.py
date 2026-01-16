@@ -7,8 +7,10 @@ from "how it's transmitted", enabling real-time streaming responses.
 
 import logging
 from enum import Enum
-from typing import Any, Callable, Awaitable, List, Optional
-from datetime import datetime
+import uuid
+from typing import Any, Callable, Awaitable, List, Optional,Dict
+from datetime import datetime,timezone
+import time
 from pydantic import BaseModel, Field
 import asyncio
 import weakref
@@ -18,20 +20,42 @@ logger = logging.getLogger(__name__)
 
 class EventType(str, Enum):
     """Event types for agent lifecycle and tool execution."""
-    TOKEN = "token"                 # Streaming text tokens
-    TOOL_START = "tool_start"       # Tool execution started
-    TOOL_END = "tool_end"           # Tool execution completed
-    TOOL_ARTIFACT = "tool_artifact" # Tool produced structured data (charts, tables)
-    STATE_CHANGE = "state_change"   # Agent state changed (Intent/Plan)
-    APPROVAL_REQ = "approval_req"   # Human approval required
-    ERROR = "error"                 # Error occurred
+    
+    # === 1. 任务生命周期 (Lifecycle) ===
+    RUN_START = "run_start"         # [新增] 整个任务开始（前端用于重置 UI、显示 Loading）
+    DONE = "done"                   # 任务完全结束（流结束信号）
+    ERROR = "error"                 # 全局致命错误
 
+    # === 2. LLM 内容生成 (Content Generation) ===
+    TOKEN_START = "token_start"     # LLM 开始生成（首字延迟统计）
+    TOKEN = "token"                 # 标准文本 Token
+    TOKEN_END = "token_end"         # LLM 生成结束
+    
+    # [新增] 深度思考/推理 Token (适配 DeepSeek-R1, o1 等模型)
+    # 允许前端将“思考过程”折叠显示，与最终答案区分开
+    THINKING_START = "thinking_start"
+    THINKING_TOKEN = "thinking_token" 
+    THINKING_END = "thinking_end"
+
+    # === 3. 工具与执行 (Tools & Actions) ===
+    STATE_CHANGE = "state_change"   # 状态变更 (Intent 确认 / Plan 更新 / 步骤切换)
+    TOOL_START = "tool_start"       # 工具开始调用 (包含 input 参数)
+    TOOL_END = "tool_end"           # 工具调用结束 (包含 output 结果，meta 中包含 artifacts)
+
+    # === 4. 人机交互与控制 (Interaction) ===
+    APPROVAL_REQ = "approval_req"   # 需要人工审批
+    
+    # [新增] 协议保活 (Keep-Alive)
+    # NDJSON 模式下，如果 Agent 长时间思考不输出，需要发 Ping 包防止连接断开
+    PING = "ping"
 
 class Event(BaseModel):
     """Immutable event representation."""
-    type: EventType
-    data: Any
-    timestamp: float = Field(default_factory=lambda: datetime.now().timestamp())
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    type: EventType = None  # Event type
+    data: Any = None  # Event payload
+    timestamp: float = Field(default_factory=time.time)
+    meta: Optional[Dict[str, Any]] = None
 
 
 class EventManager:
@@ -72,7 +96,7 @@ class EventManager:
         if weak_ref in self._weak_listeners:
             self._weak_listeners.remove(weak_ref)
 
-    async def emit(self, event_type: EventType, data: Any):
+    async def emit(self, event_type: EventType, data: Any, meta: Optional[Dict[str, Any]] = None):
         """
         Publish an event to all listeners.
 
@@ -80,7 +104,7 @@ class EventManager:
             event_type: Type of event to emit
             data: Event payload
         """
-        event = Event(type=event_type, data=data)
+        event = Event(type=event_type, data=data, meta=meta)
 
         # Collect all active listeners
         active_listeners = list(self._listeners)

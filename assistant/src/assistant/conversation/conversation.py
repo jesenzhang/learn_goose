@@ -1,7 +1,7 @@
 from typing import List, Tuple, Set, Optional, Any
 from pydantic import BaseModel, Field
 from .message import (
-    Message, MessageContent, Role, MessageMetadata,
+    Message, MessageContent, Role, MessageVisible,
     TextContent, ToolRequest, ToolResponse, 
     ThinkingContent, RedactedThinkingContent,
     FrontendToolRequest, ToolConfirmationRequest,
@@ -42,10 +42,10 @@ class Conversation(BaseModel):
             self.push(msg)
 
     def agent_visible_messages(self) -> List[Message]:
-        return [m for m in self.messages if m.metadata.agent_visible]
+        return [m for m in self.messages if m.visible.agent_visible]
 
     def user_visible_messages(self) -> List[Message]:
-        return [m for m in self.messages if m.metadata.user_visible]
+        return [m for m in self.messages if m.visible.user_visible]
     
     def last(self) -> Optional[Message]:
         return self.messages[-1] if self.messages else None
@@ -72,7 +72,7 @@ def fix_conversation(conversation: Conversation) -> Tuple[Conversation, List[str
     agent_visible_messages = []
     
     for m in all_msgs:
-        if m.metadata.agent_visible:
+        if m.visible.agent_visible:
             shadow_map.append('v')
             agent_visible_messages.append(m.model_copy(deep=True))
         else:

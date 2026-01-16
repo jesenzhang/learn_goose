@@ -38,7 +38,7 @@ class RequestLoggerHook(AgentHook):
 
         log_func(
             f"📥 Request Start | "
-            f"Session: {ctx.state.session_id[:8]} | "
+            f"Session: {ctx.state.session_id} | "
             f"Input: {ctx.user_input[:100]}{'...' if len(ctx.user_input) > 100 else ''}"
         )
 
@@ -54,7 +54,7 @@ class RequestLoggerHook(AgentHook):
         elapsed = ctx.elapsed_time
         log_func(
             f"📤 Request End | "
-            f"Session: {ctx.state.session_id[:8]} | "
+            f"Session: {ctx.state.session_id} | "
             f"Duration: {elapsed:.2f}s | "
             f"Executed Hooks: {len(ctx.executed_hooks)}"
         )
@@ -70,7 +70,7 @@ class RequestLoggerHook(AgentHook):
         """记录错误"""
         logger.error(
             f"❌ Request Error | "
-            f"Session: {ctx.state.session_id[:8]} | "
+            f"Session: {ctx.state.session_id} | "
             f"Error: {type(error).__name__}: {str(error)}"
         )
         return None

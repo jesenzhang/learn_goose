@@ -36,7 +36,9 @@ from ..conversation import (
     ToolCall,
     CallToolResult,
     CallToolRequestParam,
-    RawContent
+    RawContent,
+    ThinkingContent,
+    RedactedThinkingContent,
 )
 
 # Utils & Errors
@@ -177,7 +179,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                 # DeepSeek/R1 reasoning support
                 reasoning = getattr(msg_data, "reasoning_content", None)
                 if reasoning:
-                    content_str = f"[Thinking]\n{reasoning}\n\n[Answer]\n{content_str}"
+                    content_str = f"<Thinking>\n{reasoning}\n\n</Thinking>\n{content_str}"
 
                 if content_str:
                     content_list.append(TextContent(text=content_str))
@@ -276,13 +278,29 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                     if not chunk.choices: continue
                     delta = chunk.choices[0].delta
 
-                    # 2. Stream Text
-                    content = delta.content or ""
-                    reasoning = getattr(delta, "reasoning_content", "")
+                    reasoning_chunk = getattr(delta, "reasoning_content", None)
+                    
+                    if reasoning_chunk:
+                        # 实时产出思考内容
+                        yield Message(
+                            role=Role.ASSISTANT, 
+                            content=[ThinkingContent(thinking=reasoning_chunk)]
+                        ), None
+                        
+                    # 2. Stream Standard Text Content
+                    if delta.content:
+                        yield Message(
+                            role=Role.ASSISTANT, 
+                            content=[TextContent(text=delta.content)]
+                        ), None
+                        
+                    # # 2. Stream Text
+                    # content = delta.content or ""
+                    # reasoning = getattr(delta, "reasoning_content", "")
 
-                    full_text = reasoning + content
-                    if full_text:
-                        yield Message(role=Role.ASSISTANT, content=[TextContent(text=full_text)]), None
+                    # full_text = reasoning + content
+                    # if full_text:
+                    #     yield Message(role=Role.ASSISTANT, content=[TextContent(text=full_text)]), None
 
                     # 3. Stream Tool Calls
                     if delta.tool_calls:
@@ -350,7 +368,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
         openai_msgs = []
         for msg in messages:
             # Skip invisible messages (system logic)
-            if not msg.metadata.agent_visible: continue
+            if not msg.visible.agent_visible: continue
 
             if msg.role == Role.SYSTEM:
                 openai_msgs.append({"role": "system", "content": msg.text})
@@ -360,10 +378,29 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
 
             elif msg.role == Role.ASSISTANT:
                 o_msg = {"role": "assistant"}
-                text_parts = [c.text for c in msg.content if isinstance(c, TextContent)]
-                if text_parts: o_msg["content"] = "\n".join(text_parts)
+                content_parts = []
+                tool_reqs = []
 
-                tool_reqs = [c for c in msg.content if isinstance(c, ToolRequest)]
+                for c in msg.content:
+                    # [NEW] 适配 ThinkingContent -> 文本格式
+                    if isinstance(c, ThinkingContent):
+                        # 将思考过程包裹在标签中，让模型“看到”之前的思考
+                        content_parts.append(f"<thinking>\n{c.thinking}\n</thinking>")
+                    
+                    # [NEW] 适配 RedactedThinkingContent
+                    elif isinstance(c, RedactedThinkingContent):
+                        # 对于已脱敏的思考，仅发送占位符，避免模型混淆
+                        content_parts.append("<thinking>\n(Thinking Process Hidden)\n</thinking>")
+                    
+                    elif isinstance(c, TextContent):
+                        content_parts.append(c.text)
+                    
+                    elif isinstance(c, ToolRequest):
+                        tool_reqs.append(c)
+
+                if content_parts:
+                    o_msg["content"] = "\n\n".join(content_parts)
+
                 if tool_reqs:
                     o_msg["tool_calls"] = [{
                         "id": req.id,

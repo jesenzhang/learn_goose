@@ -4,7 +4,7 @@ Standard Skill Format: Stateless function interface with module-level resource m
 """
 
 import asyncio
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any,Union
 
 # 尝试导入上下文类型，如果环境不支持则忽略（保持纯 Python 兼容性）
 try:
@@ -88,12 +88,15 @@ async def search_assets(
     **kwargs 
 ) -> CallToolResult:
     """
-    Search for internal assets using Enterprise Search.
-    
+    Search for assets using the V1 ES-based API.
+
     Args:
-        query: The search keywords.
-        types: Specific asset types to filter.
-        resource_types: Specific resource categories.
+        query: Search keywords.
+        search_types: Scope of search, e.g., ["资产", "专题库"].
+        resource_types: Filter by file type. 
+            **CRITICAL**: Allowed values are ['图片', '视频', '文档', '音频', '3D', '其他'].
+            Map user terms like "photos" to '图片', "movies" to '视频'.
+            Leave empty to search all file types.
     """
     worker = _get_worker()
     
@@ -109,9 +112,12 @@ async def search_assets(
 
 # ... (前面的导入和 _get_worker 保持不变) ...
 
+# 定义标准常量，便于维护
+ALL_INTENT_TARGETS = ['图片', '视频', '文档', '音频', '3D', '其他', '专题库', '资产', '藏品']
+
 async def recommend_assets(
     query: str,
-    intent_targets: Optional[List[str]] = None,
+    intent_targets: Optional[List[str]] = ALL_INTENT_TARGETS,
     # V2 Exhibits parameters
     exhibit_ids: Optional[List[str]] = None,
     filters: Optional[Dict[str, Any]] = None,
@@ -128,8 +134,15 @@ async def recommend_assets(
     Aggregates results from V2 Exhibits, V2 Resources, and V1 Assets.
 
     Args:
-        query: The search query
-        intent_targets: Optional intent target types for filtering
+        query: The search query (e.g., "bronze sword", "history of Qin dynasty")
+        intent_targets: List of target types to filter results.
+            **CRITICAL**: You MUST map user input to one or more of the following valid values:
+            ['图片', '视频', '文档', '音频', '3D', '其他', '专题库', '资产', '藏品'].
+            - User asks for "images/photos" -> ['图片']
+            - User asks for "videos/movies" -> ['视频']
+            - User asks for "documents/papers" -> ['文档']
+            - User asks for "exhibits/relics" -> ['藏品']
+            - If unsure or unspecified, use the default (all types).
         exhibit_ids: Optional list of specific exhibit IDs for precise search (V2 Exhibits)
         filters: Optional filter conditions for exhibits, e.g., {"era": "战国", "material": "青铜"} (V2 Exhibits)
         file_ids: Optional list of specific file IDs for precise search (V2 Resources)
@@ -202,6 +215,7 @@ async def recommend_assets(
                 file_items = item.data.get('resource_file_list', [])
                 for f in file_items:
                     uid = str(f.get('resource_file_id') or f.get('id'))
+                    f['resource_type'] = 3
                     if uid and uid not in seen_ids:
                         seen_ids.add(uid)
                         candidates.append({
@@ -256,7 +270,7 @@ async def recommend_assets(
                 top_k=10
             )
         except Exception as e:
-            logger.warning(f"Rerank failed: {e}, using original order")
+            print(f"Rerank failed: {e}, using original order")
             reranked_candidates = candidates[:10]
     else:
         reranked_candidates = candidates[:10]
@@ -384,32 +398,79 @@ async def search_kg_overview(
     worker = _get_worker()
     return await worker.search_kg_overview()
 
-async def search_doc(
-    resource_file_ids,
-    token: Optional[str] = None,
+async def lookup_doc_content(
+    resource_file_ids: Union[str, List[str]],
     **kwargs
 ) -> CallToolResult:
     """
-    Query document content by resource file IDs.
+    Retrieve the text content of a document using its SYSTEM FILE ID.
 
     Args:
-        resource_file_ids: Single file ID string or list of file IDs to query
-        token: Optional authentication token for accessing restricted content
+        resource_file_ids: The unique ID of the file in the database (e.g., "12345", "file_abc").
+            
+            ⚠️ WARNING: DO NOT use Artifact IDs (starting with "art_") here! 
+            - "art_xxxx" is a temporary search result list stored in your memory.
+            - To read "art_xxxx", use the `read_from_clipboard` tool instead.
+            - Only use `lookup_doc_content` after you have extracted the real file ID from the artifact.
 
     Returns:
         Document content including file information and content text.
-        Unauthorized documents will show a message requesting permission.
 
     Examples:
-        Single file: search_doc(resource_file_ids='file123')
-        Multiple files: search_doc(resource_file_ids=['file123', 'file456'])
-        With auth: search_doc(resource_file_ids='file123', token='user_token')
+        Single file: lookup_doc_content(resource_file_ids='file123')
+        Multiple files: lookup_doc_content(resource_file_ids=['file123', 'file456'])
     """
+    # 1. 预处理 ID 列表
+    if isinstance(resource_file_ids, str):
+        ids = [id.strip() for id in resource_file_ids.split(',') if id.strip()]
+    else:
+        ids = resource_file_ids
+
+    # ========================================================================
+    # [关键修复] 拦截 Artifact ID，防止 Agent 混淆
+    # ========================================================================
+    artifact_errors = []
+    real_ids = []
+    
+    for uid in ids:
+        # 检查是否是 art_ 开头的内部 ID
+        if str(uid).startswith("art_"):
+            artifact_errors.append(uid)
+        else:
+            real_ids.append(uid)
+
+    if artifact_errors:
+        # 返回明确的错误提示，教 Agent 做人
+        error_msg = (
+            f"❌ 错误的操作: ID '{', '.join(artifact_errors)}' 是系统生成的 Artifact (中间结果)，"
+            f"并不是真实的文档 ID。\n\n"
+            f"👉 修正建议：\n"
+            f"1. 如果你想查看这个 Artifact 的内容（通常是搜索结果列表），请调用 `read_from_clipboard(key='{artifact_errors[0]}')`。\n"
+            f"2. 如果你想查看列表中的具体文档，请先读取该 Artifact，从中提取真实的 `file_id` (通常是数字或UUID)，然后再调用此工具。"
+        )
+        return CallToolResult.failure(error_msg)
+    
     worker = _get_worker()
-    return await worker.search_doc(
+    ctx = kwargs.get('ctx')
+    req_ctx = ctx.request if ctx else None
+    token = req_ctx.token if req_ctx else None
+    return await worker.lookup_doc_content(
         resource_file_ids=resource_file_ids,
         token=token
     )
+
+
+async def page_content_qa(question: str, ctx: 'ServiceContext' = None) -> CallToolResult:
+    """
+    回答当前页面内容相关的问题。
+    该工具从请求上下文中提取 page_content 字段，并将其作为回答依据。
+    """
+    req_ctx = ctx.request if ctx else None
+    page_content = req_ctx.page_content if req_ctx else None
+    if not page_content:
+        return CallToolResult.from_text("当前没有可用的页面内容进行问答。请确保已提供页面内容。")
+    else:
+        return CallToolResult.from_text(f"\n\nUser is currently viewing:\n{page_content}...\n")
 
 # -----------------------------------------------------------------------------
 # V2 API: 藏品和文档智能检索接口
