@@ -3,7 +3,7 @@
 
 完全异步实现，不阻塞事件循环
 支持多用户会话管理
-符合 DatabaseProtocol 协议
+继承 DatabaseBase 实现统一的数据库接口
 """
 
 import asyncio
@@ -13,12 +13,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
-from .protocol import DatabaseProtocol, MemoryProtocol
+from .base import DatabaseBase
 
 logger = logging.getLogger(__name__)
 
 
-class AsyncDatabaseManager:
+class AsyncDatabaseManager(DatabaseBase):
     """
     异步数据库管理器 - 使用 aiosqlite
 
@@ -78,6 +78,20 @@ class AsyncDatabaseManager:
                 )
             """)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, updated_at DESC)")
+
+            # Messages Table (NEW)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    metadata TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                )
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp DESC)")
 
             # Events Table
             await conn.execute("""
@@ -258,9 +272,96 @@ class AsyncDatabaseManager:
             logger.error(f"Migration check failed: {e}", exc_info=e)
 
     # ================= Session Operations =================
-    async def add_message(self, session_id: int, role: str, content: str, metadata: Dict = None, **kwargs) -> bool:
+    
+    async def create_session(self, title: str = "New Chat") -> Optional[int]:
+        """
+        [DatabaseBase] 创建新会话
         
-        return True
+        Args:
+            title: 会话标题
+        
+        Returns:
+            session_id（生成的时间戳），失败返回 None
+        """
+        try:
+            # 本地模式生成 session_id（简单实现）
+            session_id = int(datetime.now().timestamp() * 1000)
+            
+            # 创建初始会话状态
+            state_data = {
+                "title": title,
+                "created_at": datetime.now().timestamp(),
+                "updated_at": datetime.now().timestamp()
+            }
+            
+            await self.save_state(session_id, state_data)
+            logger.info(f"Created session {session_id} with title '{title}'")
+            return session_id
+        except Exception as e:
+            logger.error(f"Create session error: {e}", exc_info=e)
+            return None
+    async def add_message(self, session_id: int, role: str, content: str, metadata: Optional[Dict] = None, **kwargs) -> bool:
+        """
+        [DatabaseBase] 添加消息到 messages 表
+        
+        Args:
+            session_id: 会话 ID
+            role: 角色 (user, assistant, system, tool)
+            content: 内容
+            metadata: 元数据（可选）
+            **kwargs: 扩展参数
+        
+        Returns:
+            是否成功
+        """
+        try:
+            async with self._transaction() as conn:
+                await conn.execute(
+                    "INSERT INTO messages (session_id, role, content, metadata) VALUES (?, ?, ?, ?)",
+                    (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False))
+                )
+            logger.debug(f"Added message for session {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Add message error: {e}", exc_info=e)
+            return False
+
+    async def get_messages(self, session_id: int) -> List[Dict[str, Any]]:
+        """
+        [DatabaseBase] 获取会话的所有消息
+        
+        Args:
+            session_id: 会话 ID
+        
+        Returns:
+            消息列表（按时间排序）
+        """
+        try:
+            async with self._transaction() as conn:
+                cursor = await conn.execute(
+                    "SELECT id, session_id, role, content, metadata, timestamp FROM messages "
+                    "WHERE session_id = ? ORDER BY timestamp ASC",
+                    (session_id,)
+                )
+                rows = await cursor.fetchall()
+                
+                messages = []
+                for row in rows:
+                    message = {
+                        "id": row[0],
+                        "session_id": row[1],
+                        "role": row[2],
+                        "content": row[3],
+                        "metadata": json.loads(row[4]) if row[4] else {},
+                        "timestamp": row[5]
+                    }
+                    messages.append(message)
+                
+                logger.debug(f"Retrieved {len(messages)} messages for session {session_id}")
+                return messages
+        except Exception as e:
+            logger.error(f"Get messages error: {e}", exc_info=e)
+            return []
     
     async def save_state(self, session_id: int, state: Dict[str, Any]) -> bool:
         """保存会话状态（向后兼容）"""

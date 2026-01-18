@@ -13,6 +13,9 @@ from typing import Optional, Dict, Any, List
 from .protocol import DatabaseProtocol, MemoryProtocol, MultiUserDatabaseProtocol
 from .async_manager import AsyncDatabaseManager
 from .remote_db import RemoteDatabaseManager
+from .factory import is_dev_environment, create_database as factory_create_database
+from .error_handler import handle_database_error, DatabaseError
+from .base import DatabaseBase
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +76,43 @@ class UnifiedDatabase:
             await self._local_db.initialize()
 
     # ================= DatabaseProtocol Implementation =================
+    
+    async def create_session(self, title: str = "New Chat") -> Optional[int]:
+        """
+        创建新会话
+        
+        Args:
+            title: 会话标题
+        
+        Returns:
+            session_id，失败返回 None
+        """
+        try:
+            if self._remote_db and hasattr(self._remote_db, 'create_session'):
+                return await self._remote_db.create_session(title)
+            elif self._local_db:
+                # 本地模式生成 session_id（简单实现）
+                import time
+                session_id = int(time.time() * 1000)
+                # 创建初始会话状态
+                state_data = {
+                    "title": title,
+                    "created_at": time.time()
+                }
+                await self._local_db.save_state(session_id, state_data)
+                logger.info(f"Created local session {session_id} with title '{title}'")
+                return session_id
+            return None
+        except Exception as e:
+            # 使用错误处理器
+            db_mode = "remote" if self._remote_db else "local"
+            handled_error = handle_database_error(
+                error=e,
+                db_mode=db_mode,
+                is_dev=is_dev_environment()
+            )
+            raise handled_error from e
+
     async def add_message(self, session_id: int, role: str, content: str, metadata: Dict = None, **kwargs) -> bool:
         """
         [Protocol] 添加消息
@@ -86,20 +126,40 @@ class UnifiedDatabase:
         return False
         
     async def save_state(self, session_id: int, state: Dict[str, Any]) -> bool:
-        """保存会话状态"""
-        if self._remote_db:
-            return await self._remote_db.save_state(session_id, state)
-        elif self._local_db:
-            return await self._local_db.save_state(session_id, state)
-        return False
+        """保存会话状态（带统一错误处理）"""
+        try:
+            if self._remote_db:
+                return await self._remote_db.save_state(session_id, state)
+            elif self._local_db:
+                return await self._local_db.save_state(session_id, state)
+            return False
+        except Exception as e:
+            # 使用错误处理器
+            db_mode = "remote" if self._remote_db else "local"
+            handled_error = handle_database_error(
+                error=e,
+                db_mode=db_mode,
+                is_dev=is_dev_environment()
+            )
+            raise handled_error from e
 
     async def load_state(self, session_id: int) -> Optional[Dict[str, Any]]:
-        """加载会话状态"""
-        if self._remote_db:
-            return await self._remote_db.load_state(session_id)
-        elif self._local_db:
-            return await self._local_db.load_state(session_id)
-        return None
+        """加载会话状态（带统一错误处理）"""
+        try:
+            if self._remote_db:
+                return await self._remote_db.load_state(session_id)
+            elif self._local_db:
+                return await self._local_db.load_state(session_id)
+            return None
+        except Exception as e:
+            # 使用错误处理器
+            db_mode = "remote" if self._remote_db else "local"
+            handled_error = handle_database_error(
+                error=e,
+                db_mode=db_mode,
+                is_dev=is_dev_environment()
+            )
+            raise handled_error from e
 
     async def delete_state(self, session_id: int) -> bool:
         """删除会话状态"""
@@ -264,15 +324,15 @@ class UnifiedDatabase:
 
 
 # 兼容性别名
-DatabaseInterface = UnifiedDatabase
+DatabaseInterface = DatabaseBase
 
 
 # ================= Global Instance Management =================
 
-_global_db: Optional[UnifiedDatabase] = None
+_global_db: Optional[DatabaseBase] = None
 
 
-def get_db() -> UnifiedDatabase:
+def get_db() -> DatabaseBase:
     """
     获取全局数据库实例
 
@@ -288,12 +348,24 @@ def get_db() -> UnifiedDatabase:
     if _global_db is None:
         raise RuntimeError(
             "Database not configured. "
-            "Call configure_db() first."
+            "Call configure_db() or create_database() first."
         )
     return _global_db
 
 
-async def get_db_async() -> UnifiedDatabase:
+def set_db_instance(db: DatabaseBase):
+    """
+    设置全局数据库实例（用于工厂方法创建的数据库）
+
+    Args:
+        db: 已初始化的 DatabaseBase 子类实例
+    """
+    global _global_db
+    _global_db = db
+    logger.info(f"Global database instance set: {db.__class__.__name__}")
+
+
+async def get_db_async() -> DatabaseBase:
     """
     获取全局数据库实例（异步版本）
 
@@ -312,30 +384,48 @@ def configure_db(
     remote_db_url: Optional[str] = None,
     remote_db_api_key: Optional[str] = None,
     use_remote: bool = False,
-    timeout: int = 30
-) -> UnifiedDatabase:
+    timeout: int = 30,
+    config=None
+) -> DatabaseBase:
     """
     配置全局数据库实例
 
     Args:
-        local_db_path: 本地数据库路径
-        remote_db_url: 远端数据库 URL
-        remote_db_api_key: 远端数据库 API 密钥
-        use_remote: 是否使用远端数据库
-        timeout: HTTP 请求超时时间
+        local_db_path: 本地数据库路径（已弃用，请使用 config）
+        remote_db_url: 远端数据库 URL（已弃用，请使用 config）
+        remote_db_api_key: 远端数据库 API 密钥（已弃用，请使用 config）
+        use_remote: 是否使用远端数据库（已弃用，请使用 config）
+        timeout: HTTP 请求超时时间（已弃用，请使用 config）
+        config: DatabaseConfig 对象（推荐）
 
     Returns:
         配置好的数据库实例（需要调用 initialize() 初始化）
     """
     global _global_db
-    _global_db = UnifiedDatabase(
-        local_db_path=local_db_path,
-        remote_db_url=remote_db_url,
-        remote_db_api_key=remote_db_api_key,
-        use_remote=use_remote,
-        timeout=timeout
-    )
-    logger.info("Database configured successfully")
+
+    # 优先使用 config 对象
+    if config:
+        effective_config = config.get_effective_config()
+        _global_db = UnifiedDatabase(
+            local_db_path=effective_config["local_db_path"],
+            remote_db_url=effective_config["remote_db_url"],
+            remote_db_api_key=effective_config["remote_db_api_key"],
+            use_remote=effective_config["use_remote"],
+            timeout=effective_config["remote_db_timeout"]
+        )
+
+        logger.info(f"Database configured successfully (mode={'remote' if effective_config['use_remote'] else 'local'})")
+    else:
+        # 向后兼容：使用旧参数
+        _global_db = UnifiedDatabase(
+            local_db_path=local_db_path,
+            remote_db_url=remote_db_url,
+            remote_db_api_key=remote_db_api_key,
+            use_remote=use_remote,
+            timeout=timeout
+        )
+        logger.info("Database configured successfully (legacy mode)")
+
     return _global_db
 
 

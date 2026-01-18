@@ -340,6 +340,24 @@ def create_router() -> APIRouter:
             state_data = await db.load_state(session_id)
             if not state_data:
                 raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+            
+            # Load messages from messages table and populate history
+            messages = await db.get_messages(session_id)
+
+            # Convert messages to Agent history format
+            # Messages format: {"id": int, "session_id": int, "role": str, "content": str, "metadata": dict, "timestamp": str}
+            # Agent history format: {"role": str, "content": str}
+            history = []
+            for msg in messages:
+                history.append({
+                    "role": msg["role"],
+                    "content": msg["content"],
+                    "metadata": msg.get("metadata", {})
+                })
+
+            # Add history to state
+            state_data["history"] = history
+            
             # Convert dict to AgentState for consistent response
             state = AgentState(**state_data)
             return state.model_dump()

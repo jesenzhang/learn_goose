@@ -103,7 +103,7 @@ security:
 # ================= 数据库配置 =================
 database:
   # 数据库模式配置
-  use_remote: true                  # 是否使用远程数据库
+  use_remote: false                  # 是否使用远程数据库
   remote_db_url: "http://192.168.11.11:9980/gzclabeldebugaapi"                  # 远程数据库 URL
   remote_db_api_key: null              # 远程数据库 API 密钥 (作为 token 使用)
   remote_db_timeout: 30                 # 远程数据库请求超时（秒）

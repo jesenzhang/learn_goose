@@ -28,10 +28,62 @@ class SecurityConfig(BaseModel):
 
 class DatabaseConfig(BaseModel):
     """Database configuration."""
-    local_db_path: Optional[str] = "museum_assistant.db"
-    remote_db_url: Optional[str] = "${REMOTE_DB_URL:http://localhost:8500}"
-    remote_db_api_key: Optional[str] = "${REMOTE_DB_API_KEY:}"
+
+    # 模式选择（use_remote 的别名，更清晰）
+    mode: Optional[str] = None  # 从配置文件读取，最终由 factory 决定
+
+    # 基础配置（兼容旧版）
     use_remote: bool = False
+
+    # 远程数据库配置
+    remote_db_url: Optional[str] = None
+    remote_db_api_key: Optional[str] = None
+    remote_db_timeout: int = 30
+    remote_db_retry_count: int = 3  # 新增：重试次数
+    remote_db_retry_delay: int = 1   # 新增：重试延迟（秒）
+
+    # 本地数据库配置
+    local_db_path: str = "museum_assistant.db"
+
+    # 健康检查配置
+    health_check_enabled: bool = True  # 启动时是否执行健康检查
+    health_check_timeout: int = 5      # 健康检查超时（秒）
+
+    def get_effective_config(self) -> dict:
+        """
+        获取最终生效的配置（考虑环境变量覆盖）
+
+        Returns:
+            {
+                "use_remote": bool,
+                "remote_db_url": str | None,
+                "remote_db_api_key": str | None,
+                "remote_db_timeout": int,
+                "local_db_path": str
+            }
+        """
+        # 环境变量优先级高于配置文件
+        use_remote_env = os.getenv("USE_REMOTE_DB", "").lower()
+        remote_url_env = os.getenv("REMOTE_DB_URL")
+        remote_key_env = os.getenv("REMOTE_DB_API_KEY")
+        local_path_env = os.getenv("LOCAL_DB_PATH")
+
+        # 确定 use_remote
+        if use_remote_env in ("true", "1", "yes"):
+            use_remote = True
+        elif use_remote_env in ("false", "0", "no"):
+            use_remote = False
+        else:
+            # 如果没有环境变量，使用配置文件
+            use_remote = self.use_remote
+
+        return {
+            "use_remote": use_remote,
+            "remote_db_url": remote_url_env or self.remote_db_url,
+            "remote_db_api_key": remote_key_env or self.remote_db_api_key,
+            "remote_db_timeout": self.remote_db_timeout,
+            "local_db_path": local_path_env or self.local_db_path,
+        }
 
 
 class BasicProviderConfig(BaseModel):

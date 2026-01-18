@@ -33,7 +33,7 @@ agent = None
 def create_app() -> FastAPI:
     """创建 FastAPI 应用"""
     from assistant.config.loader import ConfigLoader
-    from assistant.db import configure_db
+    from assistant.db.factory import create_database
     from assistant.core.agent import MicroAgent
     from assistant.api.routes import create_router, set_agent
     from assistant.api.middleware import AuthContextMiddleware
@@ -45,20 +45,31 @@ def create_app() -> FastAPI:
 
         logger.info("Starting Museum Assistant...")
         try:
-            config_path = os.getenv('ASSISTANT_CONFIG', 'assistant_config.yaml')
+            config_path = os.getenv('ASSISTANT_CONFIG', r'D:\WorkSpace\learn_goose\assistant\assistant_config.yaml')
             config = ConfigLoader(config_path)
 
-            # 配置数据库
-            db = configure_db(
-                local_db_path=config.database.local_db_path,
-                remote_db_url=config.database.remote_db_url,
-                remote_db_api_key=config.database.remote_db_api_key,
-                use_remote=config.database.use_remote
-            )
+            # 配置数据库（使用工厂方法）
+            from assistant.db.factory import create_database
 
-            # 初始化数据库连接
-            await db.initialize()
-            logger.info("Database initialized successfully")
+            try:
+                db = await create_database(config.database)
+                # 设置全局数据库实例（不使用 configure_db，因为已经初始化了）
+                from assistant.db import set_db_instance
+                set_db_instance(db)
+                logger.info("Database initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize database: {e}", exc_info=e)
+                # 提供清晰的错误信息和解决建议
+                if "health check failed" in str(e):
+                    logger.error("\n" + "="*60)
+                    logger.error("数据库健康检查失败！")
+                    logger.error("="*60)
+                    logger.error("解决方法：")
+                    logger.error("1. 检查远程数据库是否可访问")
+                    logger.error("2. 或设置环境变量切换到本地模式：")
+                    logger.error("   export USE_REMOTE_DB=false")
+                    logger.error("="*60)
+                raise
 
             # 认证服务是可选的，仅在启用时初始化
             if os.getenv('ENABLE_AUTH', 'false').lower() == 'true':

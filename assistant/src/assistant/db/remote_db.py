@@ -12,7 +12,7 @@ from datetime import datetime
 import httpx
 import json
 
-from .protocol import DatabaseProtocol, MemoryProtocol
+from .base import DatabaseBase
 from ..utils.ctx_vars import get_auth_token
 
 logger = logging.getLogger(__name__)
@@ -27,30 +27,13 @@ class APIError(Exception):
         super().__init__(f"[{code}] {message}")
 
 
-class RemoteDatabaseManager:
-    """远端数据库管理器 - 通过 HTTP API 操作远端数据库"""
+class RemoteDatabaseManager(DatabaseBase):
+    """Remote database manager via HTTP API - inherits DatabaseBase for unified interface"""
 
-    # 错误代码映射
-    ERROR_MESSAGES = {
-        400: "请求参数错误",
-        401: "未授权，请检查 Token 或 API Key",
-        403: "禁止访问",
-        404: "资源不存在",
-        405: "验证不通过",
-        500: "服务器内部错误",
-        502: "网关错误",
-        503: "服务暂不可用",
-    }
-
-    def __init__(
-        self,
-        api_base_url: str = 'http://192.168.11.11:9980/gzclabeldebugaapi',
-        api_key: Optional[str] = None,
-        timeout: int = 30
-    ):
+    
+    def __init__(self, api_base_url: str,api_key:str =None,timeout =10):
         """
         初始化远端数据库管理器
-
         Args:
             api_base_url: 远端数据库 API 基础地址
             api_key: API 密钥（可选）
@@ -389,25 +372,39 @@ class RemoteDatabaseManager:
             logger.debug("Remote database connection closed")
 
     async def add_message(self, session_id: int, role: str, content: str, metadata: Dict = None, **kwargs) -> bool:
-        """
-        [Protocol] 添加消息
-        API: POST /agent/handle/add_message
-        Body: {session_id, role, content, metadata: str(json)}
-        """
-        metadata_str = json.dumps(metadata or {}, ensure_ascii=False)
-
-        payload = {
-            "session_id": session_id,
-            "role": role,
-            "content": content,
-            "metadata": metadata_str
-        }
+        """[DatabaseBase] Add message via API"""
         try:
+            payload = {
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+                "metadata": metadata or {}
+            }
             res = await self._request("POST", "/agent/handle/add_message", json=payload, params={"p":"w"})
             return res.get("code") == 200 or res.get("status") == 1
         except Exception as e:
             logger.error(f"add_message error: {e} {payload}")
             return False
+
+    async def get_messages(self, session_id: int) -> List[Dict[str, Any]]:
+        """
+        [DatabaseBase] Get messages for a session via API
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            List of message dictionaries
+        """
+        try:
+            res = await self._request("GET", f"/agent/{session_id}/messages")
+            data = res.get("data", {})
+            if isinstance(data, list):
+                return data
+            return []
+        except Exception as e:
+            logger.error(f"get_messages error: {e}")
+            return []
 
     # ================= Multi-User Support Methods =================
 
