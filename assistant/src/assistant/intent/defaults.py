@@ -7,6 +7,7 @@ from .models import IntentDefinition, SlotSchema
 # 定义常量：自主执行意图
 ADHOC_INTENT = IntentDefinition(
     name="adhoc_execution",
+    label="自主执行",
     description=(
         "Universal Fallback Intent. Use this when the user's request does NOT match any specific "
         "search/view intents defined above, OR as a subsequent step in a complex plan "

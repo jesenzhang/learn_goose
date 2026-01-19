@@ -141,7 +141,7 @@ class MicroAgent:
         # 提取 SkillsConfig (它是 Pydantic 对象)
         skills_cfg = config.skills_config
         skill_loader = SkillLoader(
-            skills_dir="agent_skills",
+            skills_dir= config.skills_directory or "agent_skills",
             skills_config=skills_cfg, # 传入完整配置对象
             global_sensitive_tools=set(config.security.sensitive_tools)
         )
@@ -281,8 +281,11 @@ class MicroAgent:
             if not gen.intent_recognizer:
                 return None
 
-            await self.events.emit(EventType.STATE_CHANGE, {"msg": "🤔 Analyzing & Planning..."})
-            
+            await self.events.emit(EventType.STATE_CHANGE, {
+                "msg": "🤔 Analyzing & Planning...",
+                "label": "分析规划中",
+            })
+
             # 1.1 调用识别器 (Recognizer now acts as a Planner)
             results, updated_session = await gen.intent_recognizer.recognize(
                 user_input=user_input,
@@ -302,7 +305,8 @@ class MicroAgent:
                 
                 await self.events.emit(EventType.STATE_CHANGE, {
                     "msg": "📋 Plan Formulated", 
-                    "plan": plan_desc
+                    "plan": plan_desc,
+                    "label": "计划已生成",
                 })
                 
                 # 立即保存状态，防止崩溃丢失计划
@@ -325,7 +329,8 @@ class MicroAgent:
         logger.info(f"▶️ Executing Plan Step: {primary.intent}")
         await self.events.emit(EventType.STATE_CHANGE, {
             "msg": f"🚀 Executing: {primary.intent}",
-            "slots": primary.entities
+            "slots": primary.entities,
+            "label": f"执行中:{primary.label}",
         })
 
         # 2.1 检查参数完整性 (Slot Filling Check)
@@ -924,7 +929,28 @@ Generate the content/response now.
                 deep_thinking=input_data.get("deep_thinking", False),
                 is_deep_research=input_data.get("is_deep_research", False)
             )
+        
+        if req_ctx.is_deep_research:
+            from deepresearch.deepresearch import Assistant,ApiModel
+            if input_data :
+                if isinstance(input_data, dict):
+                    user_input = input_data.get("message")
+                elif isinstance(input_data, str):
+                    user_input = input_data
+            model_config = {
+                        "api_key": "empty",
+                        "base_url": "http://192.168.10.180:8088/v1",
+                        "model": "qwen3_vl"
+                    }
+            api_model = ApiModel(model_config)
+            assistant = Assistant(llm=api_model, write_llm=api_model)
+
+            # run_async 内部已经启动了监听器，会实时输出事件
+            await assistant.run_async(user_input, self.events, enable_listener=True)
             
+           
+    
+    
         # 使用 context manager 自动管理计数
         async with current_gen_ref.context_scope() as gen:
             # 如果提供了 user_id，则加载该用户的会话

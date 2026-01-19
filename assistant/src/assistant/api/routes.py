@@ -131,6 +131,7 @@ async def event_generator(
     task =None
     unsubscribe = None
     
+
     # 1. 设置上下文
     try:
         agent = get_agent()
@@ -246,7 +247,7 @@ async def event_generator(
 
 def create_router() -> APIRouter:
     """Create and configure the API router."""
-    router = APIRouter()
+    router = APIRouter(prefix="/api/v1")
     # 常量定义
     STREAMING_HEADERS = {
         "Cache-Control": "no-cache",
@@ -402,12 +403,11 @@ def create_router() -> APIRouter:
             logger.error(f"Failed to delete session {session_id}: {e}", exc_info=e)
             raise HTTPException(status_code=500, detail=str(e))
 
-    
-    
-    @router.post("/chat/{session_id}")
+
+    @router.post("/chat")
     async def chat(
-        session_id: int,
         req: ChatRequest,
+        session_id: int = Query(description="Session identifier"),
         format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
     ):
         """
@@ -428,7 +428,7 @@ def create_router() -> APIRouter:
             media_type=media_type,
             headers=STREAMING_HEADERS
         )
-
+        
     @router.post("/agent/{session_id}/approval")
     async def handle_approval(
         session_id: int,

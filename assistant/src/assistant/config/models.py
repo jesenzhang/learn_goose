@@ -111,6 +111,7 @@ class AppConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     # [NEW] Skills configuration - per-skill settings
+    skills_directory: str = "agent_skills"
     skills_config: SkillsConfig = Field(default_factory=lambda: SkillsConfig({}))
 
     # [CHANGED] Raw dictionary for intents to avoid duplication with intent.models

@@ -61,7 +61,7 @@ class ToolCall(BaseModel):
         return self.status == "error"
     
 class ToolRequest(BaseModel):
-    type: Literal["toolRequest"] = "toolRequest" # [关键修改]
+    type: Literal["tool_request","toolRequest"] = "tool_request" # [关键修改]
     id: str
     tool_call: ToolCall = Field(alias="toolCall")
     metadata: Optional[Dict[str, Any]] = None
@@ -123,7 +123,7 @@ class CallToolResult(BaseModel):
         ])
         
 class ToolResponse(BaseModel):
-    type: Literal["toolResponse"] = "toolResponse" # [关键修改]
+    type: Literal["tool_response","toolResponse"] = "tool_response" # [关键修改]
     id: str
     tool_result: CallToolResult = Field(alias="toolResult")
     metadata: Optional[Dict[str, Any]] = None
@@ -145,13 +145,13 @@ class ToolResponse(BaseModel):
 
 # --- 其他内容定义 ---
 class FrontendToolRequest(BaseModel):
-    type: Literal["frontendToolRequest"] = "frontendToolRequest"
+    type: Literal["frontend_tool_request","frontendToolRequest"] = "frontend_tool_request"
     id: str
     tool_call: ToolCall = Field(alias="toolCall")
     model_config = ConfigDict(populate_by_name=True)
 
 class ToolConfirmationRequest(BaseModel):
-    type: Literal["toolConfirmationRequest"] = "toolConfirmationRequest"
+    type: Literal["tool_confirmation_request","toolConfirmationRequest"] = "tool_confirmation_request"
     id: str
     tool_call_id: str = Field(alias="toolCallId")
     tool_name: str = Field(alias="toolName")
@@ -166,7 +166,7 @@ class ActionRequiredData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 class ActionRequired(BaseModel):
-    type: Literal["actionRequired"] = "actionRequired"
+    type: Literal["action_required","actionRequired"] = "action_required"
     data: ActionRequiredData
     model_config = ConfigDict(populate_by_name=True)
 
@@ -177,7 +177,7 @@ class ThinkingContent(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 class RedactedThinkingContent(BaseModel):
-    type: Literal["redactedThinking"] = "redactedThinking"
+    type: Literal["redacted_thinking","redactedThinking"] = "redacted_thinking"
     model_config = ConfigDict(populate_by_name=True)
 
 class SystemNotificationType(str, Enum):
@@ -185,7 +185,7 @@ class SystemNotificationType(str, Enum):
     INLINE = "inlineMessage"
 
 class SystemNotification(BaseModel):
-    type: Literal["systemNotification"] = "systemNotification"
+    type: Literal["system_notification","systemNotification"] = "system_notification"
     notification_type: SystemNotificationType = Field(alias="notificationType")
     msg: str
     model_config = ConfigDict(populate_by_name=True)
@@ -326,9 +326,9 @@ class Message(BaseModel):
                 if "text" in item:
                     item["type"] = "text"
                 elif "toolCall" in item or "tool_call" in item:
-                    item["type"] = "toolRequest"
+                    item["type"] = "tool_request"
                 elif "toolResult" in item or "tool_result" in item:
-                    item["type"] = "toolResponse"
+                    item["type"] = "tool_response"
                 elif "thinking" in item:
                     item["type"] = "thinking"
                 else:

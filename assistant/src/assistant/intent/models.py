@@ -31,13 +31,14 @@ class IntentDefinition(BaseModel):
     name: str = Field(..., description="Unique intent identifier")
     description: str = Field(..., description="Intent description for LLM")
     slots: List[SlotSchema] = Field(default_factory=list, description="Parameters")
-
+    label: Optional[str] = Field(..., description="Short intent label for UI")
     def get_required_slots(self) -> List[SlotSchema]:
         return [s for s in self.slots if s.required]
 
 class IntentResult(BaseModel):
     """Recognition result for a single intent."""
     intent: str
+    label: Optional[str] = Field(..., description="Short intent label for UI")
     confidence: float = 0.8
     status: str = "ready" # ready, incomplete
     entities: Dict[str, Any] = {}

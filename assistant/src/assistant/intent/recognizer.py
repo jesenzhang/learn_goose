@@ -197,6 +197,7 @@ class IntentRecognizer:
                     fast_result = MultiIntentResult(
                         intents=[IntentResult(
                             intent=intent_def.name,
+                            label=intent_def.label,
                             confidence=1.0,
                             status="ready", # 通常关键词触发的意图不需要槽位或由后续步骤填充
                             entities={}
@@ -290,6 +291,7 @@ class IntentRecognizer:
 
         return IntentResult(
             intent=name,
+            label=idef.label if idef else "",
             confidence=raw.get("confidence", 0.0),
             status=status,
             entities=merged,

@@ -88,6 +88,7 @@ class ConfigLoader:
                 # 2. Create Intent Definition
                 definitions.append(IntentDefinition(
                     name=name,
+                    label=data.get("label", name),
                     description=data.get("description", f"Intent: {name}"),
                     slots=slots
                 ))
@@ -110,6 +111,10 @@ class ConfigLoader:
     @property
     def database(self): return self.config.database
     
+    @property
+    def skills_directory(self) -> str:
+        return self.config.skills_directory
+
     @property
     def sensitive_tools(self) -> Set[str]:
         """Get set of sensitive tool names."""

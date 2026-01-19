@@ -116,6 +116,7 @@ database:
 # - 技能级别配置（mode, label, description）
 # - 工具级别配置（tools_config，用于覆盖工具的显示名称等属性）
 # - 每个技能的敏感工具配置（优先级高于全局 security.sensitive_tools）
+skills_directory: "F:/Workspace/learn_goose/agent_skills"
 skills_config:
   faq:
     enabled: true
@@ -268,6 +269,7 @@ intents:
   # [新增] 自主执行意图 (The "Catch-All" Planner)
   # 当用户的需求不符合任何具体的 search/view 意图时，或者作为复合任务的后续步骤（如"然后写文章"）
   adhoc_execution:
+    label: "自主执行"
     description: >
       用于处理意图列表中未明确定义的通用任务，例如：写作、总结、分析、推理、翻译、格式转换等。
       通常用于复合任务的第二步（例如：先搜索，然后【写文章】）。
@@ -297,6 +299,7 @@ intents:
 
   # 意图1：搜索藏品（V2 API - 推荐）
   search_exhibits:
+    label: "搜索藏品"
     description: "用户希望搜索文物或藏品。使用 V2 智能检索 API，支持语义搜索和自然语言理解。适用于：'找一些青铜器'、'战国的剑'、'玉器藏品'等。"
     slots:
       keywords:
@@ -329,6 +332,7 @@ intents:
 
   # 意图2：推荐文档/研究资料（V2 API - 推荐）
   search_documents:
+    label: "推荐文档"
     description: "用户希望查找文档资料或研究内容。使用 V2 智能检索 API，支持 LLM 生成的摘要。适用于：'青铜铸造工艺'、'汉代历史'、'研究资料'等。"
     slots:
       keywords:
@@ -363,6 +367,7 @@ intents:
 
   # 意图3：精确资产搜索（V1 API）
   search_assets:
+    label: "精确资产搜索"
     description: "用户需要进行精确的资产搜索，指定了文件类型或资产类型。使用 V1 ES-based API。适用于：'找所有图片'、'搜索视频文件'、'查看专题库'等。"
     slots:
       keywords:
@@ -407,6 +412,7 @@ intents:
   # 意图4：智能资产推荐（V1 API）
   # 意图4：智能资产推荐（V1 API）
   recommend_assets:
+    label: "智能资产推荐"
     description: >
       用户希望获得资源推荐，查询比较模糊或开放，或者包含多种跨类型的资源需求。
       适用于：'推荐一些关于龙的资源'、'看看有没有相关的视频和图片'、'找点好东西'等。
@@ -474,6 +480,7 @@ intents:
 
   # 意图6：查看资源统计
   view_statistics:
+    label: "查看资源统计"
     description: "用户希望查看系统统计数据。适用于：'有多少资产？'、'最受欢迎的文件'、'统计数据'等。"
     slots:
       stat_type:
@@ -503,6 +510,7 @@ intents:
 
   # 意图7：知识图谱总览
   view_kg_overview:
+    label: "知识图谱总览"
     description: "用户希望了解知识图谱的整体情况。适用于：'知识图谱有多少实体？'、'图谱概况'等。"
     slots: {}
 
@@ -517,7 +525,9 @@ intents:
           请调用 V1 API 工具 `search_kg_overview` 获取图谱统计信息。
 
   # 意图8：查询文档内容（需要已知文件ID）
+    
   view_document:
+    label: "查询文档内容"
     description: "用户提供了具体的文件ID，希望查看文档内容。适用于：'查看文件xxx的内容'等。"
     slots:
       file_ids:
@@ -538,6 +548,7 @@ intents:
 
   # 意图9：对当前页面内容提问
   page_content_qa:
+    label: "当前页面问答"
     # [关键修改]：
     # 1. 移除 shared_memory 等技术细节，改用自然语言描述用户行为。
     # 2. 增加 explicit examples (示例)，覆盖不同的提问方式。
@@ -570,6 +581,7 @@ intents:
 
   # 意图12：通用闲聊
   general_chat:
+    label: "通用闲聊"
     description: > 
       仅用于纯粹的打招呼（你好）、情感表达（太棒了）或与博物馆业务完全无关的闲聊。
       【绝对禁止】：如果用户提到任何具体的文物、历史、文件、统计数据或页面内容，必须分发给对应的具体意图，绝对不能归类为 general_chat。
