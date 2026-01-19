@@ -66,8 +66,13 @@ class MicroAgent:
         config_path: str
     ):
         self.config_path = config_path
-        self.events = EventManager()
         self.db = get_db()
+
+        # 创建带有数据库支持的 EventManager（内部使用 BaseStreamer）
+        from ..events import AsyncEventStore, MemoryEventBus
+        self._bus = MemoryEventBus(buffer_size=1000, ttl=3600)
+        self._store = AsyncEventStore(self.db)
+        self.events = EventManager(db_manager=self.db, bus=self._bus, store=self._store)
 
         # 当前活跃的"一代"
         self.current_generation: Optional[AgentGeneration] = None
@@ -282,8 +287,8 @@ class MicroAgent:
                 return None
 
             await self.events.emit(EventType.STATE_CHANGE, {
-                "msg": "🤔 Analyzing & Planning...",
-                "label": "分析规划中",
+                "msg": "🤔 Planning...",
+                "label": "计划中",
             })
 
             # 1.1 调用识别器 (Recognizer now acts as a Planner)
@@ -908,6 +913,9 @@ Generate the content/response now.
     # =========================================================================
 
     async def run_task(self, session_id: int, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None):
+        # 设置 EventManager 的 session_id
+        self.events.set_session_id(session_id)
+
         # 1. 捕获当前时刻的 Generation (快照)
         # 此时必须立即 acquire，防止它在下一行代码还没执行时就被 drain 了
         current_gen_ref = self.current_generation
@@ -945,8 +953,13 @@ Generate the content/response now.
             api_model = ApiModel(model_config)
             assistant = Assistant(llm=api_model, write_llm=api_model)
 
+            # 传递 BaseStreamer 给 deepresearch，使其使用 assistant 的事件系统
+            # 这样 deepresearch 发送的事件会通过 bus 广播，event_generator 可以订阅并收到
+            streamer = await self.events.get_streamer(session_id)
             # run_async 内部已经启动了监听器，会实时输出事件
-            await assistant.run_async(user_input, self.events, enable_listener=True)
+            
+            await assistant.run_async(user_input, streamer,uid=uuid.uuid4(), enable_listener=True)
+            return
             
            
     

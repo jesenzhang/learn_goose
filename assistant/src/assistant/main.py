@@ -23,6 +23,13 @@ logging.basicConfig(
     ],
     encoding='utf-8'
 )
+
+# 将 httpx 的日志级别设置为 WARNING（仅警告和错误才打印）
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# 建议同时屏蔽 httpcore（httpx 的底层库），它有时也会打印大量日志
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 load_dotenv(override=True)

@@ -103,6 +103,9 @@ class AsyncDatabaseManager:
             """)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, created_at DESC)")
 
+        # 添加 seq_id 迁移
+        await self._migrate_add_seq_id()
+
         self._initialized = True
         logger.info(f"Database initialized at {self.db_path}")
 
@@ -256,6 +259,100 @@ class AsyncDatabaseManager:
 
         except Exception as e:
             logger.error(f"Migration check failed: {e}", exc_info=e)
+
+    async def _migrate_add_seq_id(self):
+        """迁移：添加 seq_id 列到 events 表。"""
+        try:
+            conn = await self._get_connection()
+
+            # 检查表是否存在
+            cursor = await conn.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='events'
+            """)
+            table_exists = await cursor.fetchone()
+
+            if not table_exists:
+                return
+
+            # 检查 seq_id 列是否存在
+            cursor = await conn.execute("PRAGMA table_info(events)")
+            columns = await cursor.fetchall()
+            column_names = {col[1] for col in columns}
+
+            if "seq_id" not in column_names:
+                logger.info("Migrating database: adding seq_id column to events table")
+
+                # 添加 seq_id 列
+                await conn.execute("ALTER TABLE events ADD COLUMN seq_id INTEGER DEFAULT 0")
+
+                # 创建索引以加快 seq_id 查询
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_events_session_seq
+                    ON events(session_id, seq_id)
+                """)
+
+                # 为 run_id 添加列（可选，用于将来的扩展）
+                await conn.execute("ALTER TABLE events ADD COLUMN run_id TEXT")
+
+                # 创建 run_id 索引
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_events_run_id
+                    ON events(run_id)
+                """)
+
+                # 为现有事件生成 seq_id
+                await self._generate_seq_ids_for_existing_events(conn)
+
+                await conn.commit()
+                logger.info("seq_id column migration completed")
+            else:
+                logger.debug("seq_id column already exists")
+
+        except Exception as e:
+            logger.error(f"seq_id migration failed: {e}", exc_info=e)
+            raise
+
+    async def _generate_seq_ids_for_existing_events(self, conn):
+        """
+        为现有事件生成 seq_id。
+
+        按时间顺序为每个 session 的事件分配连续的 seq_id。
+        """
+        try:
+            # 获取所有 session_id
+            cursor = await conn.execute(
+                "SELECT DISTINCT session_id FROM events ORDER BY session_id"
+            )
+            session_ids = await cursor.fetchall()
+
+            for (session_id,) in session_ids:
+                # 按时间顺序获取该 session 的所有事件
+                cursor = await conn.execute("""
+                    SELECT id, event, timestamp
+                    FROM events
+                    WHERE session_id = ?
+                    ORDER BY timestamp ASC, id ASC
+                """, (session_id,))
+
+                events = await cursor.fetchall()
+                for seq_id, (event_id, event_json, timestamp) in enumerate(events, start=1):
+                    # 解析 event JSON，添加 seq_id
+                    event_data = json.loads(event_json)
+                    event_data['seq_id'] = seq_id
+
+                    # 更新事件
+                    await conn.execute("""
+                        UPDATE events
+                        SET event = ?, seq_id = ?, run_id = ?
+                        WHERE id = ?
+                    """, (json.dumps(event_data), seq_id, str(session_id), event_id))
+
+            logger.info(f"Generated seq_ids for {len(session_ids)} sessions")
+
+        except Exception as e:
+            logger.error(f"Failed to generate seq_ids: {e}", exc_info=e)
+            raise
 
     # ================= Session Operations =================
     async def add_message(self, session_id: int, role: str, content: str, metadata: Dict = None, **kwargs) -> bool:

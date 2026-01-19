@@ -108,7 +108,6 @@ class RemoteDatabaseManager:
             headers["Authorization"] = dynamic_token
         elif self.api_key:
             headers["Authorization"] = self.api_key
-        print(dynamic_token)
         return headers
 
     def _handle_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
