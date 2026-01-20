@@ -23,7 +23,8 @@ from ..conversation import (Message, Role, TextContent,
                             ThinkingContent, RedactedThinkingContent)
 
 # Core Imports
-from .events import EventManager, EventType
+from ..events import MemoryEventBus, AsyncEventStore, StreamerFactory
+from ..events.legacy import EventType
 from .state import AgentState, AgentStatus
 from ..db import get_db, DatabaseManager
 from ..config.loader import ConfigLoader
@@ -68,11 +69,11 @@ class MicroAgent:
         self.config_path = config_path
         self.db = get_db()
 
-        # 创建带有数据库支持的 EventManager（内部使用 BaseStreamer）
-        from ..events import AsyncEventStore, MemoryEventBus
+        # 创建事件总线、存储和工厂
         self._bus = MemoryEventBus(buffer_size=1000, ttl=3600)
         self._store = AsyncEventStore(self.db)
-        self.events = EventManager(db_manager=self.db, bus=self._bus, store=self._store)
+        self._factory = StreamerFactory(bus=self._bus, store=self._store)
+        self._current_session_id: Optional[int] = None
 
         # 当前活跃的"一代"
         self.current_generation: Optional[AgentGeneration] = None
@@ -99,6 +100,25 @@ class MicroAgent:
         self._init_hooks(initial_config)
 
         logger.info("MicroAgent initialized")
+
+    async def _emit_event(self, event_type, data: Any, session_id: Optional[int] = None):
+        """
+        发送事件到总线和存储。
+
+        Args:
+            event_type: 事件类型
+            data: 事件数据
+            session_id: 会话 ID，如果为 None 则使用当前会话 ID
+        """
+        if session_id is None:
+            session_id = self._current_session_id
+
+        if session_id is None:
+            logger.warning("Cannot emit event: no session_id set")
+            return
+
+        streamer = self._factory.create(str(session_id))
+        await streamer.emit(event_type, data)
 
     async def _flush_state_save(self, session_id: int):
         """立即执行待保存的状态"""
@@ -224,7 +244,7 @@ class MicroAgent:
                 asyncio.create_task(old_gen.drain_and_close())
                 
             logger.info(f"✅ Swapped to generation {new_gen.version}")
-            await self.events.emit(EventType.STATE_CHANGE, {"msg": "⚙️ Configuration reloaded"})
+            await self._emit_event(EventType.STATE_CHANGE, {"msg": "⚙️ Configuration reloaded"})
             
         except Exception as e:
             logger.error(f"Reload failed: {e}")
@@ -233,29 +253,6 @@ class MicroAgent:
     async def add_message(self, session_id: int, msg: Message, state: Optional[AgentState] = None):
         state.history.append(msg.model_dump(exclude_none=True, by_alias=True))
         await self.db.add_message(session_id, msg.role, msg.content_json, msg.metadata)
-
-    async def _emit_event_with_persistence(self, event_type: EventType, data: Any, session_id: int):
-        """
-        发送事件并持久化到数据库
-
-        Args:
-            event_type: 事件类型
-            data: 事件数据
-            session_id: 会话 ID，用于持久化
-        """
-        # 发送事件到监听器
-        await self.events.emit(event_type, data)
-
-        # 持久化事件到数据库（异步，不阻塞主流程）
-        try:
-            from .events import Event
-            event = Event(type=event_type, data=data)
-            await self.db.save_event(session_id, event.model_dump())
-        except Exception as e:
-            # 持久化失败不影响主流程，只记录日志
-            logger.warning(f"Failed to persist event {event_type.value}: {e}")
-            # 注意：save_event 现在会抛出异常，但这里是在异步任务中捕获
-            # 如果需要发送错误事件，可以在上层统一处理
 
     # =========================================================================
     # Phase 1: Intent Processing (Unchanged logic, just context)
@@ -286,7 +283,7 @@ class MicroAgent:
             if not gen.intent_recognizer:
                 return None
 
-            await self.events.emit(EventType.STATE_CHANGE, {
+            await self._emit_event(EventType.STATE_CHANGE, {
                 "msg": "🤔 Planning...",
                 "label": "计划中",
             })
@@ -308,7 +305,7 @@ class MicroAgent:
                 plan_desc = [f"{i.intent}" for i in results.intents]
                 logger.info(f"📋 Plan generated: {plan_desc}")
                 
-                await self.events.emit(EventType.STATE_CHANGE, {
+                await self._emit_event(EventType.STATE_CHANGE, {
                     "msg": "📋 Plan Formulated", 
                     "plan": plan_desc,
                     "label": "计划已生成",
@@ -332,7 +329,7 @@ class MicroAgent:
         primary = IntentResult(**current_intent_data)
 
         logger.info(f"▶️ Executing Plan Step: {primary.intent}")
-        await self.events.emit(EventType.STATE_CHANGE, {
+        await self._emit_event(EventType.STATE_CHANGE, {
             "msg": f"🚀 Executing: {primary.intent}",
             "slots": primary.entities,
             "label": f"执行中:{primary.label}",
@@ -727,7 +724,7 @@ Generate the content/response now.
                     tool_label = tool_metadata.label
                     
             # 1. 触发工具开始事件
-            await self.events.emit(EventType.TOOL_START, {"name": name, 
+            await self._emit_event(EventType.TOOL_START, {"name": name, 
                                                           "args": args, 
                                                           "label": tool_label})
 
@@ -787,7 +784,7 @@ Generate the content/response now.
                 )
             )
 
-            await self.events.emit(EventType.TOOL_END, tool_end_event)
+            await self._emit_event(EventType.TOOL_END, tool_end_event)
 
             return index, tool_response
 
@@ -816,12 +813,12 @@ Generate the content/response now.
                 except Exception as e:
                     logger.error(f"Failed to save state for approval: {e}")
                     # 发送错误事件
-                    await self.events.emit(EventType.ERROR, {
+                    await self._emit_event(EventType.ERROR, {
                         "error": f"保存状态失败: {str(e)}",
                         "error_type": type(e).__name__
                     })
                     return []
-                await self.events.emit(EventType.APPROVAL_REQ, {"tool": name, "args": args})
+                await self._emit_event(EventType.APPROVAL_REQ, {"tool": name, "args": args})
                 return []
 
             tasks.append(_exec_wrapper(i, req))
@@ -913,8 +910,8 @@ Generate the content/response now.
     # =========================================================================
 
     async def run_task(self, session_id: int, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None):
-        # 设置 EventManager 的 session_id
-        self.events.set_session_id(session_id)
+        # 设置当前会话 ID
+        self._current_session_id = session_id
 
         # 1. 捕获当前时刻的 Generation (快照)
         # 此时必须立即 acquire，防止它在下一行代码还没执行时就被 drain 了
@@ -955,10 +952,10 @@ Generate the content/response now.
 
             # 传递 BaseStreamer 给 deepresearch，使其使用 assistant 的事件系统
             # 这样 deepresearch 发送的事件会通过 bus 广播，event_generator 可以订阅并收到
-            streamer = await self.events.get_streamer(session_id)
+            streamer = self._factory.create(str(session_id))
             # run_async 内部已经启动了监听器，会实时输出事件
             
-            await assistant.run_async(user_input, streamer,uid=uuid.uuid4(), enable_listener=True)
+            await assistant.run_async(user_input, streamer,uid=uuid.uuid4(), enable_listener=False)
             return
             
            
@@ -984,22 +981,22 @@ Generate the content/response now.
                     error_detail = getattr(e, 'response')
 
                 logger.error(f"Error in run_task [{error_type}]: {error_msg}")
-                await self.events.emit(EventType.ERROR, {
+                await self._emit_event(EventType.ERROR, {
                     "error": error_msg,
                     "error_type": error_type,
                     "error_detail": str(error_detail) if error_detail else None
                 })
-                await self.events.emit(EventType.DONE, {
+                await self._emit_event(EventType.DONE, {
                     "session_id": session_id
                 })
                 return
 
             if state_data is None:
                 logger.error(f"Loaded state for session {session_id} Failed.")
-                await self.events.emit(EventType.ERROR, {
+                await self._emit_event(EventType.ERROR, {
                     "error": f"Failed to load state for session {session_id}"
                 })
-                await self.events.emit(EventType.DONE, {
+                await self._emit_event(EventType.DONE, {
                     "session_id": session_id
                 })
                 return
@@ -1037,7 +1034,7 @@ Generate the content/response now.
                     # 传递 gen
                     if not await self._process_approval(state, approval_data or {}, gen): return
             else:
-                await self.events.emit(EventType.RUN_START, {
+                await self._emit_event(EventType.RUN_START, {
                     "session_id": session_id
                 })
                 if user_input:
@@ -1074,7 +1071,7 @@ Generate the content/response now.
                                     await self._store_artifacts_to_manager(artifacts, state)
 
                                     if artifacts:
-                                        await self.events.emit(EventType.TOOL_END, {
+                                        await self._emit_event(EventType.TOOL_END, {
                                             "name": "hook_response",
                                             "result": final_response,
                                             "meta": {"artifacts": artifacts}
@@ -1082,7 +1079,7 @@ Generate the content/response now.
 
                                 await self.add_message(state.session_id, Message.assistant(final_response), state)
 
-                                await self.events.emit(EventType.TOKEN, final_response)
+                                await self._emit_event(EventType.TOKEN, final_response)
                                 self._schedule_state_save(state.session_id, state)
 
                                 # 执行请求结束 Hooks
@@ -1106,7 +1103,7 @@ Generate the content/response now.
                         # 存入数据库
                         await self.add_message(state.session_id, Message.assistant(direct_res), state)
                         state.history.append({"role": "assistant", "content": direct_res})
-                        await self.events.emit(EventType.TOKEN, direct_res)
+                        await self._emit_event(EventType.TOKEN, direct_res)
                         self._schedule_state_save(state.session_id, state)
 
                         # 执行请求结束 Hooks
@@ -1180,7 +1177,7 @@ You must strictly follow this two-phase output format, regardless of any previou
                 # 3. Call BaseLLM
                 # ===============
                 # 发送 TOKEN_START 事件（LLM 开始生成）
-                await self.events.emit(EventType.TOKEN_START, {})
+                await self._emit_event(EventType.TOKEN_START, {})
 
                 full_content_text = ""
                 received_tool_requests: List[ToolRequest] = []
@@ -1202,12 +1199,12 @@ You must strictly follow this two-phase output format, regardless of any previou
                                 # =================================================
                                 if isinstance(c, (ThinkingContent, RedactedThinkingContent)):
                                     if not is_thinking:
-                                        await self.events.emit(EventType.THINKING_START, {})
+                                        await self._emit_event(EventType.THINKING_START, {})
                                         is_thinking = True
                                     
                                     content = c.thinking if isinstance(c, ThinkingContent) else ""
                                     if content:
-                                        await self.events.emit(EventType.THINKING_TOKEN, content)
+                                        await self._emit_event(EventType.THINKING_TOKEN, content)
 
                                 # =================================================
                                 # Case B: 普通文本 (需处理 Prompt 模式下的标签)
@@ -1219,11 +1216,11 @@ You must strictly follow this two-phase output format, regardless of any previou
                                     if not req_ctx.deep_thinking:
                                         # 如果之前是 Native Thinking 状态，先结束
                                         if is_thinking and not isinstance(c, ThinkingContent): 
-                                            await self.events.emit(EventType.THINKING_END, {})
+                                            await self._emit_event(EventType.THINKING_END, {})
                                             is_thinking = False
                                             
                                         full_content_text += text_chunk
-                                        await self.events.emit(EventType.TOKEN, text_chunk)
+                                        await self._emit_event(EventType.TOKEN, text_chunk)
                                         continue
 
                                     # 2. 开启了 deep_thinking，启动状态机解析
@@ -1235,7 +1232,7 @@ You must strictly follow this two-phase output format, regardless of any previou
                                                 tag_buffer = "<"
                                             else:
                                                 full_content_text += char
-                                                await self.events.emit(EventType.TOKEN, char)
+                                                await self._emit_event(EventType.TOKEN, char)
                                         
                                         # --- 状态 2: 检查开始标签 <thinking> ---
                                         elif parse_state == "check_open":
@@ -1243,14 +1240,14 @@ You must strictly follow this two-phase output format, regardless of any previou
                                             if tag_buffer == "<thinking>":
                                                 # 命中开始！
                                                 if not is_thinking:
-                                                    await self.events.emit(EventType.THINKING_START, {})
+                                                    await self._emit_event(EventType.THINKING_START, {})
                                                     is_thinking = True
                                                 parse_state = "thinking"
                                                 tag_buffer = ""
                                             elif not "<thinking>".startswith(tag_buffer):
                                                 # 匹配失败，原样吐出缓存
                                                 full_content_text += tag_buffer
-                                                await self.events.emit(EventType.TOKEN, tag_buffer)
+                                                await self._emit_event(EventType.TOKEN, tag_buffer)
                                                 parse_state = "normal"
                                                 tag_buffer = ""
                                         
@@ -1261,7 +1258,7 @@ You must strictly follow this two-phase output format, regardless of any previou
                                                 tag_buffer = "<"
                                             else:
                                                 # 发送思考 Token
-                                                await self.events.emit(EventType.THINKING_TOKEN, char)
+                                                await self._emit_event(EventType.THINKING_TOKEN, char)
                                         
                                         # --- 状态 4: 检查结束标签 </thinking> ---
                                         elif parse_state == "check_close":
@@ -1269,13 +1266,13 @@ You must strictly follow this two-phase output format, regardless of any previou
                                             if tag_buffer == "</thinking>":
                                                 # 命中结束！
                                                 if is_thinking:
-                                                    await self.events.emit(EventType.THINKING_END, {})
+                                                    await self._emit_event(EventType.THINKING_END, {})
                                                     is_thinking = False
                                                 parse_state = "normal"
                                                 tag_buffer = ""
                                             elif not "</thinking>".startswith(tag_buffer):
                                                 # 匹配失败（可能是思考内容里的 < 符号）
-                                                await self.events.emit(EventType.THINKING_TOKEN, tag_buffer)
+                                                await self._emit_event(EventType.THINKING_TOKEN, tag_buffer)
                                                 parse_state = "thinking" # 回到思考状态
                                                 tag_buffer = ""
 
@@ -1285,7 +1282,7 @@ You must strictly follow this two-phase output format, regardless of any previou
                                 elif isinstance(c, ToolRequest):
                                     # 遇到工具调用，强制结束思考
                                     if is_thinking:
-                                        await self.events.emit(EventType.THINKING_END, {})
+                                        await self._emit_event(EventType.THINKING_END, {})
                                         is_thinking = False
                                         # 重置解析器状态
                                         parse_state = "normal"
@@ -1299,7 +1296,7 @@ You must strictly follow this two-phase output format, regardless of any previou
                     error_msg = str(e)
                     error_type = type(e).__name__
                     logger.error(f"LLM Error [{error_type}]: {error_msg}")
-                    await self.events.emit(EventType.ERROR, {
+                    await self._emit_event(EventType.ERROR, {
                         "error": error_msg,
                         "error_type": error_type
                     })
@@ -1307,18 +1304,18 @@ You must strictly follow this two-phase output format, regardless of any previou
                 
                 # 兜底：如果循环结束还在 is_thinking 状态，强制结束
                 if is_thinking:
-                    await self.events.emit(EventType.THINKING_END, {})
+                    await self._emit_event(EventType.THINKING_END, {})
 
                 # 如果解析器卡在 buffer 里（例如流中断导致只输出了 "<think"），把残余发出来
                 if tag_buffer:
                     if parse_state in ["check_open", "normal"]:
-                        await self.events.emit(EventType.TOKEN, tag_buffer)
+                        await self._emit_event(EventType.TOKEN, tag_buffer)
                         full_content_text += tag_buffer
                     elif parse_state in ["thinking", "check_close"]:
-                        await self.events.emit(EventType.THINKING_TOKEN, tag_buffer)
+                        await self._emit_event(EventType.THINKING_TOKEN, tag_buffer)
 
                 # 发送 TOKEN_END 事件（LLM 生成结束）
-                await self.events.emit(EventType.TOKEN_END, {})
+                await self._emit_event(EventType.TOKEN_END, {})
                         
                 logger.info(f"📊 LLM returned: text_len={len(full_content_text)}, tool_requests={len(received_tool_requests)}")
                 if received_tool_requests:
@@ -1370,7 +1367,7 @@ You must strictly follow this two-phase output format, regardless of any previou
             await self._ensure_state_saved(session_id, state)
 
 
-            await self.events.emit(EventType.DONE, {
+            await self._emit_event(EventType.DONE, {
                     "session_id": session_id
                 })
 

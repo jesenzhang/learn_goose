@@ -20,7 +20,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic.v1.types import NoneStrBytes
 
-from ..core.events import EventType, Event
+from ..core.events import EventType
+from ..events.event_wrapper import Event
 from ..core.state import AgentState
 from ..db import get_db
 from ..core.agent import MicroAgent
@@ -127,21 +128,44 @@ async def event_generator(
         NDJSON: JSON-formatted event strings with newline
         SSE: SSE-formatted strings with data: prefix and double newline
     """
-    
-    task =None
-    unsubscribe = None
-    
+
+    task = None
 
     # 1. 设置上下文
     try:
         agent = get_agent()
         db = get_db()
-        q: asyncio.Queue = asyncio.Queue()
-        async def listener(event: Event):
-            await q.put(event)
 
-        # Subscribe to events
-        unsubscribe = agent.events.subscribe(listener, weak=True)
+        # 直接使用 bus 的订阅机制
+        # bus.subscribe() 返回一个异步生成器，我们包装成队列模式
+        q: asyncio.Queue = asyncio.Queue()
+
+        async def streamer_to_queue():
+            """从 bus 订阅事件并放入队列"""
+            try:
+                async for streamer_event in agent._bus.subscribe(str(session_id)):
+                    # 将 StreamerEvent 转换为 Event 格式
+                    event = Event(
+                        id=streamer_event.id,
+                        type=streamer_event.type,
+                        data=streamer_event.data,
+                        timestamp=streamer_event.timestamp,
+                        meta={
+                            "run_id": streamer_event.run_id,
+                            "seq_id": streamer_event.seq_id,
+                            **streamer_event.metadata
+                        }
+                    )
+                    await q.put(event)
+            except Exception as e:
+                logger.error(f"Streamer error: {e}", exc_info=e)
+
+        # 启动后台任务监听事件
+        streamer_task = asyncio.create_task(streamer_to_queue())
+
+        def unsubscribe():
+            """取消订阅"""
+            streamer_task.cancel()
 
         # Start agent task
         task = asyncio.create_task(
@@ -242,8 +266,9 @@ async def event_generator(
 
     finally:
         # Cleanup
-        if unsubscribe: unsubscribe()
-        if not task.done(): task.cancel()
+        if 'streamer_task' in locals() and not streamer_task.done():
+            streamer_task.cancel()
+        if task and not task.done(): task.cancel()
 
 def create_router() -> APIRouter:
     """Create and configure the API router."""
