@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Callable, Type
 
 from .base import SkillBase, SkillType, ToolMetadata
 from .generic import GenericSkill
-from .config import SkillConfig, SkillsConfig
+from .config import SkillConfig, SkillsConfig, ToolConfig
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +78,8 @@ class SkillLoader:
         """Load a specific skill folder."""
         # 1. Check skills_config for enabled/disabled status
         specific_config:SkillConfig = self.skills_config.get(skill_id)
-        # 策略：显式禁用 (enabled=False) 才跳过
-        if specific_config and specific_config.enabled is False:
+        # 策略：显式启用 (enabled=true) 才加载
+        if not specific_config or (specific_config and specific_config.enabled is False):
             logger.info(f"⏭️  Skipping disabled skill '{skill_id}'")
             return
 
@@ -120,6 +120,15 @@ class SkillLoader:
             skill_instance.description = description
             skill_instance.skill_type = skill_type
 
+            # [新增] 技能中文显示名称：配置覆盖 > 代码定义 > SKILL.md
+            skill_label = None
+            if specific_config and specific_config.label:
+                skill_label = specific_config.label
+            elif skill_instance.label:
+                skill_label = skill_instance.label
+            if skill_label:
+                skill_instance.label = skill_label
+
             # Attach loose functions found in scripts/ to the class instance
             self._attach_functions_to_instance(skill_instance, functions)
         else:
@@ -128,10 +137,16 @@ class SkillLoader:
                 logger.debug(f"Skipping '{skill_id}': No class and no scripts found.")
                 return
 
+            # 从配置中获取 label
+            skill_label = None
+            if specific_config and specific_config.label:
+                skill_label = specific_config.label
+
             skill_instance = GenericSkill(
                 name=skill_name,
                 description=description,
-                functions=functions
+                functions=functions,
+                label=skill_label
             )
             skill_instance.skill_type = skill_type
 
@@ -140,10 +155,15 @@ class SkillLoader:
         if allowed:
             self._filter_allowed_tools(skill_instance, allowed)
 
-        # 4. 敏感工具合并策略 (关键修改)
+        # 6. 工具配置覆盖（新增）
+        # 从技能配置中获取工具级别的覆盖配置
+        if specific_config and specific_config.tools_config:
+            self._apply_tools_config(skill_instance, specific_config.tools_config)
+
+        # 7. 敏感工具合并策略 (关键修改)
         # 获取 Layer 2: 全局配置定义的 sensitive
         config_sensitive = set(specific_config.sensitive_tools) if specific_config else set()
-        
+
         # 获取 Layer 3: 全局安全策略
         global_sensitive = self.global_sensitive_tools
 
@@ -156,11 +176,11 @@ class SkillLoader:
                 tool_name in global_sensitive    # Layer 3 (Global Security)
             )
             tool_meta.is_sensitive = is_sensitive
-            
+
             if is_sensitive:
                 logger.info(f"🔒 Tool '{tool_name}' marked as sensitive.")
-                
-        # 7. Register
+
+        # 8. Register
         self._register_skill_instance(skill_instance)
 
     def _load_metadata(self, path: Path) -> Dict[str, Any]:
@@ -298,6 +318,37 @@ class SkillLoader:
         # Only keep tools that are in the allowed set
         skill._tools = {k: v for k, v in skill._tools.items() if k in allowed_set}
 
+    def _apply_tools_config(self, skill: SkillBase, tools_config: Dict[str, ToolConfig]):
+        """
+        应用工具级别配置覆盖。
+
+        Args:
+            skill: 技能实例
+            tools_config: 工具配置映射 {tool_name: ToolConfig}
+        """
+        for tool_name, tool_meta in skill._tools.items():
+            if tool_name in tools_config:
+                config = tools_config[tool_name]
+                updated_fields = []
+
+                # 覆盖 label
+                if config.label:
+                    tool_meta.label = config.label
+                    updated_fields.append(f"label={config.label}")
+
+                # 覆盖 description
+                if config.description:
+                    tool_meta.description = config.description
+                    updated_fields.append(f"description")
+
+                # 覆盖 sensitive（注意：这个会在后续的敏感工具合并策略中再次处理）
+                if config.sensitive is not None:
+                    tool_meta.is_sensitive = config.sensitive
+                    updated_fields.append(f"sensitive={config.sensitive}")
+
+                if updated_fields:
+                    logger.info(f"🏷️  Tool '{tool_name}' in skill '{skill.name}' updated: {', '.join(updated_fields)}")
+
     def _register_skill_instance(self, skill: SkillBase):
         """Final registration step."""
         if skill.name in self._skills:
@@ -376,6 +427,27 @@ class SkillLoader:
 
         return False
 
+    def get_tool_metadata(self, tool_name: str) -> Optional[ToolMetadata]:
+        """
+        获取工具的完整 metadata（包括 label）
+
+        Args:
+            tool_name: 工具名称
+
+        Returns:
+            ToolMetadata 对象，包含 name, description, label 等信息
+        """
+        # 1. Global tools
+        if tool_name in self._global_tools:
+            return self._global_tools[tool_name]
+
+        # 2. Skill tools
+        for tools in self._skill_tools.values():
+            if tool_name in tools:
+                return tools[tool_name]
+
+        return None
+
     # =========================================================================
     # Runtime: Context & Schema
     # =========================================================================
@@ -383,6 +455,9 @@ class SkillLoader:
     def get_all_tools_schema(self, active_skill: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Generate OpenAI Tool Schemas based on current context.
+
+        Args:
+            active_skill: 当前激活的技能
         """
         schemas = []
         added = set()
@@ -394,10 +469,10 @@ class SkillLoader:
 
         # 1. Routing Tools (Dynamic)
         routable_skills = [
-            name for name, sk in self._skills.items() 
+            name for name, sk in self._skills.items()
             if sk.skill_type == SkillType.CONTEXTUAL
         ]
-        
+
         if routable_skills:
             schemas.append({
                 "type": "function",
@@ -413,7 +488,7 @@ class SkillLoader:
                     }
                 }
             })
-        
+
         if active_skill:
             schemas.append({
                 "type": "function",
@@ -425,12 +500,14 @@ class SkillLoader:
             })
 
         # 2. Global Tools
+        logger.debug(f"🔧 Adding {len(self._global_tools)} global tools")
         for tool in self._global_tools.values():
             add(tool)
 
         # 3. Active Skill Tools
         if active_skill and active_skill in self._skills:
             skill = self._skills[active_skill]
+            logger.info(f"🔧 Active skill '{active_skill}' type={skill.skill_type}")
             if skill.skill_type == SkillType.CONTEXTUAL:
                 for tool in skill.get_tools():
                     add(tool)

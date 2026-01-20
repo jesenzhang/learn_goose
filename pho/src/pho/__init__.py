@@ -53,8 +53,8 @@ from pho.agent import (
 
 # Toolkit
 from pho.toolkit import (
-    ToolType,
-    ToolMetadata,
+    ToolSourceType,
+    ToolDefinition,
     ToolRegistry,
     get_global_registry,
     register_tool,
@@ -126,8 +126,8 @@ __all__ = [
     "StreamingAgentEngine",
 
     # Toolkit
-    "ToolType",
-    "ToolMetadata",
+    "ToolSourceType",
+    "ToolDefinition",
     "ToolRegistry",
     "get_global_registry",
     "register_tool",

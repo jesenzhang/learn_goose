@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
 authors = [
-  {name = "Pho Contributors", email = "pho@example.com"}
+    {name = "Pho Contributors", email = "pho@example.com"}
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -25,6 +25,10 @@ dependencies = [
     "frontmatter>=1.0.0",
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
+    # New dependencies from migration
+    "aiofiles>=23.0.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
 ]
 
 [project.optional-dependencies]

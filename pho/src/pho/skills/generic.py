@@ -11,14 +11,15 @@ class GenericSkill(ContextualSkill):
     Generic skill created from a set of functions.
     """
 
-    def __init__(self, name: str, description: str, functions: Dict[str, Callable]):
+    def __init__(self, name: str, description: str, functions: Dict[str, Callable], label: str = None):
         # Temporarily store functions to register after parent init
         self._pending_functions = functions
-        
+
         # Set attributes required by Base
         self.name = name
         self.description = description
-        
+        self.label = label  # 技能中文显示名称
+
         # Initialize Base (creates self._tools)
         super().__init__()
 

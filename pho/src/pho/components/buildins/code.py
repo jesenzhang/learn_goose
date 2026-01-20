@@ -97,7 +97,7 @@ class Lambda(Component):
         # 我们复用 ToolDefinitionRegistry，假设 Lambda 被注册为 BUILTIN 工具
         tool_def = tool_registry.get(config.function_name)
 
-        if not tool_def or tool_def.tool_type != ToolSourceType.BUILTIN:
+        if not tool_def or tool_def.source_type != ToolSourceType.BUILTIN:
              # 回退：尝试直接查找 Python 内存对象 (如果有一个简单的 dict 注册表)
              # 这里简单模拟
              raise ValueError(f"Lambda '{config.function_name}' not found or not a builtin function")

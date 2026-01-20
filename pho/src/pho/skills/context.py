@@ -10,9 +10,9 @@ from abc import ABC, abstractmethod
 
 # 使用 TYPE_CHECKING 避免循环导入，同时保留 IDE 提示
 if TYPE_CHECKING:
-    from ..providers.base import BaseEmbedding, BaseReranker
-    from ..core.state import AgentState
-    from ..db.manager import DatabaseManager
+    from pho.providers.base import BaseEmbedding, BaseReranker
+    # RequestContext 移除，使用 toolkit.ExecutionContext
+    # from pho.agent.core import RequestContext
 
 # 定义泛型，T_State 和 T_DB 可以由使用者指定具体的类
 T_State = TypeVar('T_State', bound=Any)
@@ -76,7 +76,8 @@ class ServiceContext(Generic[T_State, T_DB]):
         db: Optional[T_DB] = None,
         # [CHANGED] 接收强类型容器，默认为空容器而不是 None
         ai_services: Union[AIServices, Dict[str, Any], None] = None,
-        locator: Optional[ServiceLocator] = None
+        locator: Optional[ServiceLocator] = None,
+        # request_context: Optional['RequestContext'] = None  # ← 移除
     ):
         self._session_id = session_id
         self._state = state
@@ -84,10 +85,15 @@ class ServiceContext(Generic[T_State, T_DB]):
         # 确保 _ai_services 永远不为 None，避免 .embedding 报错
         self._ai_services = ai_services or AIServices()
         self._locator = locator or DictServiceLocator()
+        # self._request_context = request_context  # ← 移除
         self._created_at = time.time()
 
     # --- Core Properties ---
-
+    # @property
+    # def request(self) -> 'RequestContext':  # ← 移除
+    #     """访问当前请求的上下文参数"""
+    #     return self._request_context
+    
     @property
     def session_id(self) -> str:
         return self._session_id
@@ -169,6 +175,7 @@ class ServiceContextBuilder:
         # 初始化为空容器
         self._ai_services = AIServices()
         self._services = {}
+        self._request_context = None  # ← 保留但不使用
 
     def with_state(self, state: Any) -> 'ServiceContextBuilder':
         self._state = state
@@ -199,6 +206,10 @@ class ServiceContextBuilder:
                 self._ai_services.extras[k] = v
         return self
 
+    def with_request_context(self, req: Any) -> 'ServiceContextBuilder':  # ← 改为 Any
+        self._request_context = req
+        return self
+    
     def with_service(self, key: str, service: Any) -> 'ServiceContextBuilder':
         self._services[key] = service
         return self
@@ -209,6 +220,7 @@ class ServiceContextBuilder:
             session_id=self._session_id,
             state=self._state,
             db=self._db,
+            request_context=self._request_context,
             ai_services=self._ai_services,
             locator=locator
         )
@@ -218,6 +230,7 @@ def create_context(
     state: Optional[T_State] = None,
     db: Optional[T_DB] = None,
     ai_services: Union[AIServices, Dict[str, Any], None] = None,
+    req_ctx: Any = None,  # ← 改为 Any，不再使用 RequestContext 类型
     **services
 ) ->"ServiceContext[T_State, T_DB]":  # 返回值绑定泛型
     """
@@ -227,7 +240,7 @@ def create_context(
     builder = ServiceContextBuilder(session_id)
     if state: builder.with_state(state)
     if db: builder.with_db(db)
-    
+
     if ai_services:
         if isinstance(ai_services, AIServices):
             # 直接赋值
@@ -235,8 +248,10 @@ def create_context(
         elif isinstance(ai_services, dict):
             # 兼容旧字典
             builder.with_ai_services_dict(ai_services)
-        
+    if req_ctx:
+        builder.with_request_context(req_ctx)
+
     for k, v in services.items():
         builder.with_service(k, v)
-        
+
     return cast(ServiceContext[T_State, T_DB], builder.build())

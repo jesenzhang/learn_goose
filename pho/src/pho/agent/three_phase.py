@@ -79,7 +79,7 @@ class ThreePhaseAgentEngine(AgentEngine):
 
     def _create_registry(self):
         """Create tool registry from skills and tools"""
-        from pho.toolkit import ToolRegistry, ToolType
+        from pho.toolkit import ToolRegistry, ToolSourceType
         registry = ToolRegistry()
 
         # Register tools from skills if available
@@ -90,7 +90,7 @@ class ThreePhaseAgentEngine(AgentEngine):
                         name=tool_name,
                         func=tool_meta.handler,
                         description=tool_meta.description,
-                        tool_type=ToolType.SKILL,
+                        tool_type=ToolSourceType.SKILL,
                         category=skill_name,
                         source=skill_name,
                     )
@@ -101,7 +101,7 @@ class ThreePhaseAgentEngine(AgentEngine):
                 name=name,
                 func=func,
                 description=f"Tool: {name}",
-                tool_type=ToolType.DECORATOR,
+                tool_type=ToolSourceType.DECORATOR,
             )
 
         return registry

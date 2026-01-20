@@ -1,5 +1,5 @@
 from typing import Dict, Any
-from pho.skills.context import ServiceContext
+from ..skills.context import ServiceContext
 
 def slot_to_instruction(slots: Dict[str, Any], ctx: ServiceContext) -> str:
     """

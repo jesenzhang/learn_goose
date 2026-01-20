@@ -83,7 +83,7 @@ async def get_current_user(request: Request) -> Optional[AuthUser]:
     return getattr(request.state, "user", None)
 
 
-async def require authenticated_user(request: Request) -> AuthUser:
+async def require_authenticated_user(request: Request) -> AuthUser:
     """
     要求用户必须认证
 

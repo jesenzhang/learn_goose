@@ -350,7 +350,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
         openai_msgs = []
         for msg in messages:
             # Skip invisible messages (system logic)
-            if not msg.metadata.agent_visible: continue
+            if not msg.visible.agent_visible: continue
 
             if msg.role == Role.SYSTEM:
                 openai_msgs.append({"role": "system", "content": msg.text})

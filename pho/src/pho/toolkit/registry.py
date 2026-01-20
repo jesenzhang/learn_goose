@@ -14,30 +14,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
 
+from .tool import ToolSourceType, ToolDefinition,FunctionTool,BaseTool
 logger = logging.getLogger(__name__)
 
 
-class ToolType(str, Enum):
-    """Types of tool registration"""
-    DECORATOR = "decorator"     # Registered via @register_tool decorator
-    SKILL = "skill"             # Loaded from skill directory (SKILL.md)
-    MCP = "mcp"                 # From MCP extension
-    BUILTIN = "builtin"         # Built-in tool
-
-
-@dataclass
-class ToolMetadata:
-    """Metadata for a registered tool"""
-    name: str
-    description: str
-    function: Callable
-    tool_type: ToolType
-    parameters: Dict[str, Any] = field(default_factory=dict)
-    category: Optional[str] = None
-    enabled: bool = True
-    source: Optional[str] = None  # e.g., skill name, MCP server name
-    permission: Optional[str] = None
-    schema: Optional[Dict[str, Any]] = None
 
 
 class ToolRegistry:
@@ -49,65 +29,117 @@ class ToolRegistry:
 
     def __init__(self):
         """Initialize the tool registry"""
-        self._tools: Dict[str, ToolMetadata] = {}
-        self._by_type: Dict[ToolType, Dict[str, ToolMetadata]] = {
-            t: {} for t in ToolType
+        self._tools: Dict[str, ToolDefinition] = {}
+        self._by_type: Dict[ToolSourceType, Dict[str, ToolDefinition]] = {
+            t: {} for t in ToolSourceType
         }
-        self._by_category: Dict[str, Dict[str, ToolMetadata]] = {}
+        self._by_category: Dict[str, Dict[str, ToolDefinition]] = {}
         self._decorators: List[Callable] = []
 
     # ========================================================================
     # Registration Methods
     # ========================================================================
 
-    def register(
+    # ========================================================================
+    # Registration Methods
+    # ========================================================================
+
+    def register_tool_class(
+        self,
+        tool_class: Type[BaseTool],
+        source_type: ToolSourceType = ToolSourceType.BUILTIN,
+        category: Optional[str] = None,
+        **metadata
+    ) -> None:
+        """
+        Register a tool class.
+
+        Args:
+            tool_class: BaseTool subclass
+            source_type: Type of registration
+            category: Tool category
+            source: Source identifier
+            **metadata: Additional metadata
+        """
+        # Create tool instance to get metadata
+        tool_instance = tool_class()
+        tool_name = tool_instance.name
+        tool_desc = tool_instance.description
+
+        metadata_obj = ToolDefinition(
+            name=tool_name,
+            description=tool_desc,
+            source_type=source_type,
+            function=tool_instance.run,  # Use the run method
+            category=category or tool_instance.category,
+            schema=tool_instance.schema,
+            parameters=tool_instance.schema.get("properties", {}),
+            **metadata
+        )
+
+        self._register_metadata(metadata_obj)
+
+    def register_function(
         self,
         name: str,
         func: Callable,
         description: str = "",
-        tool_type: ToolType = ToolType.DECORATOR,
+        source_type: ToolSourceType = ToolSourceType.DECORATOR,
         category: Optional[str] = None,
-        source: Optional[str] = None,
         schema: Optional[Dict[str, Any]] = None,
         **metadata
     ) -> None:
         """
-        Register a tool.
+        Register a function as a tool.
 
         Args:
-            name: Unique tool name
-            func: Tool function (sync or async)
+            name: Tool name
+            func: Function to register
             description: Tool description
-            tool_type: Type of tool registration
-            category: Tool category for organization
-            source: Source of the tool (skill name, MCP server, etc.)
-            schema: JSON schema for parameters
+            source_type: Type of registration
+            category: Tool category
+            source: Source identifier
+            schema: Parameter schema
             **metadata: Additional metadata
         """
-        # Extract parameter schema if not provided
+        # Extract schema if not provided
         if schema is None:
-            schema = self._extract_schema(func)
+            schema = self._extract_function_schema(func)
 
-        metadata_obj = ToolMetadata(
+        # 2. 【核心修改】不再只存 Metadata，而是创建一个 FunctionTool 实例
+        # 这样所有的工具（无论是类写的，还是函数写的）在系统里都是 BaseTool 对象！
+        tool_instance = FunctionTool(
+            func=func,
+            schema=schema,
             name=name,
             description=description,
-            function=func,
-            tool_type=tool_type,
-            parameters=schema.get("properties", {}),
+            **metadata
+        )
+        
+        metadata_obj = ToolDefinition(
+            name=name,
+            description=description or getattr(func, "__doc__", "") or "",
+            source_type=source_type,
+            function=tool_instance.run,
             category=category,
-            source=source,
-            schema=schema
+            schema=schema,
+            parameters=schema.get("properties", {}),
+            **metadata
         )
 
-        self._tools[name] = metadata_obj
-        self._by_type[tool_type][name] = metadata_obj
+        self._register_metadata(metadata_obj)
 
-        if category:
-            if category not in self._by_category:
-                self._by_category[category] = {}
-            self._by_category[category][name] = metadata_obj
+    def _register_metadata(self, metadata: ToolDefinition) -> None:
+        """Internal method to register metadata"""
+        self._tools[metadata.name] = metadata
+        self._by_type[metadata.source_type][metadata.name] = metadata
 
-        logger.debug(f"Registered tool: {name} (type: {tool_type.value})")
+        if metadata.category:
+            if metadata.category not in self._by_category:
+                self._by_category[metadata.category] = {}
+            self._by_category[metadata.category][metadata.name] = metadata
+
+        logger.debug(f"Registered tool: {metadata.name} (type: {metadata.source_type.value})")
 
     def register_decorator(
         self,
@@ -125,11 +157,11 @@ class ToolRegistry:
                 return f"Result: {arg1} {arg2}"
         """
         def decorator(func: Callable) -> Callable:
-            self.register(
+            self.register_function(
                 name=name,
                 func=func,
                 description=description,
-                tool_type=ToolType.DECORATOR,
+                source_type=ToolSourceType.DECORATOR,
                 category=category,
                 **kwargs
             )
@@ -145,7 +177,7 @@ class ToolRegistry:
 
         # Remove from all indexes
         del self._tools[name]
-        del self._by_type[metadata.tool_type][name]
+        del self._by_type[metadata.source_type][name]
 
         if metadata.category and metadata.category in self._by_category:
             self._by_category[metadata.category].pop(name, None)
@@ -156,8 +188,23 @@ class ToolRegistry:
     # ========================================================================
     # Query Methods
     # ========================================================================
+    def ids(self):
+        """Get all registered tool names"""
+        return list(self._tools.keys())
 
-    def get(self, name: str) -> Optional[ToolMetadata]:
+    def has(self, name: str) -> bool:
+        """
+        Check if a tool is registered.
+
+        Args:
+            name: The tool name.
+
+        Returns:
+            True if tool is registered, False otherwise.
+        """
+        return name in self._tools
+    
+    def get(self, name: str) -> Optional[ToolDefinition]:
         """Get tool metadata by name"""
         return self._tools.get(name)
 
@@ -166,19 +213,19 @@ class ToolRegistry:
         metadata = self.get(name)
         return metadata.function if metadata else None
 
-    def list_all(self) -> Dict[str, ToolMetadata]:
+    def list_all(self) -> Dict[str, ToolDefinition]:
         """List all registered tools"""
         return self._tools.copy()
 
-    def list_by_type(self, tool_type: ToolType) -> Dict[str, ToolMetadata]:
+    def list_by_type(self, tool_type: ToolSourceType) -> Dict[str, ToolDefinition]:
         """List tools by type"""
         return self._by_type[tool_type].copy()
 
-    def list_by_category(self, category: str) -> Dict[str, ToolMetadata]:
+    def list_by_category(self, category: str) -> Dict[str, ToolDefinition]:
         """List tools by category"""
         return self._by_category.get(category, {}).copy()
 
-    def list_enabled(self) -> Dict[str, ToolMetadata]:
+    def list_enabled(self) -> Dict[str, ToolDefinition]:
         """List only enabled tools"""
         return {
             name: meta for name, meta in self._tools.items()
@@ -233,7 +280,7 @@ class ToolRegistry:
     # Tool Schema Generation
     # ========================================================================
 
-    def _extract_schema(self, func: Callable) -> Dict[str, Any]:
+    def _extract_function_schema(self, func: Callable) -> Dict[str, Any]:
         """Extract JSON schema from function signature"""
         sig = inspect.signature(func)
         parameters = {}
@@ -336,11 +383,12 @@ class ToolRegistry:
         return f"ToolRegistry({len(self)} tools)"
 
 
-# ========================================================================
-# Global Registry Instance
-# ========================================================================
+# # ========================================================================
+# # Global Registry Instance
+# # ========================================================================
 
 _global_registry: Optional[ToolRegistry] = None
+
 
 
 def get_global_registry() -> ToolRegistry:
@@ -373,10 +421,26 @@ def register_tool(
     )
 
 
-__all__ = [
-    "ToolType",
-    "ToolMetadata",
-    "ToolRegistry",
-    "get_global_registry",
-    "register_tool",
-]
+def register_tool_class(
+    tool_class: Type[BaseTool],
+    source_type: ToolSourceType = ToolSourceType.BUILTIN,
+    category: Optional[str] = None,
+    **kwargs
+) -> None:
+    """
+    Register a tool class globally.
+
+    Args:
+        tool_class: BaseTool subclass
+        source_type: Type of registration
+        category: Tool category
+        **kwargs: Additional metadata
+    """
+    get_global_registry().register_tool_class(
+        tool_class=tool_class,
+        source_type=source_type,
+        category=category,
+        **kwargs
+    )
+
+tool_registry = get_global_registry()
