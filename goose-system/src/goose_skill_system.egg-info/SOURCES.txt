@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+src/goose_skill/__init__.py
+src/goose_skill/client.py
+src/goose_skill/loader.py
+src/goose_skill/models.py
+src/goose_skill/protocol.py
+src/goose_skill_system.egg-info/PKG-INFO
+src/goose_skill_system.egg-info/SOURCES.txt
+src/goose_skill_system.egg-info/dependency_links.txt
+src/goose_skill_system.egg-info/requires.txt
+src/goose_skill_system.egg-info/top_level.txt
+tests/test_client.py
+tests/test_loader.py

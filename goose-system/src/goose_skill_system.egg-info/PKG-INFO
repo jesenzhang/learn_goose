@@ -1,0 +1,184 @@
+Metadata-Version: 2.4
+Name: goose-skill-system
+Version: 1.0.0
+Summary: Python implementation of Goose-RS Agent Skill System
+Author: Goose Contributors
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: watchdog>=4.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
+Requires-Dist: black>=23.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+
+# Goose Skill System
+
+Python implementation of the Goose-RS Agent Skill System.
+
+## Overview
+
+This project provides a declarative skill management system for AI agents, inspired by Goose-RS. Skills are defined using Markdown files with YAML frontmatter, making them human-readable and easy to version control.
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Quick Start
+
+```python
+from goose_skill import SkillsClient, SkillLoader
+
+# Initialize the client
+client = SkillsClient()
+
+# List available tools
+tools = client.list_tools()
+print(f"Found {len(tools.tools)} tools")
+
+# Call the loadSkill tool
+result = client.call_tool("loadSkill", {"name": "your-skill-name"})
+print(result.content[0].text)
+```
+
+## Skill File Format
+
+Skills are defined in `SKILL.md` files within skill directories:
+
+```markdown
+---
+name: my-skill
+description: A description of what this skill does
+author: Your Name
+version: 1.0.0
+tags:
+  - tag1
+  - tag2
+---
+
+# Skill Title
+
+This is the skill content. You can use Markdown here.
+
+## Sections
+
+Write your skill documentation using standard Markdown.
+```
+
+## Directory Structure
+
+```
+skills/
+└── my-skill/
+    ├── SKILL.md              # Skill definition
+    ├── helper.py             # Optional supporting file
+    └── templates/
+        └── template.txt      # Optional supporting files
+```
+
+## Default Skill Directories
+
+The system searches for skills in the following locations (in order of priority):
+
+1. `$PWD/.goose/skills` - Working directory Goose-specific
+2. `$PWD/.agents/skills` - Working directory agents通用
+3. `$PWD/.claude/skills` - Working directory Claude-compatible
+4. `$XDG_CONFIG_HOME/skills` - XDG config directory
+5. `$HOME/.config/agents/skills` - User config directory
+6. `$HOME/.claude/skills` - Claude global directory
+
+## API Reference
+
+### SkillLoader
+
+```python
+loader = SkillLoader()
+
+# Discover all skills
+skills = loader.discover_skills()
+
+# Get skill names
+names = loader.get_skill_names()
+
+# Generate instructions for LLM
+instructions = loader.generate_instructions()
+```
+
+### SkillsClient
+
+```python
+client = SkillsClient()
+
+# Get server info
+info = client.get_info()
+
+# List available tools
+tools = client.list_tools()
+
+# Call a tool
+result = client.call_tool("loadSkill", {"name": "skill-name"})
+
+# Get specific skill
+skill = client.get_skill("skill-name")
+```
+
+## Running the Example
+
+```bash
+# Copy example skills to a skill directory
+cp -r examples/skills/* .goose/skills/
+
+# Run the main script
+python main.py
+```
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    SkillsClient                          │
+│  - Implements MCP-style client interface                 │
+│  - Manages skill discovery and loading                   │
+│  - Provides loadSkill tool                               │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                    SkillLoader                           │
+│  - Discovers skills from filesystem                      │
+│  - Parses YAML frontmatter + Markdown body               │
+│  - Collects supporting files                             │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Filesystem                             │
+│  - Searches default skill directories                    │
+│  - Reads SKILL.md files                                  │
+│  - Collects supporting files                             │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Features
+
+- **Declarative Skills**: Define skills using Markdown + YAML frontmatter
+- **Multi-directory Discovery**: Automatic discovery from multiple locations
+- **Supporting Files**: Include helper scripts and templates
+- **Priority-based Loading**: Working directory skills override global ones
+- **MCP-compatible**: Follows Model Context Protocol patterns
+- **Pythonic Design**: Clean, async-ready API
+
+## License
+
+MIT
