@@ -21,7 +21,7 @@ class SkillConfig(BaseModel):
     sensitive_tools: List[str] = Field(default_factory=list)
     # [新增] 工具级别配置映射：tool_name -> ToolConfig
     tools_config: Dict[str, ToolConfig] = Field(default_factory=dict)
-
+    config: Dict[str, Any] = Field(default_factory=dict)
 
 class SkillsConfig(RootModel[Dict[str, SkillConfig]]):
     """

@@ -4,6 +4,8 @@ Standard Skill Format: Stateless function interface with module-level resource m
 """
 
 import asyncio
+import httpx
+import json
 from typing import List, Optional, Dict, Any,Union
 
 # 尝试导入上下文类型，如果环境不支持则忽略（保持纯 Python 兼容性）
@@ -21,58 +23,131 @@ from .skill import AssetSearchConfig, AssetSearchSkill, APISearchConfig
 
 # -----------------------------------------------------------------------------
 # 2. 模块级状态管理 (Module-Level Singleton)
-# 使用“惰性初始化”模式，避免在文件 import 时就创建网络连接
+# 使用"惰性初始化"模式，避免在文件 import 时就创建网络连接
 # -----------------------------------------------------------------------------
 _WORKER_INSTANCE: Optional[AssetSearchSkill] = None
+
+# 全局配置存储，用于覆盖默认值
+_GLOBAL_SKILL_CONFIG: Dict[str, Any] = {}
+
+# 缓存当前配置的字符串表示，用于检测配置变化
+_CURRENT_CONFIG_HASH: str = ""
+
+# 缓存 httpx client 实例，按配置哈希存储
+_HTTPX_CLIENTS: Dict[str, httpx.AsyncClient] = {}
+
+
+def set_skill_config(config: Dict[str, Any]) -> None:
+    """
+    设置全局技能配置（由 Loader 调用）。
+
+    Args:
+        config: 来自 assistant_config.yaml 的配置字典
+    """
+    global _GLOBAL_SKILL_CONFIG
+    _GLOBAL_SKILL_CONFIG = config
+
+def _get_config_hash() -> str:
+    """计算当前配置的哈希值，用于检测配置变化"""
+    global _GLOBAL_SKILL_CONFIG
+    return json.dumps(_GLOBAL_SKILL_CONFIG, sort_keys=True)
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    """获取或创建 httpx client，按配置缓存复用"""
+    global _GLOBAL_SKILL_CONFIG, _HTTPX_CLIENTS
+
+    # 计算配置哈希
+    config_hash = _get_config_hash()
+
+    # 如果已有对应配置的 client，直接复用
+    if config_hash in _HTTPX_CLIENTS:
+        client = _HTTPX_CLIENTS[config_hash]
+        # 检查 client 是否已关闭
+        if not client.is_closed:
+            return client
+        # 已关闭，清理缓存
+        del _HTTPX_CLIENTS[config_hash]
+
+    # 创建新的 client
+    # 从配置中获取 timeout
+    timeout = _GLOBAL_SKILL_CONFIG.get("timeout", 10.0)
+    client = httpx.AsyncClient(timeout=timeout)
+    _HTTPX_CLIENTS[config_hash] = client
+    return client
+
 
 def _get_worker() -> AssetSearchSkill:
     """
     获取或创建全局工作实例。
-    确保只初始化一次，复用 httpx 连接池。
-    如果实例已关闭，会创建新实例。
+    确保按配置复用 httpx 连接池。
     """
-    global _WORKER_INSTANCE
+    global _WORKER_INSTANCE, _CURRENT_CONFIG_HASH
 
-    # 检查实例是否需要创建或重建
+    # 计算当前配置哈希
+    current_hash = _get_config_hash()
+
+    # 检查实例是否需要创建
     if _WORKER_INSTANCE is None:
-        return _create_worker()
+        return _create_worker(current_hash)
 
     # 检查 httpx 客户端是否已关闭
     try:
         if hasattr(_WORKER_INSTANCE, 'http_client') and _WORKER_INSTANCE.http_client.is_closed:
-            # 客户端已关闭，创建新实例
-            return _create_worker()
+            return _create_worker(current_hash)
     except Exception:
-        # 如果检查时出错，创建新实例以确保安全
-        return _create_worker()
+        return _create_worker(current_hash)
+
+    # 检查配置是否变化
+    if current_hash != _CURRENT_CONFIG_HASH:
+        return _create_worker(current_hash)
 
     return _WORKER_INSTANCE
 
 
-def _create_worker() -> AssetSearchSkill:
+def _create_worker(config_hash: str) -> AssetSearchSkill:
     """创建新的工作实例"""
-    global _WORKER_INSTANCE
+    global _WORKER_INSTANCE, _GLOBAL_SKILL_CONFIG, _CURRENT_CONFIG_HASH
 
-    # 配置初始化
-    es_config = APISearchConfig(
-        base_url="http://192.168.11.11:9980",
-        default_router="/gzcapi/search/search_data_by_es?p=ai",
-        timeout=10.0,
-        proxy=None  # 显式设为 None，避免 httpx 版本兼容性问题
-    )
+    # 默认配置
+    default_es_config = {
+        "base_url": "http://192.168.11.11:9980",
+        "default_router": "/gzcapi/search/search_data_by_es?p=ai",
+        "timeout": 10.0,
+        "proxy": None
+    }
 
-    config = AssetSearchConfig(
-        es_config=es_config,
-        knowledge_api_url="http://192.168.11.11:9980/gzcapi/search/search_by_knowledge?p=w",
-        statistic_api_url="http://192.168.11.11:9980/gzcapi/search/resource_statistic",
-        kg_api_url="http://192.168.11.11:9980/gzcapi/stat/graph/overview?p=ai",
-        doc_api_url="http://192.168.11.11:9980/gzcapi/search/get_file_content",
-        
-        exhibit_search_url="http://192.168.11.11:9980/gzclabelapi/agent/search_exhibit",
-        resource_search_url="http://192.168.11.11:9980/gzclabelapi/agent/search_doc",
-    )
+    default_config = {
+        "knowledge_api_url": "http://192.168.11.11:9980/gzcapi/search/search_by_knowledge?p=w",
+        "statistic_api_url": "http://192.168.11.11:9980/gzcapi/search/resource_statistic",
+        "kg_api_url": "http://192.168.11.11:9980/gzcapi/stat/graph/overview?p=ai",
+        "doc_api_url": "http://192.168.11.11:9980/gzcapi/search/get_file_content",
+        "exhibit_search_url": "http://192.168.11.11:9980/gzclabelapi/agent/search_exhibit",
+        "resource_search_url": "http://192.168.11.11:9980/gzclabelapi/agent/search_doc",
+    }
 
-    _WORKER_INSTANCE = AssetSearchSkill(config)
+    # 合并配置：外部配置覆盖默认配置
+    es_config_dict = default_es_config.copy()
+    if "es_config" in _GLOBAL_SKILL_CONFIG:
+        es_config_dict.update(_GLOBAL_SKILL_CONFIG["es_config"])
+
+    config_dict = default_config.copy()
+    config_dict.update(_GLOBAL_SKILL_CONFIG)
+    config_dict["es_config"] = es_config_dict
+
+    # 创建配置对象
+    es_config = APISearchConfig(**es_config_dict)
+    config = AssetSearchConfig(**config_dict)
+
+    # 获取或创建 httpx client（按配置缓存）
+    http_client = _get_http_client()
+
+    # 创建 Skill 实例，注入 http_client 以复用连接池
+    _WORKER_INSTANCE = AssetSearchSkill(config, http_client=http_client)
+
+    # 更新当前配置哈希
+    _CURRENT_CONFIG_HASH = config_hash
+
     return _WORKER_INSTANCE
 
 # -----------------------------------------------------------------------------
@@ -81,11 +156,11 @@ def _create_worker() -> AssetSearchSkill:
 # -----------------------------------------------------------------------------
 
 async def search_assets(
-    query: str, 
-    types: Optional[List[str]] = None, 
-    resource_types: Optional[List[str]] = None, 
+    query: str,
+    types: Optional[List[str]] = None,
+    resource_types: Optional[List[str]] = None,
     # **kwargs 用于接收可能传入的 ctx 或其他由 Loader 注入的参数
-    **kwargs 
+    **kwargs
 ) -> CallToolResult:
     """
     Search for assets using the V1 ES-based API.
@@ -93,24 +168,23 @@ async def search_assets(
     Args:
         query: Search keywords.
         search_types: Scope of search, e.g., ["资产", "专题库"].
-        resource_types: Filter by file type. 
+        resource_types: Filter by file type.
             **CRITICAL**: Allowed values are ['图片', '视频', '文档', '音频', '3D', '其他'].
             Map user terms like "photos" to '图片', "movies" to '视频'.
             Leave empty to search all file types.
     """
     worker = _get_worker()
-    
+
     # 从 kwargs 中提取 Loader 可能注入的 ctx，如果没有则为 None
     ctx = kwargs.get('ctx')
-    
+
     return await worker.search_assets(
-        query, 
-        search_types=types, 
-        resource_types=resource_types, 
+        query,
+        search_types=types,
+        resource_types=resource_types,
         ctx=ctx
     )
 
-# ... (前面的导入和 _get_worker 保持不变) ...
 
 # 定义标准常量，便于维护
 ALL_INTENT_TARGETS = ['图片', '视频', '文档', '音频', '3D', '其他', '专题库', '资产', '藏品']
@@ -407,8 +481,8 @@ async def lookup_doc_content(
 
     Args:
         resource_file_ids: The unique ID of the file in the database (e.g., "12345", "file_abc").
-            
-            ⚠️ WARNING: DO NOT use Artifact IDs (starting with "art_") here! 
+
+            ⚠️ WARNING: DO NOT use Artifact IDs (starting with "art_") here!
             - "art_xxxx" is a temporary search result list stored in your memory.
             - To read "art_xxxx", use the `read_from_clipboard` tool instead.
             - Only use `lookup_doc_content` after you have extracted the real file ID from the artifact.
@@ -431,7 +505,7 @@ async def lookup_doc_content(
     # ========================================================================
     artifact_errors = []
     real_ids = []
-    
+
     for uid in ids:
         # 检查是否是 art_ 开头的内部 ID
         if str(uid).startswith("art_"):
@@ -449,7 +523,7 @@ async def lookup_doc_content(
             f"2. 如果你想查看列表中的具体文档，请先读取该 Artifact，从中提取真实的 `file_id` (通常是数字或UUID)，然后再调用此工具。"
         )
         return CallToolResult.failure(error_msg)
-    
+
     worker = _get_worker()
     ctx = kwargs.get('ctx')
     req_ctx = ctx.request if ctx else None

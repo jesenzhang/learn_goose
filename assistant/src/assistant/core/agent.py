@@ -98,8 +98,16 @@ class MicroAgent:
         # 初始化 Hook Manager 并加载配置的 Hooks
         self.hook_manager = HookManager()
         self._init_hooks(initial_config)
+        
+        self._streamers = {}
 
         logger.info("MicroAgent initialized")
+
+    def get_streamer(self, session_id: int):
+        """获取指定会话的事件流"""
+        if session_id not in self._streamers:
+            self._streamers[session_id] = self._factory.create(str(session_id))
+        return self._streamers[session_id]
 
     async def _emit_event(self, event_type, data: Any, session_id: Optional[int] = None):
         """
@@ -117,7 +125,7 @@ class MicroAgent:
             logger.warning("Cannot emit event: no session_id set")
             return
 
-        streamer = self._factory.create(str(session_id))
+        streamer = self.get_streamer(str(session_id))
         await streamer.emit(event_type, data)
 
     async def _flush_state_save(self, session_id: int):
@@ -936,7 +944,7 @@ Generate the content/response now.
             )
         
         if req_ctx.is_deep_research:
-            from deepresearch.deepresearch import Assistant,ApiModel
+            from deepresearch.deepresearch import DeepResearch,ApiModel
             if input_data :
                 if isinstance(input_data, dict):
                     user_input = input_data.get("message")
@@ -948,14 +956,14 @@ Generate the content/response now.
                         "model": "qwen3_vl"
                     }
             api_model = ApiModel(model_config)
-            assistant = Assistant(llm=api_model, write_llm=api_model)
+            assistant = DeepResearch(llm=api_model, write_llm=api_model)
 
             # 传递 BaseStreamer 给 deepresearch，使其使用 assistant 的事件系统
             # 这样 deepresearch 发送的事件会通过 bus 广播，event_generator 可以订阅并收到
-            streamer = self._factory.create(str(session_id))
+            streamer = await self.get_streamer(session_id)
             # run_async 内部已经启动了监听器，会实时输出事件
             
-            await assistant.run_async(user_input, streamer,uid=uuid.uuid4(), enable_listener=False)
+            await assistant.run_async(user_input, streamer,uid=uuid.uuid4(), enable_listener=True)
             return
             
            
@@ -1423,6 +1431,52 @@ You must strictly follow this two-phase output format, regardless of any previou
             asyncio.create_task(self.current_generation.drain_and_close())
 
         logger.info("Agent shut down gracefully.")
+
+    async def cancel_task(self, session_id: int) -> bool:
+        """
+        取消指定会话的任务。
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            是否成功取消
+        """
+        try:
+            # 1. 加载会话状态
+            state_data = await self.db.load_state(session_id)
+            if not state_data:
+                logger.warning(f"Session {session_id} not found for cancellation")
+                return False
+
+            state = AgentState(**state_data)
+
+            # 2. 检查会话是否正在运行
+            if state.status != AgentStatus.RUNNING:
+                logger.info(f"Session {session_id} is not running (status: {state.status}), cannot cancel")
+                return False
+
+            # 3. 设置取消状态
+            state.status = AgentStatus.CANCELLED
+
+            # 4. 清空意图队列
+            state.intent_queue = []
+
+            # 5. 保存状态
+            await self.db.save_state(session_id, state.model_dump(exclude_none=True))
+
+            # 6. 发送取消事件
+            await self._emit_event(EventType.CANCELLED, {
+                "msg": "Task cancelled by user",
+                "session_id": session_id
+            }, session_id=session_id)
+
+            logger.info(f"Task cancelled for session {session_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to cancel task for session {session_id}: {e}", exc_info=True)
+            return False
 
     async def shutdown_async(self):
         """异步关闭方法"""

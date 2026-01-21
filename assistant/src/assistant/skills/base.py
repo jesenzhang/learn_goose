@@ -264,3 +264,55 @@ Follow these instructions:
 2. If the request is outside this skill's scope, call exit_skill
 3. Be concise and helpful
 """
+
+
+
+class DocumentSkill(SkillBase):
+    """
+    Document-based skill (OpenCode/DeepAgents style).
+
+    A skill that provides context through Markdown documentation
+    without executable code. The SKILL.md file serves as knowledge
+    and guidance for LLM.
+
+    This is useful for:
+    - Domain-specific knowledge
+    - Workflow instructions
+    - Best practices guides
+    - Reference documentation
+    """
+
+    def __init__(self, name: str, description: str, md_path: str, label: Optional[str] = None):
+        object.__init__(self)  # Skip parent init validation
+        self.name = name
+        self.description = description
+        self._md_path = Path(md_path)
+        self.label = label
+        self._content = ""
+        self._tools: Dict[str, ToolMetadata] = {}
+        self._load_document()
+
+    def _load_document(self) -> None:
+        if not self._md_path.exists():
+            raise FileNotFoundError(f"SKILL.md not found at {self._md_path}")
+        try:
+            import frontmatter
+            post = frontmatter.load(self._md_path)
+            self._content = post.content if isinstance(post.content, str) else str(post.content)
+        except Exception:
+            with open(self._md_path, 'r', encoding='utf-8') as f:
+                self._content = f.read()
+
+    def get_system_prompt(self) -> str:
+        return self._content
+
+    def reload_document(self) -> None:
+        self._load_document()
+
+    @property
+    def content(self) -> str:
+        return self._content
+
+    @property
+    def md_path(self) -> Path:
+        return self._md_path

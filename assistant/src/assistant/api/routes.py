@@ -428,6 +428,28 @@ def create_router() -> APIRouter:
             logger.error(f"Failed to delete session {session_id}: {e}", exc_info=e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.post("/agent/cancel")
+    async def cancel_task(session_id: int = Query(description="Session identifier"),):
+        """
+        Cancel a running task for a session.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Cancellation confirmation
+        """
+        try:
+            agent = get_agent()
+            success = await agent.cancel_task(session_id)
+            if not success:
+                raise HTTPException(status_code=400, detail=f"Task for session {session_id} could not be cancelled (not running or not found)")
+            return {"status": "success", "msg": "Task cancelled"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to cancel task for session {session_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/chat")
     async def chat(

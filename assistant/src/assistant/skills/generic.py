@@ -11,7 +11,7 @@ class GenericSkill(ContextualSkill):
     Generic skill created from a set of functions.
     """
 
-    def __init__(self, name: str, description: str, functions: Dict[str, Callable], label: str = None):
+    def __init__(self, name: str, description: str, functions: Dict[str, Callable], label: str = None, config: Dict[str, Any] = None):
         # Temporarily store functions to register after parent init
         self._pending_functions = functions
 
@@ -19,6 +19,7 @@ class GenericSkill(ContextualSkill):
         self.name = name
         self.description = description
         self.label = label  # 技能中文显示名称
+        self.config = config  # 技能配置
 
         # Initialize Base (creates self._tools)
         super().__init__()
@@ -42,7 +43,7 @@ Available tools: {', '.join(self._tools.keys())}
             name=name,
             description=doc,
             parameters=params,
-            handler=self.make_handler(func) # Use static method
+            handler=self._make_handler(func) # 使用实例方法以访问 self.config
         )
         self._tools[name] = metadata
 
@@ -58,7 +59,7 @@ Available tools: {', '.join(self._tools.keys())}
         required = []
 
         for param_name, param in sig.parameters.items():
-            if param_name in ('_state', '_ctx', 'ctx', '_ai', '_db', 'kwargs', 'args'):
+            if param_name in ('_state', '_ctx', 'ctx', '_ai', '_db', 'kwargs', 'args', 'skill_config'):
                 continue
 
             # Default to string if no annotation
@@ -77,19 +78,20 @@ Available tools: {', '.join(self._tools.keys())}
     @staticmethod
     def _type_to_string(t: Any) -> str:
         type_map = {
-            str: "string", int: "integer", float: "number", 
+            str: "string", int: "integer", float: "number",
             bool: "boolean", list: "array", dict: "object"
         }
         return type_map.get(t, "string")
 
     # =========================================================================
     # [FIXED] 智能参数过滤 Wrapper
+    # [新增] 自动注入 skill_config 参数
     # =========================================================================
-    @staticmethod
-    def make_handler(func: Callable) -> Callable:
+    def _make_handler(self, func: Callable) -> Callable:
         """
-        Static utility to create async wrapper.
+        Instance method to create async wrapper.
         Includes argument filtering to prevent TypeError when extra args (like ctx) are injected.
+        Automatically injects skill_config if the function accepts it.
         """
         # 1. 预先检查底层函数的签名
         sig = inspect.signature(func)
@@ -97,9 +99,15 @@ Available tools: {', '.join(self._tools.keys())}
         has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
         # 获取所有有效参数名
         valid_params = set(sig.parameters.keys())
+        # 检查函数是否接受 skill_config 参数
+        accepts_skill_config = 'skill_config' in valid_params
 
         async def wrapper(**kwargs):
-            # 2. 过滤参数
+            # 2. 注入 skill_config（如果函数接受且技能有配置）
+            if accepts_skill_config and self.config is not None:
+                kwargs['skill_config'] = self.config
+
+            # 3. 过滤参数
             if has_var_keyword:
                 # 如果底层函数接受 **kwargs，则透传所有参数（包括 ctx）
                 filtered_kwargs = kwargs
@@ -107,10 +115,10 @@ Available tools: {', '.join(self._tools.keys())}
                 # 否则，只传递底层函数显式声明的参数
                 filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
 
-            # 3. 执行
+            # 4. 执行
             if inspect.iscoroutinefunction(func):
                 return await func(**filtered_kwargs)
             else:
                 return func(**filtered_kwargs)
-        
+
         return wrapper

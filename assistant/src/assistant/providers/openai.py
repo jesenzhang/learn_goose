@@ -115,7 +115,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
 
         self._sem = asyncio.Semaphore(50) # 并发控制
 
-    async def close(self):
+    async def aclose(self):
         await self.http_client.aclose()
 
     def get_name(self) -> str:

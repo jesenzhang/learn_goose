@@ -9,6 +9,7 @@ class EventType(str, Enum):
     RUN_START = "run_start"         # [新增] 整个任务开始（前端用于重置 UI、显示 Loading）
     DONE = "done"                   # 任务完全结束（流结束信号）
     ERROR = "error"                 # 全局致命错误
+    CANCELLED = "cancelled"         # 任务被取消
 
     # === 2. LLM 内容生成 (Content Generation) ===
     TOKEN_START = "token_start"     # LLM 开始生成（首字延迟统计）

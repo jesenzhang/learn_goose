@@ -21,6 +21,7 @@ class AgentStatus(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
+    CANCELLED = "cancelled"  # 任务已取消
 
 
 class AgentState(BaseModel):

@@ -9,9 +9,9 @@ import inspect
 import logging
 import frontmatter  # pip install python-frontmatter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Callable, Type
+from typing import Any, Dict, List, Optional, Set, Callable, Type, Tuple
 
-from .base import SkillBase, SkillType, ToolMetadata
+from .base import SkillBase, SkillType, ToolMetadata, DocumentSkill
 from .generic import GenericSkill
 from .config import SkillConfig, SkillsConfig, ToolConfig
 
@@ -24,19 +24,27 @@ class SkillLoader:
 
     def __init__(
         self,
-        skills_dir: str = "agent_skills",
-        skills_config: Optional[SkillsConfig] = None, 
+        skills_dir: Optional[str] = None,
+        skills_dirs: Optional[List[str]] = None,
+        skills_config: Optional[SkillsConfig] = None,
         global_sensitive_tools: Optional[Set[str]] = None,
     ):
-        self.skills_dir = Path(skills_dir)
+        # Support both single and multiple skill directories
+        if skills_dirs:
+            self.skills_dirs = [Path(d) for d in skills_dirs]
+        elif skills_dir:
+            self.skills_dirs = [Path(skills_dir)]
+        else:
+            self.skills_dirs = [Path("agent_skills")]
+
         # 如果没传配置，就用空的默认值
         self.skills_config = skills_config or SkillsConfig({})
         self.global_sensitive_tools = global_sensitive_tools or set()
 
         # Registry
-        self._skills: Dict[str, SkillBase] = {}           # skill_id -> SkillInstance
-        self._global_tools: Dict[str, ToolMetadata] = {}  # tool_name -> Metadata (Global only)
-        self._skill_tools: Dict[str, Dict[str, ToolMetadata]] = {} # skill_id -> {tool_name: Metadata}
+        self._skills: Dict[str, SkillBase] = {}                      # skill_id -> SkillInstance
+        self._global_tools: Dict[str, ToolMetadata] = {}               # tool_name -> Metadata (Global only)
+        self._skill_tools: Dict[str, Dict[str, ToolMetadata]] = {}   # skill_id -> {tool_name: Metadata}
 
         # Built-in tools registry
         self._builtin_tools: Dict[str, Callable] = {}
@@ -47,80 +55,113 @@ class SkillLoader:
         # Register builtin skill tools (activate_skill, exit_skill)
         self._register_builtin_skill_tools()
 
-        self.load_from_directory()
+        self.load_from_directories()
 
     # =========================================================================
     # Loading Logic
     # =========================================================================
 
-    def load_from_directory(self) -> None:
-        """Scan and load all skills from the configured directory."""
-        if not self.skills_dir.exists():
-            logger.warning(f"Skills directory not found: {self.skills_dir}")
-            return
+    def load_from_directories(self) -> None:
+        """
+        Scan and load all skills from configured directories.
 
-        logger.info(f"📂 Scanning skills in '{self.skills_dir}'...")
+        Supports multiple directories with priority:
+        - Later directories override earlier ones (last one wins)
+        - Similar to DeepAgents' layered source management
+        """
+        # Collect all skills from all directories
+        all_skills: Dict[str, Tuple[SkillBase, Path]] = {}
 
-        for skill_path in self.skills_dir.iterdir():
-            if not skill_path.is_dir() or skill_path.name.startswith(('.', '_')):
+        for skills_dir in self.skills_dirs:
+            if not skills_dir.exists():
+                logger.warning(f"Skills directory not found: {skills_dir}")
                 continue
-            skill_id = skill_path.name
-            try:
-                self._load_single_skill(skill_id, skill_path)
-            except Exception as e:
-                logger.error(f"❌ Error loading skill '{skill_id}': {e}", exc_info=True)
 
-        logger.info(f"✅ Loaded {len(self._skills)} skills.")
+            logger.info(f"📂 Scanning skills in '{skills_dir}'...")
+
+            for skill_path in skills_dir.iterdir():
+                if not skill_path.is_dir() or skill_path.name.startswith(('.', '_')):
+                    continue
+                skill_id = skill_path.name
+                try:
+                    skill = self._load_single_skill(skill_id, skill_path)
+                    if skill:
+                        all_skills[skill_id] = (skill, skill_path)
+                        logger.info(f"📦 Loaded '{skill_id}' from {skills_dir}")
+                except Exception as e:
+                    logger.error(f"❌ Error loading skill '{skill_id}': {e}", exc_info=True)
+
+        # Register all collected skills (later sources override earlier ones)
+        for skill_id, (skill, skill_path) in all_skills.items():
+            self._register_skill_instance(skill)
+
+        logger.info(f"✅ Total loaded {len(self._skills)} skills.")
         for skill_id, skill in self._skills.items():
-            logger.info(f"✅ Loaded skill '{skill_id}': {skill.name}")
+            logger.info(f"✅ Skill '{skill_id}': {skill.name}")
 
-    def _load_single_skill(self, skill_id: str, path: Path) -> None:
-        """Load a specific skill folder."""
+    def load_from_directory(self) -> None:
+        """Backward compatibility: load from single directory."""
+        if self.skills_dirs:
+            self.load_from_directories()
+
+    def _load_single_skill(self, skill_id: str, path: Path) -> Optional[SkillBase]:
+        """
+        Load a specific skill folder.
+
+        Returns:
+            Skill instance or None if skill should be skipped.
+        """
         # 1. Check skills_config for enabled/disabled status
-        specific_config:SkillConfig = self.skills_config.get(skill_id)
+        specific_config: SkillConfig = self.skills_config.get(skill_id)
         # 策略：显式启用 (enabled=true) 才加载
         if not specific_config or (specific_config and specific_config.enabled is False):
             logger.info(f"⏭️  Skipping disabled skill '{skill_id}'")
-            return
+            return None
 
         # 2. Parse Metadata (SKILL.md) - 这是 Layer 1 (本质属性)
         meta = self._load_metadata(path)
-        
+        skill_md_path = path / "SKILL.md"
+
         # 3. 决定最终属性 (Layer 2 覆盖 Layer 1)
         # 名称优先用文件夹名或配置名，最后用 markdown 里的
         skill_name = meta.get("name", skill_id)
-        
+
         # 描述：配置里的描述 > SKILL.md 的描述
-        description =  meta.get("description", f"Skill {skill_name}")
+        description = meta.get("description", f"Skill {skill_name}")
         if specific_config and specific_config.description:
             description = specific_config.description
 
         # Determine Type: 'global' or 'contextual' (default)
-        # 3. 决定 Skill Type (关键修改)
         # 优先级：Config (Layer 2) > Metadata (Layer 1) > Default
-        # A. 尝试从配置中获取
         config_mode = specific_config.mode.lower() if specific_config and specific_config.mode else None
-        # B. 尝试从 SKILL.md 获取
         meta_mode = meta.get("type", "contextual").lower()
-        # C. 决策
         final_mode_str = config_mode or meta_mode
-        # 转换为枚举
         skill_type = SkillType.GLOBAL if final_mode_str == "global" else SkillType.CONTEXTUAL
 
-        # 3. Scan for Functions (scripts/*.py AND impl.py)
+        # 4. Scan for Functions (scripts/*.py AND impl.py)
         functions = self._scan_functions(skill_id, path)
 
-        # 4. Try Loading Class (impl.py)
+        # 5. Try Loading Class (impl.py)
         skill_instance = self._try_load_skill_class(skill_id, path)
 
         if skill_instance:
             # === Class-based Skill ===
-            # Override instance properties with SKILL.md metadata
+            if specific_config and specific_config.config:
+                if hasattr(skill_instance.__class__, 'apply_config'):
+                    try:
+                        skill_module_name = f"{skill_id}.impl"
+                        if skill_module_name in sys.modules:
+                            impl_module = sys.modules[skill_module_name]
+                            if hasattr(impl_module, 'set_skill_config'):
+                                impl_module.set_skill_config(specific_config.config)
+                                logger.info(f"🔧 Applied config to skill '{skill_id}' via set_skill_config")
+                    except Exception as e:
+                        logger.warning(f"Failed to apply config to skill '{skill_id}': {e}")
+
             skill_instance.name = skill_name
             skill_instance.description = description
             skill_instance.skill_type = skill_type
 
-            # [新增] 技能中文显示名称：配置覆盖 > 代码定义 > SKILL.md
             skill_label = None
             if specific_config and specific_config.label:
                 skill_label = specific_config.label
@@ -129,15 +170,27 @@ class SkillLoader:
             if skill_label:
                 skill_instance.label = skill_label
 
-            # Attach loose functions found in scripts/ to the class instance
             self._attach_functions_to_instance(skill_instance, functions)
+        elif not functions and skill_md_path.exists():
+            # === Document-based Skill (OpenCode/DeepAgents style) ===
+            # No class, no functions, but has SKILL.md
+            logger.info(f"📄 Loading document-based skill '{skill_id}'")
+
+            skill_label = specific_config.label if specific_config else None
+
+            skill_instance = DocumentSkill(
+                name=skill_name,
+                description=description,
+                md_path=str(skill_md_path),
+                label=skill_label,
+            )
+            skill_instance.skill_type = skill_type
         else:
             # === Function-based Skill ===
             if not functions:
-                logger.debug(f"Skipping '{skill_id}': No class and no scripts found.")
-                return
+                logger.debug(f"Skipping '{skill_id}': No class, no scripts, no SKILL.md.")
+                return None
 
-            # 从配置中获取 label
             skill_label = None
             if specific_config and specific_config.label:
                 skill_label = specific_config.label
@@ -146,42 +199,36 @@ class SkillLoader:
                 name=skill_name,
                 description=description,
                 functions=functions,
-                label=skill_label
+                label=skill_label,
+                config=specific_config.config if specific_config else None,
             )
             skill_instance.skill_type = skill_type
 
-        # 5. Filter Allowed Tools (Security)
+        # 6. Filter Allowed Tools (Security)
         allowed = meta.get("allowed_tools") or meta.get("allowed-tools")
         if allowed:
             self._filter_allowed_tools(skill_instance, allowed)
 
-        # 6. 工具配置覆盖（新增）
-        # 从技能配置中获取工具级别的覆盖配置
+        # 7. 工具配置覆盖
         if specific_config and specific_config.tools_config:
             self._apply_tools_config(skill_instance, specific_config.tools_config)
 
-        # 7. 敏感工具合并策略 (关键修改)
-        # 获取 Layer 2: 全局配置定义的 sensitive
+        # 8. 敏感工具合并策略
         config_sensitive = set(specific_config.sensitive_tools) if specific_config else set()
-
-        # 获取 Layer 3: 全局安全策略
         global_sensitive = self.global_sensitive_tools
 
-        # 应用到 Skill 实例
-        # 我们需要遍历 skill 里的所有 tool，更新它们的 metadata
         for tool_name, tool_meta in skill_instance._tools.items():
             is_sensitive = (
-                tool_meta.is_sensitive or   # Layer 1 (Code/Decorator)
-                tool_name in config_sensitive or # Layer 2 (App Config)
-                tool_name in global_sensitive    # Layer 3 (Global Security)
+                tool_meta.is_sensitive or
+                tool_name in config_sensitive or
+                tool_name in global_sensitive
             )
             tool_meta.is_sensitive = is_sensitive
 
             if is_sensitive:
                 logger.info(f"🔒 Tool '{tool_name}' marked as sensitive.")
 
-        # 8. Register
-        self._register_skill_instance(skill_instance)
+        return skill_instance
 
     def _load_metadata(self, path: Path) -> Dict[str, Any]:
         """Read SKILL.md frontmatter."""
@@ -261,18 +308,27 @@ class SkillLoader:
         
         return None
 
-    
+
     def _scan_functions(self, skill_id: str, path: Path) -> Dict[str, Callable]:
-        """Scan impl.py using package loading."""
+        """Scan impl.py and scripts/ for functions."""
         collected_funcs = {}
-        
-        # 1. Scan scripts/ (Keep legacy file-based loading for scripts if needed)
+
+        # 1. Scan scripts/ directory for standalone function files
         scripts_dir = path / "scripts"
         if scripts_dir.exists():
-            # ... (保持原有的 scripts 扫描逻辑不变，或者也尝试改为包加载) ...
-            pass 
+            # Temporarily add to sys.path to resolve internal imports
+            str_path = str(scripts_dir)
+            sys.path.insert(0, str_path)
+            try:
+                for file in scripts_dir.glob("*.py"):
+                    if not file.name.startswith("_"):
+                        funcs = self._import_funcs_from_file(file.stem, file)
+                        collected_funcs.update(funcs)
+            finally:
+                if str_path in sys.path:
+                    sys.path.remove(str_path)
 
-        # 2. Scan impl.py (FIXED)
+        # 2. Scan impl.py for functions
         impl_path = path / "impl.py"
         if impl_path.exists():
             self._prepare_sys_path(path)
@@ -282,7 +338,7 @@ class SkillLoader:
                     module = importlib.reload(sys.modules[module_name])
                 else:
                     module = importlib.import_module(module_name)
-                
+
                 # Filter functions defined in this module only
                 for n, f in inspect.getmembers(module, inspect.isfunction):
                     if not n.startswith("_") and f.__module__ == module.__name__:
@@ -551,6 +607,112 @@ class SkillLoader:
 
     def get_available_skills_list(self) -> List[str]:
         return list(self._skills.keys())
+
+    def get_skills_summary(self, active_skill: Optional[str] = None) -> str:
+        """
+        Get skills summary for progressive disclosure.
+
+        Returns a brief summary with skill names and descriptions only.
+        The full content can be loaded on-demand by the agent.
+
+        Args:
+            active_skill: Currently active skill (will get full content)
+
+        Returns:
+            Summary string.
+        """
+        parts = []
+
+        # Skills section header
+        parts.append("## Skills System")
+        parts.append("")
+        parts.append("You have access to a skills library that provides specialized capabilities and domain knowledge.")
+        parts.append("")
+
+        # Available skills summary
+        parts.append("### Available Skills")
+        parts.append("")
+
+        for skill_id, skill in self._skills.items():
+            emoji = "🌐" if skill.skill_type == SkillType.GLOBAL else "🎯"
+            is_active = skill_id == active_skill
+            status = " (ACTIVE)" if is_active else ""
+
+            # Include label if available
+            display_name = skill.label if skill.label else skill.name
+
+            parts.append(f"- **{display_name}**{status}: {skill.description}")
+
+            # Add type indicator
+            if skill.skill_type == SkillType.GLOBAL:
+                parts.append(f"  - Type: Global (always available)")
+            else:
+                parts.append(f"  - Type: Contextual (use `activate_skill` to activate)")
+
+            parts.append("")
+
+        # Progressive disclosure instructions
+        if active_skill:
+            # Active mode - show full content
+            skill = self._skills[active_skill]
+            parts.append("---")
+            parts.append(f"### Current Skill: {skill.label or skill.name}")
+            parts.append("")
+            parts.append(skill.get_system_prompt())
+            parts.append("")
+            parts.append("(Use `exit_skill` to return to routing mode)")
+        else:
+            # Routing mode - show progressive disclosure instructions
+            parts.append("---")
+            parts.append("### How to Use Skills (Progressive Disclosure)")
+            parts.append("")
+            parts.append("Skills follow a **progressive disclosure** pattern - you see their name and description above.")
+            parts.append("")
+            parts.append("To use a skill:")
+            parts.append("1. **Recognize when a skill applies**: Check if the user's task matches a skill's description")
+            parts.append("2. **Activate the skill**: Use the `activate_skill` tool to switch to that skill's context")
+            parts.append("3. **Follow the skill's instructions**: The skill provides detailed workflows and guidance")
+            parts.append("4. **Exit when done**: Use `exit_skill` to return to routing mode")
+
+        return "\n".join(parts)
+
+    def get_skill_content(self, skill_name: str) -> Optional[str]:
+        """
+        Get full content of a skill by name.
+
+        This is used for progressive disclosure - the agent can request
+        the full content of a skill when needed.
+
+        Args:
+            skill_name: Name of the skill
+
+        Returns:
+            Full system prompt content, or None if skill not found.
+        """
+        skill = self._skills.get(skill_name)
+        if skill:
+            return skill.get_system_prompt()
+        return None
+
+    def reload_skill_content(self, skill_name: str) -> bool:
+        """
+        Reload the content of a document-based skill.
+
+        Args:
+            skill_name: Name of the skill to reload
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        skill = self._skills.get(skill_name)
+        if skill and hasattr(skill, 'reload_document'):
+            try:
+                skill.reload_document()
+                logger.info(f"Reloaded content for skill: {skill_name}")
+                return True
+            except Exception as e:
+                logger.error(f"Error reloading skill content for '{skill_name}': {e}")
+        return False
 
     def register_builtin_tool(self, name: str, func: Callable):
         self._builtin_tools[name] = func

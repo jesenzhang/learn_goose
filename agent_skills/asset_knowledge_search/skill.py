@@ -38,14 +38,45 @@ class AssetSearchSkill:
     name = "asset_knowledge_search"
     description = "用于在内部系统中搜索资产、文件和专题库知识"
 
-    def __init__(self, config: AssetSearchConfig):
+    def __init__(self, config: AssetSearchConfig, http_client: httpx.AsyncClient = None):
         """
         :param config: 配置对象
+        :param http_client: 可选的外部注入的 httpx client（用于复用连接池）
         """
         self.config = config
         self.es_search = APISearch(config=config.es_config)
-        # HTTP Client 建议作为资源在 close 中关闭，或通过依赖注入
-        self.http_client = httpx.AsyncClient(timeout=10.0)
+        # 使用注入的 http_client，或者创建新的（用于兼容）
+        self.http_client = http_client or httpx.AsyncClient(timeout=10.0)
+
+    @classmethod
+    def apply_config(cls, skill_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        应用外部配置覆盖默认配置。
+
+        Args:
+            skill_config: 来自 assistant_config.yaml 中 skills_config 下的 config 字段
+
+        Returns:
+            处理后的配置字典，用于创建 AssetSearchConfig 和 APISearchConfig
+
+        配置结构示例:
+            es_config:
+              base_url: "http://192.168.11.11:9980"
+              default_router: "/gzcapi/search/search_data_by_es?p=ai"
+              timeout: 10.0
+              proxy: None
+            knowledge_api_url: "http://192.168.11.11:9980/gzcapi/search/search_by_knowledge?p=w"
+            statistic_api_url: "http://192.168.11.11:9980/gzcapi/search/resource_statistic"
+            kg_api_url: "http://192.168.11.11:9980/gzcapi/stat/graph/overview?p=ai"
+            doc_api_url: "http://192.168.11.11:9980/gzcapi/search/get_file_content"
+            exhibit_search_url: "http://192.168.11.11:9980/gzclabelapi/agent/search_exhibit"
+            resource_search_url: "http://192.168.11.11:9980/gzclabelapi/agent/search_doc"
+        """
+        if not skill_config:
+            return {}
+
+        # 直接返回配置，由 impl.py 中的 _create_worker 使用
+        return skill_config
 
     async def close(self):
         await self.es_search.close()

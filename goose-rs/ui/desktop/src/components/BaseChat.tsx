@@ -59,6 +59,7 @@ interface BaseChatProps {
 }
 
 function BaseChatContent({
+  setChat,
   renderHeader,
   customChatInputProps = {},
   customMainLayoutProps = {},
@@ -300,6 +301,22 @@ function BaseChatContent({
     sessionId,
     name: session?.name || 'No Session',
   };
+
+  const lastSetNameRef = useRef<string>('');
+
+  useEffect(() => {
+    const currentSessionName = session?.name;
+    if (currentSessionName && currentSessionName !== lastSetNameRef.current) {
+      lastSetNameRef.current = currentSessionName;
+      setChat({
+        messages,
+        recipe,
+        sessionId,
+        name: currentSessionName,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.name, setChat]);
 
   // Only use initialMessage for the prompt if it hasn't been submitted yet
   // If we have a recipe prompt and user recipe values, substitute parameters

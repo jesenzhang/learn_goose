@@ -1014,6 +1014,140 @@
         }
       }
     },
+    "/config/prompts": {
+      "get": {
+        "tags": [
+          "super::routes::prompts"
+        ],
+        "operationId": "get_prompts",
+        "responses": {
+          "200": {
+            "description": "List of all available prompts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptsListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/prompts/{name}": {
+      "get": {
+        "tags": [
+          "super::routes::prompts"
+        ],
+        "operationId": "get_prompt",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Prompt template name (e.g., system.md)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prompt content retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptContentResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Prompt not found"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "super::routes::prompts"
+        ],
+        "operationId": "save_prompt",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Prompt template name (e.g., system.md)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavePromptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Prompt saved successfully",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Prompt not found"
+          },
+          "500": {
+            "description": "Failed to save prompt"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "super::routes::prompts"
+        ],
+        "operationId": "reset_prompt",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Prompt template name (e.g., system.md)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prompt reset to default successfully",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Prompt not found"
+          },
+          "500": {
+            "description": "Failed to reset prompt"
+          }
+        }
+      }
+    },
     "/config/providers": {
       "get": {
         "tags": [
@@ -4524,6 +4658,12 @@
           "model_name": {
             "type": "string"
           },
+          "request_params": {
+            "type": "object",
+            "description": "Provider-specific request parameters (e.g., anthropic_beta headers)",
+            "additionalProperties": {},
+            "nullable": true
+          },
           "temperature": {
             "type": "number",
             "format": "float",
@@ -4685,6 +4825,43 @@
           "Tool"
         ]
       },
+      "PromptContentResponse": {
+        "type": "object",
+        "required": [
+          "name",
+          "content",
+          "default_content",
+          "is_customized"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "default_content": {
+            "type": "string"
+          },
+          "is_customized": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "PromptsListResponse": {
+        "type": "object",
+        "required": [
+          "prompts"
+        ],
+        "properties": {
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Template"
+            }
+          }
+        }
+      },
       "ProviderDetails": {
         "type": "object",
         "required": [
@@ -4729,6 +4906,10 @@
           "config_keys"
         ],
         "properties": {
+          "allows_unlisted_models": {
+            "type": "boolean",
+            "description": "Whether this provider allows entering model names not in the fetched list"
+          },
           "config_keys": {
             "type": "array",
             "items": {
@@ -5338,6 +5519,17 @@
         ],
         "properties": {
           "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SavePromptRequest": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
             "type": "string"
           }
         }
@@ -5960,6 +6152,34 @@
           }
         }
       },
+      "Template": {
+        "type": "object",
+        "description": "Information about a template including its content and customization status",
+        "required": [
+          "name",
+          "description",
+          "default_content",
+          "is_customized"
+        ],
+        "properties": {
+          "default_content": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "is_customized": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "user_content": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "TextContent": {
         "type": "object",
         "required": [
@@ -6327,12 +6547,22 @@
           "session_id"
         ],
         "properties": {
+          "context_limit": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0
+          },
           "model": {
             "type": "string",
             "nullable": true
           },
           "provider": {
             "type": "string"
+          },
+          "request_params": {
+            "type": "object",
+            "additionalProperties": {},
+            "nullable": true
           },
           "session_id": {
             "type": "string"

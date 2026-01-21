@@ -103,7 +103,7 @@ security:
 # ================= 数据库配置 =================
 database:
   # 数据库模式配置
-  use_remote: true                  # 是否使用远程数据库
+  use_remote: true                  # 是否使用远程数据库gzclabeldebugapi/agent/
   remote_db_url: "http://192.168.11.11:9980/gzclabelaapi"                  # 远程数据库 URL
   remote_db_api_key: null              # 远程数据库 API 密钥 (作为 token 使用)
   remote_db_timeout: 30                 # 远程数据库请求超时（秒）
@@ -163,6 +163,22 @@ skills_config:
     enabled: true
     label: "资源检索"
     sensitive_tools: []
+    config:
+      # 配置初始化
+      es_config:
+        base_url: "http://192.168.11.11:9980"
+        default_router: "/gzcapi/search/search_data_by_es?p=ai"
+        timeout: 10.0
+        proxy: None
+
+      knowledge_api_url: "http://192.168.11.11:9980/gzcapi/search/search_by_knowledge?p=w"
+      statistic_api_url: "http://192.168.11.11:9980/gzcapi/search/resource_statistic"
+      kg_api_url: "http://192.168.11.11:9980/gzcapi/stat/graph/overview?p=ai"
+      doc_api_url: "http://192.168.11.11:9980/gzcapi/search/get_file_content"
+
+      exhibit_search_url: "http://192.168.11.11:9980/gzclabeldebugaapi/agent/search_exhibit"
+      resource_search_url: "http://192.168.11.11:9980/gzclabeldebugaapi/agent/search_doc"
+      
     # 工具级别配置示例
     tools_config:
       search_exhibits_v2:
