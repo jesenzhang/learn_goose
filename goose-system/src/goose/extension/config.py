@@ -5,7 +5,7 @@ Extension 配置和工厂系统
 """
 
 from enum import Enum
-from typing import Dict, Any, Optional, List, Literal
+from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 import uuid
 
@@ -16,7 +16,6 @@ class ExtensionType(str, Enum):
     STREAMABLE_HTTP = "streamable_http"
     BUILTIN = "builtin"
     PLATFORM = "platform"
-    FRONTEND = "frontend"
     INLINE_PYTHON = "inline_python"
 
 
@@ -27,10 +26,10 @@ class ExtensionConfig(BaseModel):
     type: ExtensionType
     enabled: bool = True
     timeout: float = 30.0
-    
+
     class Config:
         populate_by_name = True
-    
+
     def model_dump(self, **kwargs) -> Dict[str, Any]:
         data = super().model_dump(**kwargs)
         data["type"] = self.type.value if isinstance(self.type, ExtensionType) else self.type
@@ -71,14 +70,6 @@ class PlatformExtensionConfig(ExtensionConfig):
     config: Dict[str, Any] = Field(default_factory=dict)
 
 
-class FrontendExtensionConfig(ExtensionConfig):
-    """前端工具扩展配置"""
-    type: ExtensionType = ExtensionType.FRONTEND
-    tools: List[Dict[str, Any]] = Field(default_factory=list)
-    instructions: str = ""
-    api_version: str = "2024-01-01"
-
-
 class InlinePythonExtensionConfig(ExtensionConfig):
     """内联 Python 扩展配置"""
     type: ExtensionType = ExtensionType.INLINE_PYTHON
@@ -90,7 +81,7 @@ class InlinePythonExtensionConfig(ExtensionConfig):
 def parse_extension_config(data: Dict[str, Any]) -> ExtensionConfig:
     """解析 Extension 配置 (支持多种格式)"""
     ext_type = data.get("type", data.get("Type"))
-    
+
     if ext_type in ["stdio", "Stdio"]:
         return StdioExtensionConfig(
             id=data.get("id", str(uuid.uuid4())),
@@ -104,7 +95,7 @@ def parse_extension_config(data: Dict[str, Any]) -> ExtensionConfig:
             shell=data.get("shell", False),
             timeout=data.get("timeout", 30.0)
         )
-    
+
     elif ext_type in ["streamable_http", "StreamableHttp"]:
         return StreamableHttpExtensionConfig(
             id=data.get("id", str(uuid.uuid4())),
@@ -116,7 +107,7 @@ def parse_extension_config(data: Dict[str, Any]) -> ExtensionConfig:
             timeout=data.get("timeout", data.get("requestTimeout", 30.0)),
             sse_uri=data.get("sseUri")
         )
-    
+
     elif ext_type in ["builtin", "Builtin"]:
         return BuiltinExtensionConfig(
             id=data.get("id", str(uuid.uuid4())),
@@ -127,7 +118,7 @@ def parse_extension_config(data: Dict[str, Any]) -> ExtensionConfig:
             class_name=data.get("className", data.get("class_name", "")),
             config=data.get("config", {})
         )
-    
+
     elif ext_type in ["platform", "Platform"]:
         return PlatformExtensionConfig(
             id=data.get("id", str(uuid.uuid4())),
@@ -137,18 +128,7 @@ def parse_extension_config(data: Dict[str, Any]) -> ExtensionConfig:
             platform_name=data.get("platform", data.get("platformName", "")),
             config=data.get("config", {})
         )
-    
-    elif ext_type in ["frontend", "Frontend"]:
-        return FrontendExtensionConfig(
-            id=data.get("id", str(uuid.uuid4())),
-            name=data.get("name", ""),
-            type=ExtensionType.FRONTEND,
-            enabled=data.get("enabled", True),
-            tools=data.get("tools", []),
-            instructions=data.get("instructions", ""),
-            api_version=data.get("apiVersion", "2024-01-01")
-        )
-    
+
     elif ext_type in ["inline_python", "InlinePython"]:
         return InlinePythonExtensionConfig(
             id=data.get("id", str(uuid.uuid4())),
@@ -159,7 +139,7 @@ def parse_extension_config(data: Dict[str, Any]) -> ExtensionConfig:
             dependencies=data.get("dependencies", []),
             env=data.get("env", {})
         )
-    
+
     raise ValueError(f"Unknown extension type: {ext_type}")
 
 

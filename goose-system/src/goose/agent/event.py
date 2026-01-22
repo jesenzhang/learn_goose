@@ -20,6 +20,7 @@ class AgentEventType(Enum):
     TOOL_START = auto()
     TOOL_END = auto()
     TOOL_ERROR = auto()
+    TOOL_DENIED = auto()
     APPROVAL_REQUIRED = auto()
     APPROVAL_RECEIVED = auto()
     COMPACTION_STARTED = auto()

@@ -480,6 +480,7 @@ class MessageMetadata(BaseModel):
     """消息元数据"""
     user_visible: bool = Field(default=True, alias="userVisible")
     agent_visible: bool = Field(default=True, alias="agentVisible")
+    attachments: List[Dict[str, Any]] = Field(default_factory=list)
     
     model_config = ConfigDict(populate_by_name=True)
     
@@ -498,7 +499,8 @@ class MessageMetadata(BaseModel):
     def to_dict(self) -> Dict[str, Any]:
         return {
             "userVisible": self.user_visible,
-            "agentVisible": self.agent_visible
+            "agentVisible": self.agent_visible,
+            "attachments": self.attachments
         }
 
 
@@ -529,11 +531,17 @@ class Message(BaseModel):
         )
     
     @classmethod
-    def user(cls, text: str) -> "Message":
+    def user(
+        cls,
+        text: str,
+        attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> "Message":
+        content = [TextContent(text=text)]
+        metadata = MessageMetadata(attachments=attachments or [])
         return cls(
             role=Role.USER,
-            content=[TextContent(text=text)],
-            metadata=MessageMetadata()
+            content=content,
+            metadata=metadata
         )
     
     @classmethod
@@ -762,8 +770,12 @@ class Conversation:
         else:
             self.messages.insert(0, Message.system(prompt))
     
-    def add_user_message(self, text: str) -> Message:
-        message = Message.user(text)
+    def add_user_message(
+        self,
+        text: str,
+        attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> Message:
+        message = Message.user(text, attachments or [])
         self.messages.append(message)
         return message
     

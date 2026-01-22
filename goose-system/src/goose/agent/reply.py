@@ -62,14 +62,17 @@ class AgentReply:
     
     def _get_tool_calls(self, message: Message) -> List[ToolRequest]:
         """从消息中提取工具调用"""
+        from ..conversation.message import ToolRequestContent
         tool_calls = []
         for content in message.content:
-            if content.tool_request_id and content.tool_name:
-                tool_calls.append(ToolRequest(
-                    id=content.tool_request_id,
-                    name=content.tool_name,
-                    arguments=content.tool_result
-                ))
+            if isinstance(content, ToolRequestContent):
+                value = content.tool_call_value
+                if value:
+                    tool_calls.append(ToolRequest(
+                        id=content.id,
+                        name=value.name,
+                        arguments=value.arguments
+                    ))
         return tool_calls
     
     async def run(self) -> AgentState:
@@ -158,8 +161,7 @@ class AgentReply:
         """生成模型响应"""
         messages = self.context.conversation.to_provider_format()
         
-        result, usage = await self.provider.complete(
-            system=self.context.system_prompt,
+        result, usage = await self.provider.agenerate(
             messages=messages,
             tools=[t.to_dict() for t in self.context.tools]
         )
@@ -170,8 +172,7 @@ class AgentReply:
         """流式生成响应"""
         messages = self.context.conversation.to_provider_format()
         
-        async for chunk in self.provider.stream(
-            system=self.context.system_prompt,
+        async for chunk in self.provider.astream(
             messages=messages,
             tools=[t.to_dict() for t in self.context.tools]
         ):

@@ -13,12 +13,12 @@ Modules:
 - base: Extension 基类和工厂
 - manager: Extension 生命周期和 MCP 通信
 
-注意: 以下管理器已在 Agent 级别实现，不属于 Extension:
-- RetryManager (重试逻辑)
-- PermissionManager (权限管理)
-- SubagentHandler (子代理)
-- PromptManager (提示模板)
-- FrontendManager (前端工具) - 已移至 managers/
+注意: 以下管理器已在 Agent 级别的 managers/ 目录实现:
+- RetryManager - 自动重试
+- PermissionManager - 权限管理
+- SubagentHandler - 子代理
+- PromptManager - 提示模板
+- FrontendManager - 前端工具
 """
 
 from .config import (
@@ -27,8 +27,6 @@ from .config import (
     StdioExtensionConfig,
     StreamableHttpExtensionConfig,
     BuiltinExtensionConfig,
-    PlatformExtensionConfig,
-    FrontendExtensionConfig,
     InlinePythonExtensionConfig,
     parse_extension_config,
     load_extensions_from_config,
@@ -39,7 +37,6 @@ from .base import (
     StdioExtension,
     HttpExtension,
     BuiltinExtension,
-    FrontendExtension,
     InlinePythonExtension,
     ExtensionFactory,
 )
@@ -55,8 +52,6 @@ __all__ = [
     "StdioExtensionConfig",
     "StreamableHttpExtensionConfig",
     "BuiltinExtensionConfig",
-    "PlatformExtensionConfig",
-    "FrontendExtensionConfig",
     "InlinePythonExtensionConfig",
     "parse_extension_config",
     "load_extensions_from_config",
@@ -65,7 +60,6 @@ __all__ = [
     "StdioExtension",
     "HttpExtension",
     "BuiltinExtension",
-    "FrontendExtension",
     "InlinePythonExtension",
     "ExtensionFactory",
     # Manager
