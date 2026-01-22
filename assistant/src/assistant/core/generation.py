@@ -2,7 +2,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional,Callable
-
+import inspect
 from ..providers.base import BaseLLM
 
 # Core Imports
@@ -76,14 +76,33 @@ class AgentGeneration:
         logger.info(f"🗑️ Generation {self.version} drained. Closing resources...")
         
         # 2. 执行关闭逻辑
-        # 关闭 LLM
-        if hasattr(self.llm, 'aclose'): await self.llm.aclose()
-        elif hasattr(self.llm, 'close'): self.llm.close()
-            
-        # 关闭 AI Services
-        for svc in self.ai_services.values():
-            if hasattr(svc, 'aclose'): await svc.aclose()
-            elif hasattr(svc, 'close'): svc.close()
+        try:
+            # 关闭 LLM
+            if hasattr(self.llm, 'aclose'): 
+                if inspect.iscoroutinefunction(self.llm.aclose):
+                    await self.llm.aclose()
+                else:
+                    self.llm.aclose()
+            elif hasattr(self.llm, 'close'): 
+                if inspect.iscoroutinefunction(self.llm.close):
+                    await self.llm.close()
+                else:
+                    self.llm.close()
+
+            # 关闭 AI Services
+            for svc in self.ai_services.values():
+                if hasattr(svc, 'aclose'): 
+                    if inspect.iscoroutinefunction(svc.aclose):
+                        await svc.aclose()
+                    else:
+                        svc.aclose()
+                elif hasattr(svc, 'close'): 
+                    if inspect.iscoroutinefunction(svc.close):
+                        await svc.close()
+                    else:
+                        svc.close()
+        except Exception as e:
+            logger.error(f"Error while closing resources for Generation {self.version}: {e}", exc_info=e)
             
         logger.info(f"💀 Generation {self.version} fully closed.")
 
