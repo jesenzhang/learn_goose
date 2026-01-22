@@ -11,7 +11,7 @@ import frontmatter  # pip install python-frontmatter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Callable, Type, Tuple
 
-from .base import SkillBase, SkillType, ToolMetadata, DocumentSkill
+from .base import SkillBase, SkillType, ToolMetadata
 from .generic import GenericSkill
 from .config import SkillConfig, SkillsConfig, ToolConfig
 
@@ -171,20 +171,7 @@ class SkillLoader:
                 skill_instance.label = skill_label
 
             self._attach_functions_to_instance(skill_instance, functions)
-        elif not functions and skill_md_path.exists():
-            # === Document-based Skill (OpenCode/DeepAgents style) ===
-            # No class, no functions, but has SKILL.md
-            logger.info(f"📄 Loading document-based skill '{skill_id}'")
-
-            skill_label = specific_config.label if specific_config else None
-
-            skill_instance = DocumentSkill(
-                name=skill_name,
-                description=description,
-                md_path=str(skill_md_path),
-                label=skill_label,
-            )
-            skill_instance.skill_type = skill_type
+        
         else:
             # === Function-based Skill ===
             if not functions:

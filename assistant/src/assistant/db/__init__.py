@@ -73,7 +73,7 @@ class UnifiedDatabase:
             await self._local_db.initialize()
 
     # ================= DatabaseProtocol Implementation =================
-    async def add_message(self, session_id: int, role: str, content: str, metadata: Dict = None, **kwargs) -> bool:
+    async def add_message(self, session_id: int, role: str, content: str|Dict, metadata: str|Dict = None, **kwargs) -> bool:
         """
         [Protocol] 添加消息
         API: POST /agent/handle/add_message

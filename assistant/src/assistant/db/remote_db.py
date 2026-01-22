@@ -387,18 +387,19 @@ class RemoteDatabaseManager:
             self._session = None
             logger.debug("Remote database connection closed")
 
-    async def add_message(self, session_id: int, role: str, content: str, metadata: Dict = None, **kwargs) -> bool:
+    async def add_message(self, session_id: int, role: str, content: str|Dict, metadata: str|Dict = None, **kwargs) -> bool:
         """
         [Protocol] 添加消息
         API: POST /agent/handle/add_message
         Body: {session_id, role, content, metadata: str(json)}
         """
-        metadata_str = json.dumps(metadata or {}, ensure_ascii=False)
+        content_str = json.dumps(content, ensure_ascii=False) if isinstance(content, dict) else content
+        metadata_str = json.dumps(metadata or {}, ensure_ascii=False) if isinstance(metadata, dict) else metadata
 
         payload = {
             "session_id": session_id,
             "role": role,
-            "content": content,
+            "content": content_str,
             "metadata": metadata_str
         }
         try:

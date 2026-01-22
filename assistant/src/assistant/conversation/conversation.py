@@ -1,5 +1,5 @@
 from typing import List, Tuple, Set, Optional, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from .message import (
     Message, MessageContent, Role, MessageVisible,
     TextContent, ToolRequest, ToolResponse, 
@@ -15,43 +15,149 @@ class InvalidConversation(Exception):
         super().__init__(reason)
 
 class Conversation(BaseModel):
+    """
+    增强版 Conversation 类，支持双流消息管理：
+
+    1. **持久化消息流 (messages)**: 需要保存到数据库的消息
+       - 用户输入、助手回复、工具调用和响应
+
+    2. **临时消息流 (_ephemeral_messages)**: 仅用于本次推理的临时消息
+       - 系统提示词、意图指令、Deep Thinking 指令等
+    """
+    # 持久化消息 - 需要保存到数据库
     messages: List[Message] = Field(default_factory=list)
+
+    # 临时消息 - 仅用于推理，不保存到数据库
+    # 使用 PrivateAttr 避免序列化到数据库
+    _ephemeral_messages: List[Message] = PrivateAttr(default_factory=list)
 
     @classmethod
     def new_unvalidated(cls, messages: List[Message]) -> "Conversation":
         return cls(messages=messages)
-    
+
     @classmethod
     def empty(cls) -> "Conversation":
         return cls(messages=[])
 
-    def push(self, message: Message):
-        """Rust: pub fn push(&mut self, message: Message)"""
-        if self.messages and self.messages[-1].id and self.messages[-1].id == message.id:
-            last = self.messages[-1]
+    def push(self, message: Message, ephemeral: bool = False):
+        """
+        推送消息到会话
+
+        Args:
+            message: 要添加的消息
+            ephemeral: 是否为临时消息（不保存到数据库）
+        """
+        target_list = self._ephemeral_messages if ephemeral else self.messages
+
+        if target_list and target_list[-1].id and target_list[-1].id == message.id:
+            last = target_list[-1]
             if (len(last.content) == 1 and isinstance(last.content[0], TextContent) and
                 len(message.content) == 1 and isinstance(message.content[0], TextContent)):
                 last.content[0].text += message.content[0].text
             else:
                 last.content.extend(message.content)
         else:
-            self.messages.append(message)
+            target_list.append(message)
 
-    def extend(self, messages: List[Message]):
+    def extend(self, messages: List[Message], ephemeral: bool = False):
+        """批量推送消息
+
+        Args:
+            messages: 消息列表
+            ephemeral: 是否为临时消息（不保存到数据库）
+        """
         for msg in messages:
-            self.push(msg)
+            self.push(msg, ephemeral=ephemeral)
+
+    def pop_last_ephemeral(self) -> Optional[Message]:
+        """弹出最后的临时消息"""
+        if self._ephemeral_messages:
+            return self._ephemeral_messages.pop()
+        return None
+
+    def clear_ephemeral(self):
+        """清空所有临时消息"""
+        self._ephemeral_messages.clear()
+
+    def update_system_prompt(self, system_prompt: str):
+        """
+        更新或创建系统提示词（临时消息）
+
+        系统提示词总是作为临时消息，且位于最前面
+        """
+        system_msg = Message.system(system_prompt)
+        system_msg.visible = MessageVisible(user_visible=False, agent_visible=True)
+
+        # 检查是否已有系统消息
+        for i, msg in enumerate(self._ephemeral_messages):
+            if msg.role == Role.SYSTEM:
+                self._ephemeral_messages[i] = system_msg
+                return
+
+        # 没有系统消息，插入到最前面
+        self._ephemeral_messages.insert(0, system_msg)
 
     def agent_visible_messages(self) -> List[Message]:
-        return [m for m in self.messages if m.visible.agent_visible]
+        """获取所有 agent 可见的消息（包括临时消息）"""
+        all_messages = self._ephemeral_messages + self.messages
+        return [m for m in all_messages if m.visible.agent_visible]
 
     def user_visible_messages(self) -> List[Message]:
+        """获取所有用户可见的消息（不包括临时消息）"""
         return [m for m in self.messages if m.visible.user_visible]
-    
+
     def last(self) -> Optional[Message]:
+        """获取最后一条持久化消息"""
         return self.messages[-1] if self.messages else None
 
+    def for_llm(self, deep_thinking: bool = False, deep_thinking_instruction: str = None) -> List[Message]:
+        """
+        生成用于 LLM 推理的消息列表
+
+        Args:
+            deep_thinking: 是否启用深度思考模式
+            deep_thinking_instruction: 深度思考指令（如果启用）
+
+        Returns:
+            合并后的消息列表（临时消息在前，持久化消息在后）
+        """
+        result = []
+
+        # 1. 添加临时消息（系统提示词等）
+        result.extend(self._ephemeral_messages)
+
+        # 2. 添加持久化消息
+        if deep_thinking and self.messages:
+            # Deep Thinking 模式下，修改最后一条 User 消息
+            for i, msg in enumerate(self.messages):
+                if i == len(self.messages) - 1 and msg.role == Role.USER and deep_thinking_instruction:
+                    # 创建修改后的消息副本，注入 Deep Thinking 指令
+                    modified_content = []
+                    for c in msg.content:
+                        if isinstance(c, TextContent):
+                            modified_content.append(TextContent(text=c.text + deep_thinking_instruction))
+                        else:
+                            modified_content.append(c)
+                    result.append(Message(role=Role.USER, content=modified_content, metadata=msg.metadata, visible=msg.visible))
+                else:
+                    result.append(msg)
+        else:
+            result.extend(self.messages)
+
+        return result
+
+    def pending_messages(self) -> List[Message]:
+        """
+        获取尚未持久化到数据库的消息
+
+        Returns:
+            需要保存到数据库的消息列表
+        (注意：这里返回所有持久化消息，实际保存时应该只保存新增的消息)
+        """
+        return self.messages
+
     def validate(self) -> "Conversation":
-        _, issues = fix_messages(self.messages) 
+        _, issues = fix_messages(self.messages)
         if issues:
             raise InvalidConversation("\n".join(issues), self)
         return self

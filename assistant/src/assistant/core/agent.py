@@ -20,7 +20,7 @@ from ..providers.base import BaseLLM
 from ..providers.factory import ProviderFactory
 from ..conversation import (Message, Role, TextContent,
                             ToolRequest, ToolResponse, CallToolResult, RawContent,
-                            ThinkingContent, RedactedThinkingContent)
+                            ThinkingContent, RedactedThinkingContent, Conversation)
 
 # Core Imports
 from ..events import MemoryEventBus, AsyncEventStore, StreamerFactory
@@ -258,9 +258,59 @@ class MicroAgent:
             logger.error(f"Reload failed: {e}")
     
 
-    async def add_message(self, session_id: int, msg: Message, state: Optional[AgentState] = None):
-        state.history.append(msg.model_dump(exclude_none=True, by_alias=True))
-        await self.db.add_message(session_id, msg.role, msg.content_json, msg.metadata)
+    def _get_conversation(self, state: AgentState) -> Conversation:
+        """获取或初始化 Conversation 对象"""
+        if not hasattr(state, '_conversation') or state._conversation is None:
+            messages = [Message.model_validate(h) for h in state.history] if state.history else []
+            messages.reverse()
+            messages.sort(key=lambda x: x.created_at)
+            state._conversation = Conversation(messages=messages)
+        return state._conversation
+
+    def _sync_history_from_conversation(self, state: AgentState):
+        """从 Conversation 同步到 history(保持向后兼容）"""
+        if hasattr(state, '_conversation') and state._conversation is not None:
+            state.history = [m.model_dump(exclude_none=True, by_alias=True) for m in state._conversation.messages]
+
+    async def add_message(self, session_id: int, msg: Message, state: Optional[AgentState] = None, ephemeral: bool = False):
+        """
+        添加消息到会话
+
+        Args:
+            session_id: 会话 ID
+            msg: 消息对象
+            state: Agent 状态
+            ephemeral: 是否为临时消息(不保存到数据库）
+        """
+        if state is None:
+            raise ValueError("state is required for add_message")
+
+        # 使用 Conversation 来管理消息
+        conv = self._get_conversation(state)
+        conv.push(msg, ephemeral=ephemeral)
+
+        # 仅对持久化消息同步到 history 和保存到数据库
+        if not ephemeral:
+            self._sync_history_from_conversation(state)
+            await self.db.add_message(session_id, msg.role, msg.content_json, msg.meta_json)
+
+    async def save_new_messages(self, session_id: int, state: AgentState, start_count: int):
+        """
+        保存从某个点之后新增的消息到数据库
+
+        Args:
+            session_id: 会话 ID
+            state: Agent 状态
+            start_count: 起始消息数量，仅保存此数量之后的消息
+        """
+        conv = self._get_conversation(state)
+        new_messages = conv.messages[start_count:]
+
+        for msg in new_messages:
+            await self.db.add_message(session_id, msg.role, msg.content_json, msg.meta_json)
+
+        # 更新 history
+        self._sync_history_from_conversation(state)
 
     # =========================================================================
     # Phase 1: Intent Processing (Unchanged logic, just context)
@@ -364,8 +414,8 @@ class MicroAgent:
         if primary.intent == "adhoc_execution":
             instruction = primary.entities.get("instruction", "")
             context_source = primary.entities.get("context_source", "conversation_history")
-            
-            # 构造一条 System Instruction 插入历史记录
+
+            # 构造一条 System Instruction 插入临时消息流
             # 作用：在下一轮 Loop 中，LLM 会看到这条指令 + 之前的 Tool 结果，从而进行生成
             system_instruction = f"""
 [SYSTEM INSTRUCTION: AD-HOC TASK]
@@ -386,22 +436,24 @@ The user's plan requires you to perform the following task.
 Execute this task immediately. Do not ask for clarification unless impossible.
 Generate the content/response now.
 """
-            # 存入 History
-            state.history.append(Message.system(system_instruction).model_dump(by_alias=True))
-            
+            # 使用 Conversation 存入临时消息流（不保存到数据库，仅用于内部推理）
+            conv = self._get_conversation(state)
+            conv.push(Message.system(system_instruction).with_visibility(user_visible=False, agent_visible=True), ephemeral=True)
+
             # 【关键】返回 None
             # 这意味着不直接返回结果给用户，而是让 Agent 继续运行，进入 "Phase 3: LLM Loop"
-            return None 
+            return None
 
         # --- Branch B: 处理配置意图 (Configured Intents) ---
         # 对应 YAML 中定义的 search/view 任务
         config = gen.intent_executor.get_config(primary.intent)
-        
+
         # 如果配置丢失 (鲁棒性处理)
-        if not config: 
+        if not config:
             logger.warning(f"⚠️ Intent '{primary.intent}' has no config. Fallback to adhoc.")
             fallback_msg = f"[SYSTEM] Intent '{primary.intent}' triggered but no tool config found. Handle: {user_input}"
-            state.history.append(Message.system(fallback_msg).model_dump(by_alias=True))
+            conv = self._get_conversation(state)
+            conv.push(Message.system(fallback_msg), ephemeral=True)
             return None
 
         # 准备执行上下文
@@ -451,16 +503,18 @@ Generate the content/response now.
                     
                     # 4. 渲染模板
                     instruction = template.format(**render_params)
-                    
-                    # 5. 注入历史记录
-                    state.history.append(Message.system(instruction).model_dump(by_alias=True))
+
+                    # 5. 注入历史记录（使用临时消息流，不保存到数据库）
+                    conv = self._get_conversation(state)
+                    conv.push(Message.system(instruction).with_visibility(user_visible=False, agent_visible=True), ephemeral=True)
                     logger.info(f"✅ Injected Skill Instruction for {primary.intent}")
-                    
+
                 except Exception as e:
                     logger.error(f"❌ Template render failed for {primary.intent}: {e}")
                     # 兜底：如果模板渲染挂了，至少发一个通用指令，防止 LLM 发呆
                     fallback = f"[SYSTEM] User intent: {primary.intent}. Entities: {primary.entities}. Please use appropriate tools."
-                    state.history.append(Message.system(fallback).model_dump(by_alias=True))
+                    conv = self._get_conversation(state)
+                    conv.push(Message.system(fallback).with_visibility(user_visible=False, agent_visible=True), ephemeral=True)
             
             should_stop = False # Skill 模式进入 LLM Loop
 
@@ -481,13 +535,12 @@ Generate the content/response now.
             if state.intent_queue:
                 # 模拟一个 Tool Output 存入历史，供下一步使用
                 logger.info(f"Step {primary.intent} finished via STOP. Saving context for next step.")
-                state.history.append(
-                    Message.tool(text=final_res, tool_call_id=f"intent_{primary.intent}").model_dump(by_alias=True)
-                )
-                return None 
-            
+                conv = self._get_conversation(state)
+                conv.push(Message.tool(text=final_res or "", tool_call_id=f"intent_{primary.intent}"), ephemeral=True)
+                return None
+
             return final_res
-        
+
         return final_res if should_stop else None
 
     # =========================================================================
@@ -732,8 +785,8 @@ Generate the content/response now.
                     tool_label = tool_metadata.label
                     
             # 1. 触发工具开始事件
-            await self._emit_event(EventType.TOOL_START, {"name": name, 
-                                                          "args": args, 
+            await self._emit_event(EventType.TOOL_START, {"name": name,
+                                                          "args": args,
                                                           "label": tool_label})
 
             start_time = time.time()
@@ -1008,7 +1061,7 @@ Generate the content/response now.
                     "session_id": session_id
                 })
                 return
-
+            
             state = AgentState(**state_data) if state_data else AgentState(session_id=session_id)
             
             # [关键步骤 A]：处理上下文数据 (Input Context)
@@ -1101,16 +1154,16 @@ Generate the content/response now.
 
                     # 更新状态和历史
                     state.status = AgentStatus.RUNNING
-                    # 存入数据库
-                    await self.add_message(state.session_id, Message.user(user_input), state)
-                    state.history.append({"role": "user", "content": user_input})
-
+                    
                     # Intent Phase (传递 gen)
                     direct_res = await self._handle_intent_phase(user_input, state, gen)
+                    
+                    # 存入数据库
+                    await self.add_message(state.session_id, Message.user(user_input), state)
+                        
                     if direct_res:
                         # 存入数据库
                         await self.add_message(state.session_id, Message.assistant(direct_res), state)
-                        state.history.append({"role": "assistant", "content": direct_res})
                         await self._emit_event(EventType.TOKEN, direct_res)
                         self._schedule_state_save(state.session_id, state)
 
@@ -1122,33 +1175,19 @@ Generate the content/response now.
             while state.status == AgentStatus.RUNNING:
                 await asyncio.sleep(0.01)
                 
-                # 1. Build Prompt & Sync History
+                # 1. Build System Prompt & Update Conversation
+                # ==============================================
+                prompt = self._build_system_prompt(state, gen, req_ctx)
+                
+                # 使用 Conversation 的 update_system_prompt 方法更新系统提示词（临时消息）
+                conv = self._get_conversation(state)
+                conv.update_system_prompt(prompt)
+                
+                # 2. 准备 LLM 推理消息
                 # ==============================
-                # 传递 gen
-                prompt = self._build_system_prompt(state, gen,req_ctx)
-                
-                # Ensure system prompt is always at the top
-                if not state.history: 
-                    state.history.append({"role": "system", "content": prompt})
-                elif state.history[0]['role'] == 'system': 
-                    state.history[0]['content'] = prompt
-                else: 
-                    state.history.insert(0, {"role": "system", "content": prompt})
-
-                # 2. Convert State History (Dict) to Messages (Pydantic)
-                # ======================================================
-                # This is crucial because BaseLLM expects Message objects
-                input_messages = []
-                for h in state.history:
-                    msg = Message.model_validate(h)
-                    # 注意：不再重新发送 TOOL_ARTIFACT 事件，artifact 数据已在消息历史中保存
-                    input_messages.append(msg)
-                
-                # 响应 Deep Thinking 开关
-                if req_ctx.deep_thinking:
-                    deep_thinking_instruction = """
-\n\n
---- SYSTEM OVERRIDE: DEEP THINKING PROTOCOL ---
+                # Deep Thinking 指令定义
+                deep_thinking_instruction = """
+\n\n--- SYSTEM OVERRIDE: DEEP THINKING PROTOCOL ---
 You must strictly follow this two-phase output format, regardless of any previous constraints about "JSON only" or "conciseness":
 
 **PHASE 1: REASONING (Internal Monologue)**
@@ -1157,34 +1196,31 @@ You must strictly follow this two-phase output format, regardless of any previou
 - This phase is MANDATORY and acts as a scratchpad.
 
 **PHASE 2: FINAL RESPONSE (User Fulfillment)**
-- After closing the `</thinking>` tag, proceed to answer the user's request.
-- IN THIS PHASE, you must strictly adhere to the user's original formatting requirements (e.g., JSON only, Python code only, short answer).
-- Do NOT output the thinking block if it violates the user's format; instead, output it *before* the user's format content.
+- After closing `</thinking>` tag, proceed to answer user's request.
+- IN THIS PHASE, you must strictly adhere to user's original formatting requirements (e.g., JSON only, Python code only, short answer).
+- Do NOT output thinking block if it violates user's format; instead, output it *before* user's format content.
 
 **Example Structure:**
 <thinking>
 ... analysis ...
 </thinking>
-{ "result": "This is the JSON the user asked for" }
-"""
-                    # 策略 A: 追加到最后一条 User 消息的内容里 (效果最强)
-                    if input_messages and input_messages[-1].role == Role.USER:
-                        last_msg = input_messages[-1]
-                        # 这是一个临时修改，不保存到数据库，只影响本次推理
-                        # 注意：需要处理多模态 Content 的情况，这里简化为处理文本
-                        original_text = last_msg.text
-                        new_text = f"{original_text}{deep_thinking_instruction}"
-                        
-                        # 替换最后一条消息用于本次推理
-                        input_messages[-1] = Message(role=Role.USER, content=[TextContent(text=new_text)])
-                    
-                # 传递 gen
+{ "result": "This is JSON that user asked for" }
+""" if req_ctx.deep_thinking else None
+
+                # 使用 Conversation 的 for_llm 方法生成用于 LLM 的消息列表
+                input_messages = conv.for_llm(
+                    deep_thinking=req_ctx.deep_thinking,
+                    deep_thinking_instruction=deep_thinking_instruction
+                )
+                
+                # 3. 获取工具 schema
+                # ==============================
                 tools = self._get_tools_schema(state, gen)
                 logger.info(f"🔧 Available tools count: {len(tools) if tools else 0}, active_skill: {state.active_skill}")
-
-                # 3. Call BaseLLM
+                
+                # 4. Call BaseLLM
                 # ===============
-                # 发送 TOKEN_START 事件（LLM 开始生成）
+                # 发送 TOKEN_START 事件(LLM 开始生成)
                 await self._emit_event(EventType.TOKEN_START, {})
 
                 full_content_text = ""
@@ -1360,14 +1396,13 @@ You must strictly follow this two-phase output format, regardless of any previou
                 # 创建带有 artifact 信息的消息 metadata
                 message_metadata = {}
                 for i, (req,resp) in enumerate(zip(received_tool_requests,exec_results)):
- 
+  
                     # Construct Tool Response Message using Goose models
                     # Note: OpenAIProvider._prepare_messages will separate this into the correct format
                     tool_msg = Message.tool_response(resp)
                     
-                    # 存入数据库
+                    # 存入数据库（add_message 会自动同步到 history）
                     await self.add_message(state.session_id, tool_msg, state)
-                    state.history.append(tool_msg.model_dump(exclude_none=True, by_alias=True))
 
                 self._schedule_state_save(state.session_id, state)
 
@@ -1386,16 +1421,14 @@ You must strictly follow this two-phase output format, regardless of any previou
             # 传递 gen
             res = await self._exec_tool_func(tool['name'], tool['args'], state, gen)
             # Add Tool Response
-            tool_msg = Message.tool(text=res, tool_call_id=tool['id'])
-            # 存入数据库
+            tool_msg = Message.tool(text=res or "", tool_call_id=tool['id'])
+            # 存入数据库（add_message 会自动同步到 history）
             await self.add_message(state.session_id, tool_msg, state)
-            state.history.append(tool_msg.model_dump(exclude_none=True, by_alias=True))
         else:
             tool_msg = Message.tool(text=f"Rejected: {data.get('feedback')}", tool_call_id=tool['id'])
-            # 存入数据库
+            # 存入数据库（add_message 会自动同步到 history）
             await self.add_message(state.session_id, tool_msg, state)
-            state.history.append(tool_msg.model_dump(exclude_none=True, by_alias=True))
-
+        
         state.status = AgentStatus.RUNNING
         state.pending_tool_call = None
         return True
@@ -1422,7 +1455,7 @@ You must strictly follow this two-phase output format, regardless of any previou
             return 0
 
     def shutdown(self):
-        """同步关闭方法（向后兼容）"""
+        """同步关闭方法(向后兼容)"""
         if self.watcher:
             self.watcher.stop()
 

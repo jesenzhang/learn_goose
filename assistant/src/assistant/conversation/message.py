@@ -234,6 +234,11 @@ class Message(BaseModel):
     
     model_config = ConfigDict(populate_by_name=True)
 
+    def with_visibility(self, user_visible: bool, agent_visible: bool) -> "Message":
+        self.visible.user_visible = user_visible
+        self.visible.agent_visible = agent_visible
+        return self
+    
     # --- 核心序列化与反序列化逻辑 ---
     @property
     def content_json(self) -> str:
@@ -244,7 +249,22 @@ class Message(BaseModel):
         ]
         content_json = json.dumps(content_data, ensure_ascii=False)
         return content_json
+    
+    @property
+    def meta_json(self) -> str:
+        """将 content 序列化为 JSON 字符串"""
+        meta = {}
+        meta.update(self.metadata)
+        meta.update({
+            "created_at":self.created_at,
+            "visible":self.visible.model_dump(),
+            "id":self.id,
+            "session_id":self.session_id
+        })
         
+        meta_json = json.dumps(meta, ensure_ascii=False)
+        return meta_json
+    
     @model_validator(mode='before')
     @classmethod
     def _normalize_before_validation(cls, data: Any) -> Any:
@@ -254,21 +274,47 @@ class Message(BaseModel):
         """
         if isinstance(data, dict):
             # 1. 处理 metadata (DB 可能存为 JSON 字符串)
+            metadata = {}
             raw_metadata = data.get("metadata")
-            if isinstance(raw_metadata, str):
+            if raw_metadata:
+                if isinstance(raw_metadata, str):
+                    try:
+                        metadata = json.loads(raw_metadata)
+                    except (json.JSONDecodeError, TypeError):
+                        metadata = {}
+                elif isinstance(raw_metadata, dict):
+                    metadata = raw_metadata
+                    
+            # 2. 处理 metadata (DB 可能存为 JSON 字符串)
+            if isinstance(metadata, str):
                 try:
-                    data["metadata"] = json.loads(raw_metadata)
+                    metadata = json.loads(metadata)
                 except (json.JSONDecodeError, TypeError):
-                    data["metadata"] = {}
+                    metadata = {}
 
-            # 2. 处理 visible (DB 可能存为 JSON 字符串)
+            if "session_id" not in data and "session_id" in metadata:
+                data["session_id"] = metadata.pop("session_id")
+            
+            if "created_at" not in data and "created_at" in metadata:
+                data["created_at"] = metadata.pop("created_at")
+            else:
+                data["created_at"] = 0.0
+                
+            if "id" not in data and "id" in metadata:
+                data["id"] = metadata.pop("id")
+            
+            if "visible" not in data and "visible" in metadata:
+                data["visible"] = metadata.pop("visible")
+            
+             # 2. 处理 visible (DB 可能存为 JSON 字符串)
             raw_visible = data.get("visible")
             if isinstance(raw_visible, str):
                 try:
                     data["visible"] = json.loads(raw_visible)
                 except:
                     pass
-
+            
+            data['metadata'] = metadata
             # 3. 处理 content 字段
             # 目标：将所有奇怪的输入都转化为 List[Dict]，且每个 Dict 都有 'type' 字段
             # 这样后续 Pydantic 的 discriminator 才能正常工作
@@ -378,6 +424,10 @@ class Message(BaseModel):
     @classmethod
     def tool_response(cls, tool_response: ToolResponse, metadata: Dict[str, Any] = None) -> "Message":
         return cls(role=Role.TOOL, content=[tool_response], metadata=metadata)
+    
+    @classmethod
+    def tool_request(cls, tool_request: ToolRequest, metadata: Dict[str, Any] = None) -> "Message":
+        return cls(role=Role.TOOL, content=[tool_request], metadata=metadata)
 
     @classmethod
     def tool(cls, text: str = "", data: dict = None, tool_call_id: str = "", metadata: Any = None) -> "Message":
