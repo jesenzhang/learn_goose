@@ -1013,7 +1013,7 @@ Generate the content/response now.
 
             # 传递 BaseStreamer 给 deepresearch，使其使用 assistant 的事件系统
             # 这样 deepresearch 发送的事件会通过 bus 广播，event_generator 可以订阅并收到
-            streamer = await self.get_streamer(session_id)
+            streamer = self.get_streamer(session_id)
             # run_async 内部已经启动了监听器，会实时输出事件
             
             await assistant.run_async(user_input, streamer,uid=uuid.uuid4(), enable_listener=True)
