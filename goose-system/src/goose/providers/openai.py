@@ -47,7 +47,7 @@ from .errors import (
 @ProviderFactory.register_embedding("openai")
 class OpenAIProvider(BaseLLM, BaseEmbedding):
     """
-    OpenAI Provider implementing BaseLLM and BaseEmbedding interfaces.
+    OpenAI Provider implementing BaseLLAI and BaseEmbedding interfaces.
 
     Supports:
     - GPT-4, GPT-4 Turbo, GPT-3.5 Turbo
@@ -99,7 +99,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
         self._sem = asyncio.Semaphore(50)
 
     async def aclose(self):
-        """Close the HTTP client."""
+        """Close HTTP client."""
         await self.http_client.aclose()
 
     def get_model_config(self) -> ModelConfig:
@@ -150,15 +150,18 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                             args = json.loads(tc.function.arguments) if tc.function.arguments else {}
                         except json.JSONDecodeError:
                             args = {"raw": tc.function.arguments}
-
                         content_list.append(ToolRequestContent(
                             id=tc.id,
-                            name=tc.function.name,
-                            arguments=args
+                            tool_call={
+                                "status": "success",
+                                "value": {
+                                    "name": tc.function.name,
+                                    "arguments": args
+                                }
+                            }
                         ))
 
                 result_message = Message(role=Role.ASSISTANT, content=content_list)
-
                 usage_info = None
                 if response.usage:
                     usage_info = ProviderUsage(
@@ -236,7 +239,6 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                             idx = tc.index
                             if idx not in tool_buffer:
                                 tool_buffer[idx] = {"id": "", "name": "", "args": ""}
-
                             if tc.id:
                                 tool_buffer[idx]["id"] = tc.id
                             if tc.function.name:
@@ -274,7 +276,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
             return []
 
         try:
-            embedding_model = getattr(self.model_config, 'embedding_model_name', None) or self.model_config.model_name
+            embedding_model = getattr(self.model_config, 'embedding_model_name', None) or self.model_config.model.model_name
             response = await self.client.embeddings.create(
                 input=texts,
                 model=embedding_model,
@@ -295,13 +297,13 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
         openai_msgs = []
         for msg in messages:
             if msg.role == Role.SYSTEM:
-                openai_msgs.append({"role": "system", "content": msg.text}) 
-            
+                openai_msgs.append({"role": "system", "content": msg.text})
+
             elif msg.role == Role.USER:
                 content_list = []
                 text_parts = []
                 image_parts = []
-                
+
                 for c in msg.content:
                     if isinstance(c, TextContent):
                         text_parts.append(c.text)
@@ -326,12 +328,12 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                                         "detail": img_dict.get("detail", "auto")
                                     }
                                 })
-                
+
                 if text_parts:
                     content_list.append({"type": "text", "text": "\n".join(text_parts)})
                 if image_parts:
                     content_list.extend(image_parts)
-                
+
                 if len(content_list) == 1 and content_list[0].get("type") == "text":
                     openai_msgs.append({"role": "user", "content": msg.text})
                 elif content_list:
@@ -347,26 +349,32 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                 for c in msg.content:
                     if isinstance(c, TextContent):
                         content_parts.append(c.text)
-                    elif isinstance(c, ToolRequest):
-                        tool_reqs.append(c)
+                    elif isinstance(c, ToolRequestContent):
+                        value = c.tool_call_value
+                        if value:
+                            tool_reqs.append(c)
 
                 if content_parts:
                     o_msg["content"] = "\n\n".join(content_parts)
 
                 if tool_reqs:
-                    o_msg["tool_calls"] = [{
-                        "id": req.id,
-                        "type": "function",
-                        "function": {
-                            "name": req.tool_call_value.name,
-                            "arguments": json.dumps(req.tool_call_value.arguments or {})
-                        }
-                    } for req in tool_reqs]
+                    o_msg["tool_calls"] = []
+                    for req in tool_reqs:
+                        value = req.tool_call_value
+                        if value:
+                            o_msg["tool_calls"].append({
+                                "id": req.id,
+                                "type": "function",
+                                "function": {
+                                    "name": value.name,
+                                    "arguments": json.dumps(value.arguments or {})
+                                }
+                            })
 
                 openai_msgs.append(o_msg)
 
             elif msg.role == Role.TOOL:
-                for c in msg.content:
+                for c in amsg.content:
                     if isinstance(c, ToolResponseContent):
                         content_str = str(c.result) if c.result else "Success"
                         if c.is_error:
@@ -408,7 +416,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
         elif isinstance(e, (APIConnectionError, APITimeoutError)):
             raise RequestFailedError(f"Connection Failed: {msg}")
         elif isinstance(e, RateLimitError):
-            raise RequestFailedError(f"Rate Limit: {msg}")
+            raise RequestFailedError(f"Rate Rate: {msg}")
         elif isinstance(e, OpenAIAPIError):
             raise ExecutionError(f"OpenAI Error: {msg}")
         else:

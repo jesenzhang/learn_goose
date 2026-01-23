@@ -119,7 +119,7 @@ class AnthropicProvider(BaseLLM):
             "max_tokens": merged_config.max_tokens or self.model_config.context_limit
         }
 
-        if system_prompt:
+        if (system_prompt):
             payload["system"] = system_prompt
 
         if stop:
@@ -137,10 +137,11 @@ class AnthropicProvider(BaseLLM):
                     if block.type == "text":
                         content_list.append(TextContent(text=block.text))
                     elif block.type == "tool_use":
-                        content_list.append(ToolRequest(
-                            id=block.id,
+                        value = block.input or {}
+                        content_list.append(ToolRequestContent.create(
+                            tool_id=block.id,
                             name=block.name,
-                            arguments=block.input
+                            arguments=value
                         ))
 
                 result_message = Message(role=Role.ASSISTANT, content=content_list)
@@ -204,7 +205,7 @@ class AnthropicProvider(BaseLLM):
                                 input_tokens=event.usage.input_tokens,
                                 output_tokens=event.usage.output_tokens,
                                 total_tokens=event.usage.input_tokens + event.usage.output_tokens
-)
+                        )
                         )
                         yield Message(role=Role.ASSISTANT), usage_info
 
@@ -220,17 +221,17 @@ class AnthropicProvider(BaseLLM):
                             content_list = []
                             for block in event.content_block:
                                 if block.type == "tool_use":
-                                    content_list.append(ToolRequestContent(
-                                        id=block.id,
+                                    value = block.input or {}
+                                    content_list.append(ToolRequestContent.create(
+                                        tool_id=block.id,
                                         name=block.name,
-                                        arguments=block.input
+                                        arguments=value
                                     ))
                             if content_list:
                                 yield Message(role=Role.ASSISTANT, content=content_list), None
 
             except Exception as e:
                 self._handle_error(e)
-                raise
 
     def _extract_system_prompt(self, messages: List[Message]) -> Optional[str]:
         """Extract system prompt from messages."""
@@ -256,23 +257,27 @@ class AnthropicProvider(BaseLLM):
                             "text": c.text
                         })
                     elif isinstance(c, ImageContent):
-                        if c.image_url:
-                            content_parts.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "url",
-                                    "url": c.image_url
-                                }
-                            })
-                        elif c.image_base64:
-                            content_parts.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": c.media_type,
-                                    "data": c.image_base64
-                                }
-                            })
+                        # Convert from ImageContent to Anthropic format
+                        img_dict = c.to_dict()
+                        if "source" in img_dict:
+                            source = img_dict["source"]
+                            if source.get("type") == "url":
+                                content_parts.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "url",
+                                        "url": source["url"]
+                                    }
+                                })
+                            elif source.get("type") == "base64":
+                                content_parts.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": img_dict.get("mimeType", "image/png"),
+                                        "data": source.get("data", "")
+                                    }
+                                })
                     elif isinstance(c, ToolResponseContent):
                         content_parts.append({
                             "type": "tool_result",
@@ -294,12 +299,14 @@ class AnthropicProvider(BaseLLM):
                             "text": c.text
                         })
                     elif isinstance(c, ToolRequestContent):
-                        content_parts.append({
-                            "type": "tool_use",
-                            "id": c.id,
-                            "name": c.name,
-                            "input": c.arguments or {}
-                        })
+                        value = c.tool_call_value
+                        if value:
+                            content_parts.append({
+                                "type": "tool_use",
+                                "id": c.id,
+                                "name": value.name,
+                                "input": value.arguments or {}
+                            })
 
                 anthropic_msgs.append({
                     "role": "assistant",

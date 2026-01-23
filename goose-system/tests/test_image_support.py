@@ -155,10 +155,9 @@ async def test_provider_with_openai():
 
     try:
         from goose.providers.openai import OpenAIProvider
-        from goose.providers.model_config import ModelConfig
+        from goose.providers.base import ModelConfig
 
         config = {
-            "provider": "openai",
             "model_name": "gpt-4o",
             "api_key": "test-key"
         }
@@ -194,7 +193,6 @@ async def test_provider_with_anthropic():
         from goose.providers.anthropic import AnthropicProvider
 
         config = {
-            "provider": "anthropic",
             "model_name": "claude-3-5-sonnet-20241022",
             "api_key": "test-key"
         }
