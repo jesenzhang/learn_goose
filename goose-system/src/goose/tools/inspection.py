@@ -2,6 +2,7 @@
 Tool Inspection
 
 工具检查器，实现安全检查、权限检查等。
+参考 goose-rs 的工具权限系统设计。
 """
 
 from abc import ABC, abstractmethod
@@ -10,6 +11,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .base import Tool, ToolRequest
+
+
+class PermissionLevel(str, Enum):
+    """工具权限级别，与 goose-rs 兼容"""
+    ALWAYS_ALLOW = "always"      # 无需批准即可运行
+    ASK_BEFORE = "ask"           # 需要确认
+    NEVER_ALLOW = "never"        # 无法使用
 
 
 class InspectionAction(Enum):
@@ -143,22 +151,167 @@ class SecurityInspector(ToolInspector):
         return False
 
 
+class PermissionStore:
+    """工具权限存储，支持持久化配置"""
+    
+    def __init__(self, config_path: Optional[str] = None):
+        """
+        初始化权限存储
+        
+        Args:
+            config_path: 权限配置文件路径
+        """
+        self.config_path = config_path
+        self._permissions: Dict[str, PermissionLevel] = {}
+        self._load_config()
+    
+    def _load_config(self) -> None:
+        """从配置文件加载权限设置"""
+        if not self.config_path:
+            return
+        
+        import json
+        import os
+        
+        if not os.path.exists(self.config_path):
+            return
+        
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            for tool_name, level in data.items():
+                try:
+                    self._permissions[tool_name] = PermissionLevel(level)
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+    
+    def save_config(self) -> None:
+        """保存权限配置到文件"""
+        if not self.config_path:
+            return
+        
+        import json
+        import os
+        
+        os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+        
+        data = {name: level.value for name, level in self._permissions.items()}
+        
+        with open(self.config_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    def get_permission(self, tool_name: str) -> PermissionLevel:
+        """获取工具权限级别"""
+        return self._permissions.get(tool_name, PermissionLevel.ASK_BEFORE)
+    
+    def set_permission(
+        self,
+        tool_name: str,
+        level: PermissionLevel,
+        save: bool = True
+    ) -> None:
+        """设置工具权限级别"""
+        self._permissions[tool_name] = level
+        if save:
+            self.save_config()
+    
+    def set_permissions(
+        self,
+        permissions: Dict[str, PermissionLevel],
+        save: bool = True
+    ) -> None:
+        """批量设置工具权限"""
+        self._permissions.update(permissions)
+        if save:
+            self.save_config()
+    
+    def reset_permission(self, tool_name: str, save: bool = True) -> bool:
+        """重置工具权限到默认值"""
+        if tool_name in self._permissions:
+            del self._permissions[tool_name]
+            if save:
+                self.save_config()
+            return True
+        return False
+    
+    def reset_all(self, save: bool = True) -> None:
+        """重置所有权限"""
+        self._permissions.clear()
+        if save:
+            self.save_config()
+    
+    def get_all_permissions(self) -> Dict[str, PermissionLevel]:
+        """获取所有自定义权限设置"""
+        return self._permissions.copy()
+    
+    def get_always_allow_tools(self) -> List[str]:
+        """获取所有设置为 Always Allow 的工具"""
+        return [name for name, level in self._permissions.items()
+                if level == PermissionLevel.ALWAYS_ALLOW]
+    
+    def get_never_allow_tools(self) -> List[str]:
+        """获取所有设置为 Never Allow 的工具"""
+        return [name for name, level in self._permissions.items()
+                if level == PermissionLevel.NEVER_ALLOW]
+    
+    def get_ask_before_tools(self) -> List[str]:
+        """获取所有设置为 Ask Before 的工具"""
+        return [name for name, level in self._permissions.items()
+                if level == PermissionLevel.ASK_BEFORE]
+
+
 class PermissionInspector(ToolInspector):
     """权限检查器"""
     
-    def __init__(self):
+    def __init__(
+        self,
+        store: Optional[PermissionStore] = None,
+        default_level: PermissionLevel = PermissionLevel.ASK_BEFORE
+    ):
+        """
+        初始化权限检查器
+        
+        Args:
+            store: 权限存储实例
+            default_level: 默认权限级别
+        """
         super().__init__("PermissionInspector", priority=90)
-        self._permission_levels: Dict[str, str] = {}  # tool_name -> level
+        self._store = store or PermissionStore()
+        self._default_level = default_level
         self._readonly_tools: set = set()
-        self._default_level: str = "prompt"  # prompt / allow / deny
     
-    def set_tool_permission(self, tool_name: str, level: str) -> None:
+    @property
+    def store(self) -> PermissionStore:
+        """获取权限存储"""
+        return self._store
+    
+    def set_tool_permission(
+        self,
+        tool_name: str,
+        level: PermissionLevel,
+        save: bool = True
+    ) -> None:
         """设置工具权限级别"""
-        self._permission_levels[tool_name] = level
+        self._store.set_permission(tool_name, level, save)
+    
+    def set_permissions(
+        self,
+        permissions: Dict[str, PermissionLevel],
+        save: bool = True
+    ) -> None:
+        """批量设置工具权限"""
+        self._store.set_permissions(permissions, save)
     
     def set_readonly_tools(self, tools: List[str]) -> None:
         """设置只读工具列表"""
         self._readonly_tools = set(tools)
+    
+    def get_permission(self, tool_name: str) -> PermissionLevel:
+        """获取工具权限级别"""
+        return self._store.get_permission(tool_name)
     
     async def inspect(
         self,
@@ -168,38 +321,26 @@ class PermissionInspector(ToolInspector):
         """执行权限检查"""
         tool_name = request.name
         
-        # 检查只读工具
-        if tool_name in self._readonly_tools:
-            # 只读工具只能用于读取操作
-            arguments = request.arguments or {}
-            write_operations = ["write", "create", "update", "delete", "remove"]
-            if any(op in arguments.get("mode", "").lower() for op in write_operations):
-                return InspectionResult.deny(
-                    f"Read-only tool '{tool_name}' cannot be used for write operations"
-                )
+        level = self._store.get_permission(tool_name)
         
-        # 检查权限级别
-        level = self._permission_levels.get(tool_name, self._default_level)
+        if level == PermissionLevel.ALWAYS_ALLOW:
+            return InspectionResult.allow("Always allowed")
         
-        if level == "allow":
-            return InspectionResult.allow()
-        elif level == "deny":
-            return InspectionResult.deny(f"Tool '{tool_name}' has been disabled")
-        else:  # "prompt"
-            # 检查是否需要特殊权限
-            if self._requires_approval(tool_name):
-                return InspectionResult.require_approval(
-                    f"Tool '{tool_name}' requires user approval"
-                )
-            return InspectionResult.allow()
+        if level == PermissionLevel.NEVER_ALLOW:
+            return InspectionResult.deny(f"Tool '{tool_name}' has been disabled (Never Allow)")
+        
+        # ASK_BEFORE - 需要检查是否需要批准
+        return InspectionResult.require_approval(
+            f"Tool '{tool_name}' requires user approval"
+        )
     
     def _requires_approval(self, tool_name: str) -> bool:
         """检查是否需要批准"""
         sensitive_tools = [
-            "write_file", "delete_file", "execute_code",
-            "run_shell", "delete_folder", "network_request"
+            "write", "edit", "delete", "remove",
+            "run_bash", "bash",
         ]
-        return tool_name in sensitive_tools
+        return any(sensitive in tool_name.lower() for sensitive in sensitive_tools)
 
 
 class RepetitionInspector(ToolInspector):
@@ -263,6 +404,18 @@ class InspectionManager:
                 return True
         return False
     
+    def get_inspector(self, name: str) -> Optional[ToolInspector]:
+        """获取检查器"""
+        for inspector in self._inspectors:
+            if inspector.name == name:
+                return inspector
+        return None
+    
+    @property
+    def inspectors(self) -> List[ToolInspector]:
+        """获取所有检查器"""
+        return self._inspectors.copy()
+    
     async def inspect(
         self,
         request: ToolRequest,
@@ -273,7 +426,6 @@ class InspectionManager:
         for inspector in self._inspectors:
             result = await inspector.inspect(request, conversation)
             results.append(result)
-            # 如果拒绝，立即返回
             if result.action == InspectionAction.DENY:
                 break
         return results
@@ -296,3 +448,58 @@ class InspectionManager:
                 denied.append(result)
         
         return approved, needs_approval, denied
+    
+    def create_default_chain(
+        self,
+        permission_store: Optional[PermissionStore] = None
+    ) -> "InspectionManager":
+        """
+        创建默认检查链
+        
+        Args:
+            permission_store: 权限存储实例
+            
+        Returns:
+            InspectionManager 实例
+        """
+        self._inspectors = []
+        
+        security_inspector = SecurityInspector()
+        self._inspectors.append(security_inspector)
+        
+        permission_inspector = PermissionInspector(store=permission_store)
+        self._inspectors.append(permission_inspector)
+        
+        repetition_inspector = RepetitionInspector()
+        self._inspectors.append(repetition_inspector)
+        
+        self._inspectors.sort(key=lambda x: x.priority, reverse=True)
+        
+        return self
+    
+    def can_execute_tool(
+        self,
+        tool_name: str,
+        permission_store: Optional[PermissionStore] = None
+    ) -> bool:
+        """检查工具是否可以执行（不需用户确认）"""
+        level = permission_store.get_permission(tool_name) if permission_store else PermissionLevel.ASK_BEFORE
+        return level == PermissionLevel.ALWAYS_ALLOW
+    
+    def must_ask_permission(
+        self,
+        tool_name: str,
+        permission_store: Optional[PermissionStore] = None
+    ) -> bool:
+        """检查工具是否需要用户确认"""
+        level = permission_store.get_permission(tool_name) if permission_store else PermissionLevel.ASK_BEFORE
+        return level == PermissionLevel.ASK_BEFORE
+    
+    def is_blocked(
+        self,
+        tool_name: str,
+        permission_store: Optional[PermissionStore] = None
+    ) -> bool:
+        """检查工具是否被阻止"""
+        level = permission_store.get_permission(tool_name) if permission_store else PermissionLevel.ASK_BEFORE
+        return level == PermissionLevel.NEVER_ALLOW

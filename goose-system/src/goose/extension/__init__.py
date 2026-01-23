@@ -25,8 +25,11 @@ from .config import (
     ExtensionConfig,
     ExtensionType,
     StdioExtensionConfig,
+    SseExtensionConfig,
     StreamableHttpExtensionConfig,
+    FrontendExtensionConfig,
     BuiltinExtensionConfig,
+    PlatformExtensionConfig,
     InlinePythonExtensionConfig,
     parse_extension_config,
     load_extensions_from_config,
@@ -35,7 +38,10 @@ from .config import (
 from .base import (
     Extension,
     StdioExtension,
+    SseExtension,
     HttpExtension,
+    FrontendExtension,
+    PlatformExtension,
     BuiltinExtension,
     InlinePythonExtension,
     ExtensionFactory,
@@ -45,23 +51,41 @@ from .manager import (
     ExtensionManager,
 )
 
+from .manager_tools import (
+    ExtensionManagerTools,
+    ExtensionInfo,
+    create_extension_manager_tools,
+    register_extension_manager_tools,
+)
+
 __all__ = [
     # Config
     "ExtensionConfig",
     "ExtensionType",
     "StdioExtensionConfig",
+    "SseExtensionConfig",
     "StreamableHttpExtensionConfig",
+    "FrontendExtensionConfig",
     "BuiltinExtensionConfig",
+    "PlatformExtensionConfig",
     "InlinePythonExtensionConfig",
     "parse_extension_config",
     "load_extensions_from_config",
     # Base
     "Extension",
     "StdioExtension",
+    "SseExtension",
     "HttpExtension",
+    "FrontendExtension",
+    "PlatformExtension",
     "BuiltinExtension",
     "InlinePythonExtension",
     "ExtensionFactory",
     # Manager
     "ExtensionManager",
+    # Manager Tools
+    "ExtensionManagerTools",
+    "ExtensionInfo",
+    "create_extension_manager_tools",
+    "register_extension_manager_tools",
 ]

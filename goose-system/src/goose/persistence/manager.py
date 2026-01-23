@@ -33,6 +33,7 @@ class PersistenceManager:
                 - sqlite:///goose.db - SQLite
                 - postgresql://user:pass@host/db - PostgreSQL
                 - http://localhost:8000 - HTTP API
+                - http://localhost:8000?api_key=xxx - HTTP API with auth
         """
         self.db_url = db_url
         self._backend: Optional[PersistenceBackend] = None
@@ -49,19 +50,20 @@ class PersistenceManager:
         uri = self.db_url
 
         if uri.startswith("http://") or uri.startswith("https://"):
-            from .backends.http_backend import HTTPBackend
-            logger.info(f"Using HTTP Backend: {uri}")
-            return HTTPBackend(base_url=uri)
+            from .backends.http_backend import HTTPBackend, parse_db_url
+            base_url, api_key, config_kwargs = parse_db_url(uri)
+            logger.info(f"Using HTTP Backend (url={base_url})")
+            return HTTPBackend(base_url=base_url, api_key=api_key, **config_kwargs)
 
         elif uri.startswith("file://") or uri.endswith(".jsonl"):
             from .backends.jsonl_backend import JsonlBackend
             path = uri.replace("file://", "") or "./data"
-            logger.info(f"Using JSONL Backend: {path}")
+            logger.info(f"Using JSONL Backend (path={path})")
             return JsonlBackend(data_dir=path)
 
         elif "://" in uri:
             from .backends.sql_backend import SQLBackend
-            logger.info(f"Using SQL Backend: {uri}")
+            logger.info(f"Using SQL Backend (url={uri})")
             return SQLBackend(db_url=uri)
 
         else:

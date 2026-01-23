@@ -8,7 +8,13 @@ Managers Module
 from .retry_manager import (
     RetryManager,
     RetryConfig,
-    RetryState,
+    RetryResult,
+    SuccessCheck,
+    ShellSuccessCheck,
+    ExecutionResult,
+    execute_shell_command,
+    execute_on_failure_command,
+    execute_success_checks,
     with_retry,
 )
 
@@ -45,7 +51,13 @@ __all__ = [
     # Retry Manager
     "RetryManager",
     "RetryConfig",
-    "RetryState",
+    "RetryResult",
+    "SuccessCheck",
+    "ShellSuccessCheck",
+    "ExecutionResult",
+    "execute_shell_command",
+    "execute_on_failure_command",
+    "execute_success_checks",
     "with_retry",
     # Inspection Manager
     "ToolInspectionManager",

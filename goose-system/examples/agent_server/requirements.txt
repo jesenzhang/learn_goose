@@ -1,0 +1,12 @@
+# Agent Server Example Dependencies
+
+# Server
+aiohttp>=3.9.0
+pyyaml>=6.0
+
+# Client
+requests>=2.31.0
+
+# Optional: Full FastAPI server (recommended for production)
+# fastapi>=0.109.0
+# uvicorn>=0.27.0

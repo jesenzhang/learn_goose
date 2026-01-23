@@ -83,8 +83,6 @@ class Tool:
             if param not in arguments:
                 return False, f"Missing required parameter: {param}"
         
-        # TODO: 添加类型验证
-        
         return True, ""
     
     def __repr__(self) -> str:
@@ -230,7 +228,6 @@ def create_tool_from_function(func: Callable[..., Any], name: Optional[str] = No
     name = name or func.__name__
     doc = inspect.getdoc(func) or ""
     
-    # 构建参数模式
     sig = inspect.signature(func)
     properties = {}
     required = []

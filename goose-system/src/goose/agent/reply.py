@@ -2,6 +2,7 @@
 Agent Reply Core
 
 核心回复流程，参考 Goose-Rs 的 agent.rs 实现。
+支持上下文压缩管理。
 """
 
 from typing import Dict, Any, List, Optional, AsyncGenerator
@@ -13,6 +14,7 @@ from .event import AgentEvent, AgentEventType, EventStream
 from ..conversation import Conversation, Message
 from ..tools import Tool, ToolRequest, ToolExecutor, InspectionManager, InspectionResult
 from ..providers import Provider
+from ..truncation import TruncationManager
 
 
 @dataclass
@@ -50,7 +52,8 @@ class AgentReply:
         self,
         provider: Provider,
         context: ReplyContext,
-        event_stream: Optional[EventStream] = None
+        event_stream: Optional[EventStream] = None,
+        truncation_manager: Optional[TruncationManager] = None,
     ):
         self.provider = provider
         self.context = context
@@ -59,6 +62,11 @@ class AgentReply:
             session_id="default",
             conversation_state=SkillsState()
         )
+        self.truncation_manager = truncation_manager
+    
+    def set_truncation_manager(self, manager: TruncationManager) -> None:
+        """Set truncation manager after initialization"""
+        self.truncation_manager = manager
     
     def _get_tool_calls(self, message: Message) -> List[ToolRequest]:
         """从消息中提取工具调用"""
@@ -286,13 +294,37 @@ class AgentReply:
     
     def _should_compact(self) -> bool:
         """检查是否需要压缩"""
-        message_count = len(self.session_state.conversation_state.messages)
-        context_limit = self.provider.get_model_config().context_limit
-        
-        return self.session_state.should_compact(message_count, context_limit)
+        if not self.truncation_manager:
+            message_count = len(self.session_state.conversation_state.messages)
+            context_limit = self.provider.get_model_config().context_limit
+            return self.session_state.should_compact(message_count, context_limit)
+        return False
     
     async def _compact_conversation(self) -> None:
         """压缩对话"""
+        if not self.truncation_manager:
+            await self._simple_compact()
+            return
+        
+        messages = self.session_state.conversation_state.messages
+        system_prompt = self.context.system_prompt
+        
+        compacted, usage = await self.truncation_manager.check_and_compact(
+            messages, system_prompt
+        )
+        
+        if compacted:
+            self.session_state.conversation_state.messages = messages
+            await self.event_stream.push(AgentEvent(
+                type=AgentEventType.COMPACTION_COMPLETED,
+                data={
+                    "message_count": len(messages),
+                    "tokens_saved": usage.get("tokens_saved", 0),
+                }
+            ))
+    
+    async def _simple_compact(self) -> None:
+        """简单的压缩（保留最近的消息）"""
         keep_messages = 10
         current_messages = self.session_state.conversation_state.messages
         

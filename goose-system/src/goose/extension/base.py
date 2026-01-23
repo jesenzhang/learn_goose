@@ -11,8 +11,11 @@ import asyncio
 from .config import (
     ExtensionConfig,
     StdioExtensionConfig,
+    SseExtensionConfig,
     StreamableHttpExtensionConfig,
+    FrontendExtensionConfig,
     BuiltinExtensionConfig,
+    PlatformExtensionConfig,
     InlinePythonExtensionConfig,
     ExtensionType,
 )
@@ -206,6 +209,60 @@ class BuiltinExtension(Extension):
         self._initialized = False
 
 
+class PlatformExtension(Extension):
+    """平台扩展 (平台特定功能)"""
+
+    def __init__(self, config: PlatformExtensionConfig):
+        super().__init__(config)
+        self.platform_name = config.platform_name
+        self.platform_config = config.config
+        self._platform_handler: Optional[Any] = None
+
+    async def initialize(self) -> None:
+        """初始化平台扩展"""
+        platform_handlers = {
+            "local": self._init_local_platform,
+            "remote": self._init_remote_platform,
+        }
+
+        handler = platform_handlers.get(self.platform_name)
+        if handler:
+            await handler()
+        else:
+            raise ValueError(f"Unknown platform: {self.platform_name}")
+
+        self._initialized = True
+
+    async def _init_local_platform(self) -> None:
+        """初始化本地平台"""
+        self._platform_handler = {"type": "local", "ready": True}
+
+    async def _init_remote_platform(self) -> None:
+        """初始化远程平台"""
+        self._platform_handler = {"type": "remote", "ready": True}
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """调用平台工具"""
+        if self._platform_handler is None:
+            raise RuntimeError("Extension not initialized")
+
+        if tool_name == "get_platform_info":
+            return {
+                "content": [{"type": "text", "text": f"Platform: {self.platform_name}"}]
+            }
+
+        raise ValueError(f"Tool not found on platform {self.platform_name}: {tool_name}")
+
+    async def close(self) -> None:
+        """关闭扩展"""
+        self._platform_handler = None
+        self._initialized = False
+
+
 class InlinePythonExtension(Extension):
     """内联 Python Extension"""
 
@@ -249,6 +306,86 @@ class InlinePythonExtension(Extension):
         self._initialized = False
 
 
+class SseExtension(Extension):
+    """Server-Sent Events Extension"""
+
+    def __init__(self, config: SseExtensionConfig):
+        super().__init__(config)
+        self.uri = config.uri
+        self.headers = config.headers
+        self.timeout = config.timeout
+        self._client: Optional[Any] = None
+
+    async def initialize(self) -> None:
+        """初始化 SSE Extension"""
+        try:
+            import httpx
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+            self._initialized = True
+        except ImportError:
+            raise RuntimeError("httpx is required for SSE extension. Install with: pip install httpx")
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """通过 SSE 调用工具"""
+        if self._client is None:
+            raise RuntimeError("Extension not initialized")
+
+        async with self._client as client:
+            response = await client.get(
+                f"{self.uri}/tools/{tool_name}",
+                json=arguments,
+                headers=self.headers
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def close(self) -> None:
+        """关闭 Extension"""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+        self._initialized = False
+
+
+class FrontendExtension(Extension):
+    """前端扩展 (工具由前端提供)"""
+
+    def __init__(self, config: FrontendExtensionConfig):
+        super().__init__(config)
+        self.frontend_tools = config.frontend_tools
+        self.connection_id = config.connection_id
+        self._frontend_connector: Optional[Any] = None
+
+    async def initialize(self) -> None:
+        """初始化前端扩展"""
+        self._initialized = True
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """通过前端连接器调用工具"""
+        if tool_name not in self.frontend_tools:
+            raise ValueError(f"Tool not available: {tool_name}")
+
+        if self._frontend_connector is None:
+            return {
+                "error": "Frontend connector not available",
+                "message": "Frontend tools require a frontend connection"
+            }
+
+        return await self._frontend_connector.call_tool(tool_name, arguments)
+
+    async def close(self) -> None:
+        """关闭 Extension"""
+        self._initialized = False
+
+
 class ExtensionFactory:
     """Extension 工厂"""
 
@@ -258,16 +395,25 @@ class ExtensionFactory:
         根据配置类型创建对应的 Extension
 
         ExtensionConfig::Stdio { cmd, args, ... } → StdioExtension
+        ExtensionConfig::SSE { uri, ... } → SseExtension
         ExtensionConfig::StreamableHttp { uri, ... } → HttpExtension
         ExtensionConfig::Builtin { name, ... } → BuiltinExtension
+        ExtensionConfig::Platform { platform, ... } → PlatformExtension
+        ExtensionConfig::Frontend { tools, ... } → FrontendExtension
         ExtensionConfig::InlinePython { code, ... } → InlinePythonExtension
         """
         if isinstance(config, StdioExtensionConfig):
             return StdioExtension(config)
+        elif isinstance(config, SseExtensionConfig):
+            return SseExtension(config)
         elif isinstance(config, StreamableHttpExtensionConfig):
             return HttpExtension(config)
         elif isinstance(config, BuiltinExtensionConfig):
             return BuiltinExtension(config)
+        elif isinstance(config, PlatformExtensionConfig):
+            return PlatformExtension(config)
+        elif isinstance(config, FrontendExtensionConfig):
+            return FrontendExtension(config)
         elif isinstance(config, InlinePythonExtensionConfig):
             return InlinePythonExtension(config)
         else:

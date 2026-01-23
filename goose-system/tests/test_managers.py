@@ -33,58 +33,148 @@ class TestRetryManager:
 
     def test_retry_config_defaults(self):
         """Test default retry configuration."""
+        from goose.managers import RetryConfig
         config = RetryConfig()
         assert config.max_retries == 3
-        assert config.base_delay == 1.0
-        assert config.max_delay == 60.0
+        assert config.checks == []
+        assert config.on_failure is None
+        assert config.timeout_seconds is None
+        assert config.on_failure_timeout_seconds is None
 
-    def test_retry_manager_default_config(self):
-        """Test retry manager with default config."""
+    def test_retry_config_from_dict(self):
+        """Test creating RetryConfig from dictionary."""
+        from goose.managers import RetryConfig
+        data = {
+            "max_retries": 5,
+            "checks": [{"type": "shell", "command": "echo test"}],
+            "on_failure": "echo cleanup",
+            "timeout_seconds": 60,
+            "on_failure_timeout_seconds": 120
+        }
+        config = RetryConfig.from_dict(data)
+        assert config.max_retries == 5
+        assert len(config.checks) == 1
+        assert config.on_failure == "echo cleanup"
+        assert config.timeout_seconds == 60
+        assert config.on_failure_timeout_seconds == 120
+
+    def test_retry_config_validate(self):
+        """Test RetryConfig validation."""
+        from goose.managers import RetryConfig
+        # Valid config
+        config = RetryConfig(max_retries=3)
+        valid, _ = config.validate()
+        assert valid
+
+        # Invalid: negative max_retries
+        config = RetryConfig(max_retries=-1)
+        valid, msg = config.validate()
+        assert not valid
+        assert "max_retries" in msg
+
+        # Invalid: zero timeout
+        config = RetryConfig(max_retries=1, timeout_seconds=0)
+        valid, msg = config.validate()
+        assert not valid
+        assert "timeout_seconds" in msg
+
+    @pytest.mark.asyncio
+    async def test_retry_result_enum(self):
+        """Test RetryResult enum values."""
+        from goose.managers import RetryResult
+        assert RetryResult.SKIPPED.value == "skipped"
+        assert RetryResult.MAX_ATTEMPTS_REACHED.value == "max_attempts_reached"
+        assert RetryResult.SUCCESS_CHECKS_PASSED.value == "success_checks_passed"
+        assert RetryResult.RETRIED.value == "retried"
+
+    @pytest.mark.asyncio
+    async def test_execute_success_checks(self):
+        """Test execute_success_checks function."""
+        from goose.managers import ShellSuccessCheck, execute_success_checks
+
+        # Empty checks should pass
+        result = await execute_success_checks([])
+        assert result is True
+
+        # Successful shell check
+        check = ShellSuccessCheck(command="echo test")
+        result = await execute_success_checks([check])
+        assert result is True
+
+        # Failing shell check
+        check = ShellSuccessCheck(command="exit 1")
+        result = await execute_success_checks([check])
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_retry_manager_attempts(self):
+        """Test retry manager attempt tracking."""
+        from goose.managers import RetryManager
+
         manager = RetryManager()
-        assert manager.config.max_retries == 3
+
+        # Initial state
+        assert await manager.get_attempts() == 0
+
+        # Increment
+        count = await manager.increment_attempts()
+        assert count == 1
+        assert await manager.get_attempts() == 1
+
+        # Reset
+        await manager.reset_attempts()
+        assert await manager.get_attempts() == 0
 
     @pytest.mark.asyncio
-    async def test_retry_success_first_attempt(self):
-        """Test retry manager succeeds on first attempt."""
-        manager = RetryManager(RetryConfig(max_retries=3, base_delay=0.01))
+    async def test_retry_manager_skipped_without_config(self):
+        """Test retry manager skips when no config provided."""
+        from goose.managers import RetryManager, RetryResult
 
-        call_count = 0
-        async def success_func():
-            nonlocal call_count
-            call_count += 1
-            return "success"
-
-        result = await manager.execute_with_retry(success_func)
-        assert result == "success"
-        assert call_count == 1
+        manager = RetryManager()
+        result = await manager.handle_retry_logic(None, None, [])
+        assert result == RetryResult.SKIPPED
 
     @pytest.mark.asyncio
-    async def test_retry_retries_on_failure(self):
-        """Test retry manager retries on failure."""
-        manager = RetryManager(RetryConfig(max_retries=3, base_delay=0.01))
+    async def test_retry_manager_success_checks_passed(self):
+        """Test retry manager with successful success checks."""
+        from goose.managers import RetryManager, RetryConfig, ShellSuccessCheck, RetryResult
 
-        call_count = 0
-        async def fail_twice():
-            nonlocal call_count
-            call_count += 1
-            if call_count < 3:
-                raise ValueError("temporary failure")
-            return "success"
+        manager = RetryManager()
+        config = RetryConfig(
+            max_retries=3,
+            checks=[ShellSuccessCheck(command="echo test")]
+        )
 
-        result = await manager.execute_with_retry(fail_twice)
-        assert result == "success"
-        assert call_count == 3
+        result = await manager.handle_retry_logic(None, config, [])
+        assert result == RetryResult.SUCCESS_CHECKS_PASSED
 
     @pytest.mark.asyncio
-    async def test_retry_exhausts_retries(self):
-        """Test retry manager raises after exhausting retries."""
-        manager = RetryManager(RetryConfig(max_retries=2, base_delay=0.01))
+    async def test_retry_manager_max_attempts_reached(self):
+        """Test retry manager after max attempts reached."""
+        from goose.managers import RetryManager, RetryConfig, RetryResult
 
-        async def always_fail():
-            raise ValueError("always fails")
+        manager = RetryManager()
+        config = RetryConfig(max_retries=2)
 
-        with pytest.raises(ValueError):
-            await manager.execute_with_retry(always_fail)
+        # Exhaust attempts
+        await manager.increment_attempts()
+        await manager.increment_attempts()
+        await manager.increment_attempts()
+
+        result = await manager.handle_retry_logic(None, config, [])
+        assert result == RetryResult.MAX_ATTEMPTS_REACHED
+
+    @pytest.mark.asyncio
+    async def test_retry_manager_retried(self):
+        """Test retry manager triggers retry."""
+        from goose.managers import RetryManager, RetryConfig, RetryResult
+
+        manager = RetryManager()
+        config = RetryConfig(max_retries=3)
+
+        result = await manager.handle_retry_logic(None, config, [])
+        assert result == RetryResult.RETRIED
+        assert await manager.get_attempts() == 1
 
 
 class TestToolInspectionManager:

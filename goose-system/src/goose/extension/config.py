@@ -13,9 +13,11 @@ import uuid
 class ExtensionType(str, Enum):
     """Extension 类型"""
     STDIO = "stdio"
+    SSE = "sse"                    # Server-Sent Events
     STREAMABLE_HTTP = "streamable_http"
     BUILTIN = "builtin"
     PLATFORM = "platform"
+    FRONTEND = "frontend"          # 前端提供的工具
     INLINE_PYTHON = "inline_python"
 
 
@@ -78,6 +80,21 @@ class InlinePythonExtensionConfig(ExtensionConfig):
     env: Dict[str, str] = Field(default_factory=dict)
 
 
+class SseExtensionConfig(ExtensionConfig):
+    """Server-Sent Events 扩展配置"""
+    type: ExtensionType = ExtensionType.SSE
+    uri: str
+    headers: Dict[str, str] = Field(default_factory=dict)
+    timeout: float = Field(default=30.0, alias="requestTimeout")
+
+
+class FrontendExtensionConfig(ExtensionConfig):
+    """前端扩展配置 (由前端提供工具)"""
+    type: ExtensionType = ExtensionType.FRONTEND
+    frontend_tools: List[str] = Field(default_factory=list)
+    connection_id: Optional[str] = None
+
+
 def parse_extension_config(data: Dict[str, Any]) -> ExtensionConfig:
     """解析 Extension 配置 (支持多种格式)"""
     ext_type = data.get("type", data.get("Type"))
@@ -138,6 +155,27 @@ def parse_extension_config(data: Dict[str, Any]) -> ExtensionConfig:
             code=data.get("code", ""),
             dependencies=data.get("dependencies", []),
             env=data.get("env", {})
+        )
+
+    elif ext_type in ["sse", "SSE"]:
+        return SseExtensionConfig(
+            id=data.get("id", str(uuid.uuid4())),
+            name=data.get("name", ""),
+            type=ExtensionType.SSE,
+            enabled=data.get("enabled", True),
+            uri=data.get("uri", ""),
+            headers=data.get("headers", {}),
+            timeout=data.get("timeout", data.get("requestTimeout", 30.0))
+        )
+
+    elif ext_type in ["frontend", "Frontend"]:
+        return FrontendExtensionConfig(
+            id=data.get("id", str(uuid.uuid4())),
+            name=data.get("name", ""),
+            type=ExtensionType.FRONTEND,
+            enabled=data.get("enabled", True),
+            frontend_tools=data.get("frontend_tools", []),
+            connection_id=data.get("connectionId", data.get("connection_id"))
         )
 
     raise ValueError(f"Unknown extension type: {ext_type}")

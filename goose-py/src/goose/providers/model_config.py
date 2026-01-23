@@ -1,5 +1,5 @@
-from typing import Optional
-from pydantic import BaseModel
+from typing import Optional, Dict
+from pydantic import BaseModel, Field
 
 # 对应 model.rs 中的 MODEL_SPECIFIC_LIMITS
 MODEL_LIMITS = {

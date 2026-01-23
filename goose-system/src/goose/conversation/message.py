@@ -57,23 +57,80 @@ class TextContent(BaseModel):
 
 
 class ImageContent(BaseModel):
-    """图像内容"""
+    """图像内容（支持 URL 和 base64）"""
     data: str
+    url: Optional[str] = None
     mime_type: str = "image/png"
+    detail: str = "auto"
     type: str = "image"
     
     model_config = ConfigDict(populate_by_name=True)
     
     @classmethod
-    def create(cls, data: str, mime_type: str = "image/png") -> "ImageContent":
-        return cls(data=data, mime_type=mime_type)
+    def create(
+        cls,
+        data: str,
+        mime_type: str = "image/png",
+        url: Optional[str] = None,
+        detail: str = "auto"
+    ) -> "ImageContent":
+        if url:
+            return cls(data="", url=url, mime_type=mime_type, detail=detail)
+        return cls(data=data, mime_type=mime_type, detail=detail)
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "type": "image",
-            "data": self.data,
+            "mimeType": self.mime_type,
+            "detail": self.detail
+        }
+        if self.url:
+            result["source"] = {"type": "url", "url": self.url}
+        elif self.data:
+            result["source"] = {
+                "type": "base64",
+                "mediaType": self.mime_type,
+                "data": self.data
+            }
+        return result
+
+
+class AudioContent(BaseModel):
+    """音频内容"""
+    data: str
+    url: Optional[str] = None
+    format: str = "wav"
+    mime_type: str = "audio/wav"
+    type: str = "audio"
+    
+    model_config = ConfigDict(populate_by_name=True)
+    
+    @classmethod
+    def create(
+        cls,
+        data: str,
+        format: str = "wav",
+        url: Optional[str] = None
+    ) -> "AudioContent":
+        if url:
+            return cls(data="", url=url, format=format, mime_type=f"audio/{format}")
+        return cls(data=data, format=format, mime_type=f"audio/{format}")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "type": "audio",
+            "format": self.format,
             "mimeType": self.mime_type
         }
+        if self.url:
+            result["source"] = {"type": "url", "url": self.url}
+        elif self.data:
+            result["source"] = {
+                "type": "base64",
+                "mediaType": self.mime_type,
+                "data": self.data
+            }
+        return result
 
 
 class ToolRequestContentValue(BaseModel):
@@ -368,7 +425,7 @@ class FrontendToolRequestContent(BaseModel):
     ) -> "FrontendToolRequestContent":
         return cls(
             id=request_id,
-            frontend_tool_request={"name": name, "arguments": arguments}
+            frontend_tool_request={"name": name, "arguments": arguments or {}}
         )
     
     def to_dict(self) -> Dict[str, Any]:
@@ -452,6 +509,8 @@ def parse_message_content(data: Dict[str, Any]) -> MessageContent:
         return TextContent(**data)
     elif normalized_type == "image":
         return ImageContent(**data)
+    elif normalized_type == "audio":
+        return AudioContent(**data)
     elif normalized_type == "tool_request":
         return ToolRequestContent(**data)
     elif normalized_type == "tool_response":
@@ -577,8 +636,14 @@ class Message(BaseModel):
         self.content.append(TextContent(text=text))
         return self
     
-    def with_image(self, data: str, mime_type: str = "image/png") -> "Message":
-        self.content.append(ImageContent.create(data, mime_type))
+    def with_image(
+        self,
+        data: str = "",
+        url: Optional[str] = None,
+        mime_type: str = "image/png",
+        detail: str = "auto"
+    ) -> "Message":
+        self.content.append(ImageContent.create(data, mime_type, url, detail))
         return self
     
     def with_tool_request(

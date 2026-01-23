@@ -35,7 +35,8 @@ from .base import (
     ModelConfig, InferenceConfig, Document
 )
 from .factory import ProviderFactory
-from .message import Message, Role, TextContent, ToolRequest, ToolResponse
+from ..conversation.message import Message, Role, TextContent, ToolRequestContent, ToolResponseContent, ImageContent
+from ..tools.base import ToolRequest
 from .errors import (
     ProviderError, AuthenticationError, RequestFailedError,
     ContextLengthExceededError, UsageError, ExecutionError
@@ -150,7 +151,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                         except json.JSONDecodeError:
                             args = {"raw": tc.function.arguments}
 
-                        content_list.append(ToolRequest(
+                        content_list.append(ToolRequestContent(
                             id=tc.id,
                             name=tc.function.name,
                             arguments=args
@@ -294,10 +295,49 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
         openai_msgs = []
         for msg in messages:
             if msg.role == Role.SYSTEM:
-                openai_msgs.append({"role": "system", "content": msg.text})
-
+                openai_msgs.append({"role": "system", "content": msg.text}) 
+            
             elif msg.role == Role.USER:
-                openai_msgs.append({"role": "user", "content": msg.text})
+                content_list = []
+                text_parts = []
+                image_parts = []
+                
+                for c in msg.content:
+                    if isinstance(c, TextContent):
+                        text_parts.append(c.text)
+                    elif isinstance(c, ImageContent):
+                        # Convert from ImageContent.to_dict() format to OpenAI format
+                        img_dict = c.to_dict()
+                        if "source" in img_dict:
+                            source = img_dict["source"]
+                            if source.get("type") == "url":
+                                image_parts.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": source["url"],
+                                        "detail": img_dict.get("detail", "auto")
+                                    }
+                                })
+                            elif source.get("type") == "base64":
+                                image_parts.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{img_dict.get('mimeType', 'image/png')};base64,{source.get('data', '')}",
+                                        "detail": img_dict.get("detail", "auto")
+                                    }
+                                })
+                
+                if text_parts:
+                    content_list.append({"type": "text", "text": "\n".join(text_parts)})
+                if image_parts:
+                    content_list.extend(image_parts)
+                
+                if len(content_list) == 1 and content_list[0].get("type") == "text":
+                    openai_msgs.append({"role": "user", "content": msg.text})
+                elif content_list:
+                    openai_msgs.append({"role": "user", "content": content_list})
+                else:
+                    openai_msgs.append({"role": "user", "content": msg.text})
 
             elif msg.role == Role.ASSISTANT:
                 o_msg = {"role": "assistant"}
@@ -318,8 +358,8 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                         "id": req.id,
                         "type": "function",
                         "function": {
-                            "name": req.name,
-                            "arguments": json.dumps(req.arguments or {})
+                            "name": req.tool_call_value.name,
+                            "arguments": json.dumps(req.tool_call_value.arguments or {})
                         }
                     } for req in tool_reqs]
 
@@ -327,7 +367,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
 
             elif msg.role == Role.TOOL:
                 for c in msg.content:
-                    if isinstance(c, ToolResponse):
+                    if isinstance(c, ToolResponseContent):
                         content_str = str(c.result) if c.result else "Success"
                         if c.is_error:
                             content_str = f"Error: {content_str}"

@@ -33,6 +33,7 @@ from ..managers import (
     PromptTemplate,
 )
 from ..extension import ExtensionManager, ExtensionConfig
+from ..truncation import TruncationManager, TruncationConfig, create_truncation_manager
 
 
 @dataclass
@@ -99,12 +100,76 @@ class Agent:
 
         self.permission_manager = PermissionManager()
 
+        self.truncation_manager: Optional[TruncationManager] = None
+
         self.event_stream = EventStream()
 
         self._subagents: Dict[str, "Agent"] = {}
 
         if self.config.system_prompt:
             self.conversation.set_system_prompt(self.config.system_prompt)
+
+    async def init_truncation_manager(
+        self,
+        enabled: bool = True,
+        threshold: Optional[float] = None,
+        auto_compact: Optional[bool] = None,
+        max_messages_before_compact: Optional[int] = None,
+        keep_recent_messages: Optional[int] = None
+    ) -> None:
+        """Initialize the truncation manager with optional configuration"""
+        if self.truncation_manager is not None:
+            return
+
+        config = TruncationConfig(
+            enabled=enabled,
+            threshold=threshold if threshold is not None else self.config.compact_threshold,
+            auto_compact=auto_compact if auto_compact is not None else True,
+            max_messages_before_compact=max_messages_before_compact or 50,
+            keep_recent_messages=keep_recent_messages or 5
+        )
+        self.truncation_manager = await create_truncation_manager(
+            self.provider,
+            config
+        )
+
+    async def update_provider(self, provider: Provider) -> None:
+        """Update the provider (useful for switching models mid-session)"""
+        self.provider = provider
+        if self.truncation_manager is not None:
+            self.truncation_manager.provider = provider
+
+    async def persist_session(self) -> Dict[str, Any]:
+        """Persist session state to a serializable dictionary"""
+        return {
+            "session_id": self.config.session_id,
+            "turn_count": self.session_state.turn_count,
+            "messages": [
+                {
+                    "role": msg.role.value,
+                    "content": msg.content,
+                    "timestamp": getattr(msg, "timestamp", None)
+                }
+                for msg in self.conversation.messages
+            ],
+            "system_prompt": self.conversation.system_prompt
+        }
+
+    async def restore_session(self, data: Dict[str, Any]) -> None:
+        """Restore session from a serialized dictionary"""
+        self.config.session_id = data.get("session_id", self.config.session_id)
+        self.session_state.turn_count = data.get("turn_count", 0)
+
+        for msg_data in data.get("messages", []):
+            role = msg_data.get("role", "user")
+            content = msg_data.get("content", "")
+            if role == "user":
+                self.conversation.add_user_message(content)
+            elif role == "assistant":
+                self.conversation.add_assistant_message(content)
+
+        if data.get("system_prompt"):
+            self.conversation.set_system_prompt(data["system_prompt"])
 
     @property
     def tools(self) -> List[Any]:
@@ -225,28 +290,23 @@ class Agent:
         max_turns: int = 50
     ) -> Conversation:
         """运行子 Agent 任务"""
-        subagent_config = AgentConfig(
-            session_id=f"subagent_{uuid.uuid4().hex[:8]}",
-            max_turns=max_turns,
-            system_prompt=system_prompt
+        from ..managers import SubagentConfig
+        config = SubagentConfig(
+            name=f"subagent_{uuid.uuid4().hex[:8]}",
+            instructions=system_prompt,
+            max_turns=max_turns
         )
 
-        subagent = Agent(
-            provider=self.provider,
-            config=subagent_config
-        )
+        result = await self.subagent_handler.execute_subagent(config)
 
-        for tool in self.tools:
-            subagent.register_tool(tool)
+        conversation = Conversation()
+        conversation.set_system_prompt(system_prompt)
+        conversation.add_user_message(task_prompt)
 
-        for skill in self.skill_registry.list_skills():
-            subagent.skill_registry.register(skill)
+        for msg_data in result.messages:
+            conversation.add_assistant_message(msg_data.get("content", ""))
 
-        await subagent.reply(task_prompt)
-
-        self._subagents[subagent.config.session_id] = subagent
-
-        return subagent.conversation
+        return conversation
 
     async def with_retry(self, func, *args, **kwargs):
         """带重试的函数执行"""
@@ -282,42 +342,47 @@ class Agent:
         attachments: Optional[List[Dict[str, Any]]] = None
     ) -> AgentState:
         """处理用户消息并生成回复"""
-        self.conversation.add_user_message(user_message, attachments or [])
+        try:
+            self.conversation.add_user_message(user_message, attachments or [])
 
-        reply_config = ReplyConfig(
-            max_turns=self.config.max_turns,
-            max_iterations=self.config.max_iterations,
-            compact_threshold=self.config.compact_threshold,
-            compact_ratio=self.config.compact_ratio,
-            chat_mode=self.config.chat_mode
-        )
-
-        context = ReplyContext(
-            conversation=self.conversation,
-            tools=self.tools,
-            system_prompt=self.conversation.system_prompt or "",
-            config=reply_config
-        )
-
-        reply_handler = AgentReply(
-            provider=self.provider,
-            context=context,
-            event_stream=self.event_stream
-        )
-
-        state = await reply_handler.run()
-
-        if not isinstance(state, SkillsState):
-            skills_state = SkillsState(
-                messages=state.messages,
-                jump_to=state.jump_to,
-                structured_response=state.structured_response
+            reply_config = ReplyConfig(
+                max_turns=self.config.max_turns,
+                max_iterations=self.config.max_iterations,
+                compact_threshold=self.config.compact_threshold,
+                compact_ratio=self.config.compact_ratio,
+                chat_mode=self.config.chat_mode
             )
-            state = skills_state
 
-        self.session_state.conversation_state = state
+            context = ReplyContext(
+                conversation=self.conversation,
+                tools=self.tools,
+                system_prompt=self.conversation.system_prompt or "",
+                config=reply_config
+            )
 
-        return state
+            reply_handler = AgentReply(
+                provider=self.provider,
+                context=context,
+                event_stream=self.event_stream,
+                truncation_manager=self.truncation_manager
+            )
+
+            state = await reply_handler.run()
+
+            if not isinstance(state, SkillsState):
+                skills_state = SkillsState(
+                    messages=state.messages,
+                    jump_to=state.jump_to,
+                    structured_response=state.structured_response
+                )
+                state = skills_state
+
+            self.session_state.conversation_state = state
+
+            return state
+        except Exception as e:
+            await self.event_stream.push(AgentEvent.error(e))
+            raise
 
     async def reply_stream(
         self,
@@ -325,31 +390,36 @@ class Agent:
         attachments: Optional[List[Dict[str, Any]]] = None
     ) -> AsyncGenerator[AgentEvent, None]:
         """流式处理用户消息"""
-        self.conversation.add_user_message(user_message, attachments or [])
+        try:
+            self.conversation.add_user_message(user_message, attachments or [])
 
-        reply_config = ReplyConfig(
-            max_turns=self.config.max_turns,
-            max_iterations=self.config.max_iterations,
-            compact_threshold=self.config.compact_threshold,
-            compact_ratio=self.config.compact_ratio,
-            chat_mode=self.config.chat_mode
-        )
+            reply_config = ReplyConfig(
+                max_turns=self.config.max_turns,
+                max_iterations=self.config.max_iterations,
+                compact_threshold=self.config.compact_threshold,
+                compact_ratio=self.config.compact_ratio,
+                chat_mode=self.config.chat_mode
+            )
 
-        context = ReplyContext(
-            conversation=self.conversation,
-            tools=self.tools,
-            system_prompt=self.conversation.system_prompt or "",
-            config=reply_config
-        )
+            context = ReplyContext(
+                conversation=self.conversation,
+                tools=self.tools,
+                system_prompt=self.conversation.system_prompt or "",
+                config=reply_config
+            )
 
-        reply_handler = AgentReply(
-            provider=self.provider,
-            context=context,
-            event_stream=self.event_stream
-        )
+            reply_handler = AgentReply(
+                provider=self.provider,
+                context=context,
+                event_stream=self.event_stream,
+                truncation_manager=self.truncation_manager
+            )
 
-        async for event in reply_handler.run_stream():
-            yield event
+            async for event in reply_handler.run_stream():
+                yield event
+        except Exception as e:
+            await self.event_stream.push(AgentEvent.error(e))
+            yield AgentEvent.error(e)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """获取所有工具的模式定义（用于 Provider）"""

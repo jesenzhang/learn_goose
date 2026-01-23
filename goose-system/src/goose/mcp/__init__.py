@@ -364,3 +364,24 @@ class InMemoryTransport(MCPTransport):
     
     async def close(self) -> None:
         self._connected = False
+
+
+from .client import MCPClient, MCPClientPool, ToolResult
+
+__all__ = [
+    "MCPMessageType",
+    "MCPMethod",
+    "MCPRequest",
+    "MCPResponse",
+    "MCPNotification",
+    "ToolDefinition",
+    "ResourceDefinition",
+    "InitializeResult",
+    "MCPTransport",
+    "StdioTransport",
+    "HttpTransport",
+    "InMemoryTransport",
+    "MCPClient",
+    "MCPClientPool",
+    "ToolResult",
+]

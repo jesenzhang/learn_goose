@@ -1,6 +1,7 @@
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+from enum import Enum
 from pydantic import BaseModel, Field, EmailStr
 
 class User(BaseModel):
