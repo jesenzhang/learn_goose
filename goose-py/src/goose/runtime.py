@@ -41,7 +41,6 @@ class Runtime:
     # 3. 资源管理 (Resource System)
     sys_store: ResourceStore
     usr_store: ResourceStore
-    _builders_registry: Dict[str, ResourceBuilder] = field(default_factory=dict)
     
     # 4. 后台管理器 (Workers)
     execution_manager: ExecutionManager
@@ -52,6 +51,9 @@ class Runtime:
     workflow_service: WorkflowService
     execution_service: ExecutionService
     trigger_service: TriggerService
+    
+    # 6. 资源管理注册表 (必须在最后，因为有默认值)
+    _builders_registry: Dict[str, ResourceBuilder] = field(default_factory=dict)
 
     def register_global_builder(self, kind: str, builder: ResourceBuilder):
         """注册全局资源构建器 (如 LLM)"""

@@ -1,13 +1,13 @@
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from typing import TYPE_CHECKING
-from goose.app.user_service.service import UserService
+from goose.app.user_service import UserService
 from goose.system_config import SystemConfig
 from goose.server.utils import decode_access_token_by_config
 
-from goose.app.trigger_service.manager import TriggerManager
-from goose.app.execution_service.service import ExecutionService
-from goose.app.workflow_service.workflow import WorkflowService
+
+from goose.app.execution_service import ExecutionService
+from goose.app.workflow_service import WorkflowService
 
    
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")

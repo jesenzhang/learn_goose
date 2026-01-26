@@ -3,8 +3,6 @@ from typing import Optional
 
 # Imports
 from goose.system_config import SystemConfig
-from goose.persistence.manager import persistence_manager
-from goose.persistence.drivers import SQLAlchemyBackend
 from goose.registry import sys_registry
 # Events
 from goose.events.bus import MemoryEventBus  # [修正] 导入具体实现

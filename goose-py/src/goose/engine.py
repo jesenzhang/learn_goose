@@ -44,6 +44,10 @@ class GooseEngine:
     def __init__(self):
         self._runtime: Optional[Runtime] = None
 
+    @property
+    def runtime(self) -> Runtime:
+        return self._runtime
+    
     async def start(self) -> Runtime:
         logger.info("🦆 Goose Engine initializing...")
 
@@ -96,8 +100,9 @@ class GooseEngine:
         )
         
         wf_service = WorkflowService(
-            repo=wf_repo, 
-            converter=converter
+            workflow_repository=wf_repo, 
+            workflow_converter=converter,
+            user_resource_repository=auth_repo
         )
 
         # ExecutionService: 它是 Trigger 的 Runner
@@ -111,7 +116,7 @@ class GooseEngine:
         )
 
         # 现在可以创建 TriggerManager 了 (注入 exec_service 作为 runner)
-        trigger_manager = TriggerManager(runner=exec_service)
+        trigger_manager = TriggerManager(bus=command_bus)
         
         # TriggerService: 依赖 Manager
         trigger_service = TriggerService(manager=trigger_manager)

@@ -13,7 +13,7 @@ from goose.components.registry import register_component
 from goose.types import NodeTypes
 from goose.events.types import SystemEvents
 
-from skill_micro_agent.providers.base import BaseLLM  # 引入系统事件
+from goose.providers.base import BaseLLM  # 引入系统事件
 
 logger = logging.getLogger("goose.component.llm")
 

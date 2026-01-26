@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException, Depends
-from goose.server.deps import get_trigger_manager # 需要在 deps 里实现单例获取
+
 
 router = APIRouter(prefix="/api/v1/triggers", tags=["triggers"])
 

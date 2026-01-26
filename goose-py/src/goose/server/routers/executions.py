@@ -8,7 +8,7 @@ from goose.server.schemas import (
     RunReq
 )
 from goose.server.utils import sse_wrapper
-from goose.app.execution_service.service import ExecutionService
+from goose.app.execution_service import ExecutionService
 from goose.server.deps import get_exec_service, get_current_user_id
 
 router = APIRouter(prefix="/api/v1/executions", tags=["executions"])

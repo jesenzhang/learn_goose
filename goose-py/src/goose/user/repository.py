@@ -6,6 +6,33 @@ from passlib.context import CryptContext
 from .types import User,ResourceType,UserResourceBinding,UserSession
 import logging
 import uuid
+import hashlib
+import secrets
+
+
+def hash_password(password: str) -> str:
+    """使用hashlib和随机盐值对密码进行哈希处理"""
+    salt = secrets.token_hex(32)  # 生成随机盐值
+    pwdhash = hashlib.pbkdf2_hmac('sha256',
+                                  password.encode('utf-8'),
+                                  salt.encode('ascii'),
+                                  100000)  # 使用100000次迭代
+    return salt + pwdhash.hex()
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """验证密码是否匹配哈希值"""
+    if len(hashed_password) < 64:
+        return False  # 哈希值太短，无效
+    
+    salt = hashed_password[:64]  # 提取前64字符作为盐值（32字节hex）
+    stored_hash = hashed_password[64:]  # 提取剩余部分作为哈希值
+    
+    # 用同样的方式对明文密码进行哈希
+    pwdhash = hashlib.pbkdf2_hmac('sha256',
+                                  plain_password.encode('utf-8'),
+                                  salt.encode('ascii'),
+                                  100000)
+    return pwdhash.hex() == stored_hash
 
 logger = logging.getLogger("goose.app.user.repo")
 
@@ -79,7 +106,7 @@ class UserRepository(BaseRepository):
      # --- 1. 基础流程 (Dev Mode) ---
     async def create_user(self, username: str, password: str, **kwargs) -> User:
         # 1. 哈希密码
-        hashed = pwd_context.hash(password)
+        hashed = hash_password(password)
         
         # 2. 创建对象
         user = User(
@@ -112,7 +139,7 @@ class UserRepository(BaseRepository):
         if not user.hashed_password:
             return None
             
-        if pwd_context.verify(password, user.hashed_password):
+        if verify_password(password, user.hashed_password):
             # (可选) 如果哈希算法升级了，这里可以重新 rehash 并更新
             return user
             

@@ -11,18 +11,18 @@ from goose.system_config import SystemConfig
 from goose.engine import GooseEngine
 from goose.workflow.converter import WorkflowConverter
 # --- 2. Application Layer (Services) ---
-from goose.app.execution_service.service import ExecutionService
-from goose.app.workflow_service.workflow import WorkflowService
-from goose.app.trigger_service.manager import TriggerManager
+from goose.app.execution_service import ExecutionService,ExecutionManager
+from goose.app.workflow_service import WorkflowService
+from goose.trigger.manager import TriggerManager
 
 # --- 3. Server Layer (Routers) ---
 from goose.server.routers import workflows, executions, trigger,auth
 
 from goose.session import SessionRepository
 from goose.workflow import WorkflowRepository
-from goose.app.execution_service.repository import ExecutionRepository
-from goose.app.user_service.repository import UserRepository,UserResourceRepository
-from goose.app.user_service.service import UserService
+from goose.app.execution_service import ExecutionRepository
+from goose.app.user_service import UserRepository,UserResourceRepository
+from goose.app.user_service import UserService
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
         
         # 2. 启动 Goose Engine (基础设施层)
         # 这会初始化 DB 连接、创建表结构、设置 EventBus 和全局 Runtime
-        system_engine = GooseEngine(config)
+        system_engine = GooseEngine()
         await system_engine.start()
         
         
@@ -76,15 +76,17 @@ async def lifespan(app: FastAPI):
          
         # 3. 初始化应用层服务 (Service Layer)
         # ExecutionService 依赖 Engine 初始化的全局 Runtime 和 DB
-        exec_service = ExecutionService(converter=converter,
+        exec_service = ExecutionService(ExecutionManager(execution_repo),
+                                        converter=converter,
                                         wf_repo=workflow_repo,
                                         exec_repo=execution_repo,
                                         auth_repo=user_resource_repo,
                                         session_repo=session_repo)
         
         # 4. 初始化并启动 Trigger Manager (App Layer)
-        # TriggerManager 依赖 ExecutionService 来调度任务
-        trigger_manager = TriggerManager(execution_service=exec_service)
+        # TriggerManager 依赖 CommandBus 来发送命令
+        runtime = system_engine.runtime  # 获取运行时以获取command_bus
+        trigger_manager = TriggerManager(bus=runtime.command_bus)
         await trigger_manager.start() # 加载 Cron 任务，启动调度器
         
         await user_service.get_or_create_default_user()

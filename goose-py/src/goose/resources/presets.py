@@ -30,14 +30,5 @@ def get_system_presets(config: SystemConfig) -> List[ResourceMetadata]:
         }
     ))
 
-    resources.append(ResourceMetadata(
-        id="sys.tool.google_search",
-        kind=ResourceKind.TOOL,
-        scope=ResourceScope.SYSTEM,
-        provider="serpapi",
-        config={
-            "api_key": config.serpapi_api_key
-        }
-    ))
 
     return resources

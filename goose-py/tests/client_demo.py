@@ -10,7 +10,7 @@ from typing import Callable, Dict, Any, Optional
 BASE_URL = "http://localhost:8200/api/v1"
 ADMIN_ID = "admin"
 # ⚠️ 请确保这里的 Key 与服务端日志一致
-ADMIN_KEY = "sk-goose-15f5e8d2c60c5d9e4c08ac924c916a5f" 
+ADMIN_KEY = "'d9ed0379a44b880b6002475ebc61064f9e06e08000ccfec58105d4658e35545e20ff15a545adf2f66a44f1cc18c6185006c6adbd538182eaac467b8b56ec8c7f'" 
 TEST_JSON_PATH = r"goose-py/tests/test.json"
 
 def log(msg, icon="ℹ️"):

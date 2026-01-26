@@ -6,7 +6,8 @@ from goose.system_config import SystemConfig
 from pydantic import BaseModel
 
 from goose.server.utils import create_access_token_by_config,decode_access_token_by_config
-from goose.app.user_service.service import UserService
+from goose.app.user_service import UserService
+from goose.user.types import User
 from goose.server.deps import get_user_service,get_sys_config
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -31,16 +32,16 @@ async def login_for_access_token(
     # 1. 验证凭证
     # 这是一个假设的方法，你需要确保 UserService 有这个逻辑
     # 逻辑：查找 user_id，并比对 api_key 是否匹配
-    user = await service.repo.get_by_id(form_data.username)
+    user:User = await service.repo.get_by_id(form_data.username)
     
-    if not user or user["api_key"] != form_data.password:
+    if not user or user.hashed_password != form_data.password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect user_id or api_key",
+            detail="Incorrect password or api_key",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     # 2. 生成 Token
-    access_token = create_access_token_by_config(data={"sub": user["id"]}, config=config)
+    access_token = create_access_token_by_config(data={"sub": user.id}, config=config)
     
     return {"access_token": access_token, "token_type": "bearer"}

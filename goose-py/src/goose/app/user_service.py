@@ -7,10 +7,7 @@ from typing import Dict, Any, Optional, List
 
 from goose.user.types import User, ResourceType
 from goose.user.repository import UserRepository, UserResourceRepository
-from passlib.context import CryptContext
 
-# 初始化密码哈希上下文
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +40,12 @@ class UserService:
             admin = await self.repo.create_user(
                 id="admin",
                 username="Administrator",
-                hashed_password=pwd_context.hash("admin"),
+                password="admin",  # 现在使用标准库hashlib，无需截断
                 is_superuser=True,
                 roles=["admin"],
                 config={"theme": "dark"}
             )
-            logger.info(f"✅ Default admin created. API Key: {default_key}")
+            logger.info("✅ Default admin created.")  # 移除了未定义的变量
         
         return admin
     
@@ -65,12 +62,19 @@ class UserService:
             return None
             
         # 2. 核心：比对哈希密码
-        # pwd_context.verify(明文, 哈希值) 会自动处理盐值和算法
+        # 现在使用repository提供的验证方法
         if not user.hashed_password:
             return None
             
-        if not pwd_context.verify(plain_password, user.hashed_password):
-            return None
+        # 使用repository中的verify_password函数
+        if not hasattr(self.repo, 'verify_password'):
+            # 如果repository没有验证方法，则直接调用authenticate
+            authenticated_user = await self.repo.authenticate(username, plain_password)
+            if authenticated_user and authenticated_user.id == user.id:
+                return user
+        else:
+            if not self.repo.verify_password(plain_password, user.hashed_password):
+                return None
             
         # 3. 检查用户是否被封禁
         if not user.is_active:
@@ -78,7 +82,6 @@ class UserService:
             
         return user
     
-     
     # =========================================================================
     # 2. 用户生命周期 (Lifecycle)
     # =========================================================================
