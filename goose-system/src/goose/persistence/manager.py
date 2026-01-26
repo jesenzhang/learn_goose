@@ -56,10 +56,10 @@ class PersistenceManager:
             return HTTPBackend(base_url=base_url, api_key=api_key, **config_kwargs)
 
         elif uri.startswith("file://") or uri.endswith(".jsonl"):
-            from .backends.jsonl_backend import JsonlBackend
+            from .backends.jsonl_backend import JSONLBackend
             path = uri.replace("file://", "") or "./data"
             logger.info(f"Using JSONL Backend (path={path})")
-            return JsonlBackend(data_dir=path)
+            return JSONLBackend(data_dir=path)
 
         elif "://" in uri:
             from .backends.sql_backend import SQLBackend
@@ -67,9 +67,9 @@ class PersistenceManager:
             return SQLBackend(db_url=uri)
 
         else:
-            from .backends.jsonl_backend import JsonlBackend
+            from .backends.jsonl_backend import JSONLBackend
             logger.warning(f"Unknown scheme in '{uri}', falling back to JSONL.")
-            return JsonlBackend(data_dir="./data")
+            return JSONLBackend(data_dir="./data")
 
     async def boot(self) -> None:
         """Initialize persistence layer."""

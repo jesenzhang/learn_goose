@@ -308,26 +308,8 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                     if isinstance(c, TextContent):
                         text_parts.append(c.text)
                     elif isinstance(c, ImageContent):
-                        # Convert from ImageContent.to_dict() format to OpenAI format
-                        img_dict = c.to_dict()
-                        if "source" in img_dict:
-                            source = img_dict["source"]
-                            if source.get("type") == "url":
-                                image_parts.append({
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": source["url"],
-                                        "detail": img_dict.get("detail", "auto")
-                                    }
-                                })
-                            elif source.get("type") == "base64":
-                                image_parts.append({
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:{img_dict.get('mimeType', 'image/png')};base64,{source.get('data', '')}",
-                                        "detail": img_dict.get("detail", "auto")
-                                    }
-                                })
+                        # Convert from ImageContent to OpenAI format
+                        image_parts.append(c.to_openai_dict())
 
                 if text_parts:
                     content_list.append({"type": "text", "text": "\n".join(text_parts)})

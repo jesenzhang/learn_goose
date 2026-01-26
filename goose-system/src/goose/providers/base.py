@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Any, AsyncGenerator, Optional, Dict
 from pydantic import BaseModel, Field
 import logging
+from ..conversation.message import Message
 
 logger = logging.getLogger("goose.providers.base")
 

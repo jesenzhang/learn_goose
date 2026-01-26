@@ -258,26 +258,7 @@ class AnthropicProvider(BaseLLM):
                         })
                     elif isinstance(c, ImageContent):
                         # Convert from ImageContent to Anthropic format
-                        img_dict = c.to_dict()
-                        if "source" in img_dict:
-                            source = img_dict["source"]
-                            if source.get("type") == "url":
-                                content_parts.append({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "url",
-                                        "url": source["url"]
-                                    }
-                                })
-                            elif source.get("type") == "base64":
-                                content_parts.append({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": img_dict.get("mimeType", "image/png"),
-                                        "data": source.get("data", "")
-                                    }
-                                })
+                        content_parts.append(c.to_anthropic_dict())
                     elif isinstance(c, ToolResponseContent):
                         content_parts.append({
                             "type": "tool_result",

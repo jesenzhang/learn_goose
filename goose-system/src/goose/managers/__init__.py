@@ -47,6 +47,14 @@ from .permission_manager import (
     PermissionLevel,
 )
 
+from .action_required_manager import (
+    ActionRequiredManager,
+    PendingRequest,
+    request_user_input,
+    request_tool_confirmation,
+    submit_user_response,
+)
+
 __all__ = [
     # Retry Manager
     "RetryManager",
@@ -80,4 +88,10 @@ __all__ = [
     # Permission Manager
     "PermissionManager",
     "PermissionLevel",
+    # Action Required Manager
+    "ActionRequiredManager",
+    "PendingRequest",
+    "request_user_input",
+    "request_tool_confirmation",
+    "submit_user_response",
 ]

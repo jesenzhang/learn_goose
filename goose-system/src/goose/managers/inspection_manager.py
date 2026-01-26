@@ -18,6 +18,12 @@ class InspectionAction(str, Enum):
     DENY = "deny"
     CONFIRM = "confirm"
     SKIP = "skip"
+    REQUIRE_APPROVAL = "require_approval"
+
+    @classmethod
+    def require_approval(cls, reason: Optional[str] = None) -> "InspectionAction":
+        """创建需要批准操作"""
+        return cls.REQUIRE_APPROVAL
 
 
 @dataclass
@@ -27,6 +33,10 @@ class InspectionResult:
     action: InspectionAction = InspectionAction.ALLOW
     reason: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
+    confidence: float = 1.0  # 置信度，0.0-1.0
+    inspector_name: str = ""  # 检查器名称
+    tool_request_id: str = ""  # 工具请求 ID
+    finding_id: Optional[str] = None  # 发现 ID
 
 
 @dataclass
@@ -106,20 +116,20 @@ class SecurityInspector(ToolInspector):
         )
 
 
-class PermissionInspector(ToolInspector):
-    """权限检查器"""
-    
+class LegacyPermissionInspector(ToolInspector):
+    """旧的权限检查器（已弃用，请使用 permission.PermissionInspector）"""
+
     def __init__(self):
         self.permission_levels: Dict[str, str] = {}  # tool_name -> level
         self._approval_callbacks: Dict[str, asyncio.Future] = {}
-    
+
     async def inspect(
         self,
         request: ToolRequest
     ) -> InspectionResult:
         """权限检查"""
         level = self.permission_levels.get(request.name, "unknown")
-        
+
         if level == "always_allow":
             return InspectionResult(
                 allowed=True,
@@ -145,7 +155,7 @@ class PermissionInspector(ToolInspector):
                 reason="Tool requires user confirmation",
                 details={"tool_name": request.name}
             )
-        
+
         # 默认需要确认
         return InspectionResult(
             allowed=False,
@@ -153,10 +163,13 @@ class PermissionInspector(ToolInspector):
             reason="Tool permission not set",
             details={"tool_name": request.name}
         )
-    
+
     def set_permission(self, tool_name: str, level: str) -> None:
         """设置工具权限"""
         self.permission_levels[tool_name] = level
+
+# 保持向后兼容
+PermissionInspector = LegacyPermissionInspector
 
 
 class RepetitionInspector(ToolInspector):
@@ -279,7 +292,7 @@ class ToolInspectionManager:
         """创建默认检查链"""
         self.inspectors = [
             SecurityInspector(),
-            PermissionInspector(),
+            LegacyPermissionInspector(),
             RepetitionInspector(),
         ]
         return self

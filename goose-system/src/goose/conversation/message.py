@@ -94,6 +94,62 @@ class ImageContent(BaseModel):
             }
         return result
 
+    def to_openai_dict(self) -> Dict[str, Any]:
+        """
+        转换为 OpenAI API 格式
+
+        OpenAI 期望: {"type": "image_url", "image_url": {"url": "...", "detail": "..."}}
+        """
+        if self.url:
+            return {
+                "type": "image_url",
+                "image_url": {
+                    "url": self.url,
+                    "detail": self.detail
+                }
+            }
+        elif self.data:
+            return {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{self.mime_type};base64,{self.data}",
+                    "detail": self.detail
+                }
+            }
+        return {
+            "type": "image_url",
+            "image_url": {"detail": self.detail}
+        }
+
+    def to_anthropic_dict(self) -> Dict[str, Any]:
+        """
+        转换为 Anthropic API 格式
+
+        Anthropic 期望: {"type": "image", "source": {"type": "url", "url": "..."}}
+        或 {"type": "image", "source": {"type": "base64", "media_type": "...", "data": "..."}}
+        """
+        if self.url:
+            return {
+                "type": "image",
+            "source": {
+                "type": "url",
+                "url": self.url
+            }
+            }
+        elif self.data:
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": self.mime_type,
+                    "data": self.data
+                }
+            }
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": self.mime_type, "data": ""}
+        }
+
 
 class AudioContent(BaseModel):
     """音频内容"""
