@@ -402,6 +402,7 @@ class RemoteDatabaseManager:
             "content": content_str,
             "metadata": metadata_str
         }
+        print(payload)
         try:
             res = await self._request("POST", "/agent/handle/add_message", json=payload, params={"p":"w"})
             return res.get("code") == 200 or res.get("status") == 1

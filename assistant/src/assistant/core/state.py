@@ -52,6 +52,8 @@ class AgentState(BaseModel):
     pending_tool_call: Optional[Dict] = None
     intent_queue: List[Dict] = Field(default_factory=list) # 存储待执行的意图列表
     title: str = "New Chat"
+    # 当前回合的结构化信息（工具调用、响应等），最终添加到回复消息的 metadata 中
+    turn_structured_info: Dict[str, Any] = Field(default_factory=dict)
     shared_memory: Dict[str, Any] = Field(default_factory=dict)
     run_config: Dict[str, Any] = Field(default_factory=dict, exclude=True)
     updated_at: float = Field(default_factory=lambda: datetime.now().timestamp())

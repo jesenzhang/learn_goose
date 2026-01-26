@@ -229,15 +229,21 @@ class Message(BaseModel):
     
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="消息元数据")
     visible: MessageVisible  = Field(default_factory=MessageVisible, description="消息可见性设置")
-    session_id: Optional[str] = Field(default=None, description="所属会话ID")
+    session_id: Optional[int] = Field(default=None, description="所属会话ID")
     created_at: float = Field(default_factory=time.time, description="消息创建时间")
     
     model_config = ConfigDict(populate_by_name=True)
 
-    def with_visibility(self, user_visible: bool, agent_visible: bool) -> "Message":
+    def with_visibility(self, user_visible: bool = True, agent_visible: bool = True) -> "Message":
         self.visible.user_visible = user_visible
         self.visible.agent_visible = agent_visible
         return self
+    
+    def only_user_visible(self) -> "Message":
+        return self.with_visibility(user_visible=True, agent_visible=False)
+    
+    def only_agent_visible(self) -> "Message":
+        return self.with_visibility(user_visible=False, agent_visible=True)
     
     # --- 核心序列化与反序列化逻辑 ---
     @property
@@ -423,12 +429,20 @@ class Message(BaseModel):
     
     @classmethod
     def tool_response(cls, tool_response: ToolResponse, metadata: Dict[str, Any] = None) -> "Message":
-        return cls(role=Role.TOOL, content=[tool_response], metadata=metadata)
+        return cls(role=Role.TOOL, content=[tool_response], metadata=metadata).only_agent_visible()
+    
+    @classmethod
+    def tool_responses(cls, tool_responses: List[ToolResponse], metadata: Dict[str, Any] = None) -> "Message":
+        return cls(role=Role.TOOL, content=tool_responses, metadata=metadata).only_agent_visible()
     
     @classmethod
     def tool_request(cls, tool_request: ToolRequest, metadata: Dict[str, Any] = None) -> "Message":
-        return cls(role=Role.TOOL, content=[tool_request], metadata=metadata)
+        return cls(role=Role.ASSISTANT, content=[tool_request], metadata=metadata).only_agent_visible()
 
+    @classmethod
+    def tool_requests(cls, tool_requests: List[ToolRequest], metadata: Dict[str, Any] = None) -> "Message":
+        return cls(role=Role.ASSISTANT, content=tool_requests, metadata=metadata).only_agent_visible()
+    
     @classmethod
     def tool(cls, text: str = "", data: dict = None, tool_call_id: str = "", metadata: Any = None) -> "Message":
         """快速创建一个工具响应消息"""
@@ -437,7 +451,7 @@ class Message(BaseModel):
             id=tool_call_id,
             toolResult=CallToolResult(content=[RawContent(text=text, data=data)])
         )
-        return cls(role=Role.TOOL, content=[tr], metadata=metadata)
+        return cls(role=Role.TOOL, content=[tr], metadata=metadata).only_agent_visible()
 
     # --- 辅助属性 ---
     @property

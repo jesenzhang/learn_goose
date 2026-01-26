@@ -5,6 +5,7 @@
 import os
 import sys
 import logging
+import argparse
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -165,10 +166,36 @@ app = create_app()
 
 def main():
     """运行应用"""
-    port = int(os.getenv('ASSISTANT_PORT', 8400))
-    host = os.getenv('ASSISTANT_HOST', '0.0.0.0')
+    parser = argparse.ArgumentParser(description="Museum Assistant Server")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host address to bind (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8400, help="Port to bind (default: 8400)")
+    parser.add_argument("--config", type=str, default="assistant_config.yaml", help="Config file path (default: assistant_config.yaml)")
+    
+    args = parser.parse_args()
+    
+    # 更新全局配置路径
+    os.environ['ASSISTANT_CONFIG'] = args.config
+    os.environ['ASSISTANT_PORT'] = str(args.port)
+    os.environ['ASSISTANT_HOST'] = args.host
 
-    logger.info(f"Starting server on {host}:{port}")
+    logger.info(f"Starting server on {args.host}:{args.port} with config {args.config}")
+    uvicorn.run(
+        "assistant.main:app",
+        host=args.host,
+        port=args.port,
+        reload=False,
+        log_level="info"
+    )
+
+
+def run_with_args(host="0.0.0.0", port=8400, config="assistant_config.yaml"):
+    """使用指定参数运行应用，用于模块导入场景"""
+    # 更新全局配置路径
+    os.environ['ASSISTANT_CONFIG'] = config
+    os.environ['ASSISTANT_PORT'] = str(port)
+    os.environ['ASSISTANT_HOST'] = host
+
+    logger.info(f"Starting server on {host}:{port} with config {config}")
     uvicorn.run(
         "assistant.main:app",
         host=host,

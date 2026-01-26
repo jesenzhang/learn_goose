@@ -106,6 +106,7 @@ def _format_sse(data: Dict[str, Any], event_type: Optional[str] = None) -> str:
 
 async def event_generator(
     session_id: int,
+    last_event_id: Optional[int] = -1,
     input_data: Optional[Dict] = None,
     resume: bool = False,
     approval_data: Optional[ApprovalRequest] = None,
@@ -143,7 +144,7 @@ async def event_generator(
         async def streamer_to_queue():
             """从 bus 订阅事件并放入队列"""
             try:
-                async for streamer_event in agent._bus.subscribe(str(session_id)):
+                async for streamer_event in agent._bus.subscribe(str(session_id), after_seq_id=last_event_id):
                     # 将 StreamerEvent 转换为 Event 格式
                     event = Event(
                         id=streamer_event.id,
@@ -455,6 +456,8 @@ def create_router() -> APIRouter:
     async def chat(
         req: ChatRequest,
         session_id: int = Query(description="Session identifier"),
+        resume: bool = Query(default=False, description="Resume flag"),
+        last_event_id: int = Query(default=-1, description="Last event ID for resuming"),
         format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
     ):
         """
@@ -471,7 +474,7 @@ def create_router() -> APIRouter:
         
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
-            event_generator(session_id, input_data=req.model_dump(), format=format),
+            event_generator(session_id, resume=resume, last_event_id=last_event_id, input_data=req.model_dump(), format=format),
             media_type=media_type,
             headers=STREAMING_HEADERS
         )

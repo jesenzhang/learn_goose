@@ -286,6 +286,7 @@ class MicroAgent:
             raise ValueError("state is required for add_message")
 
         # 使用 Conversation 来管理消息
+        msg.session_id = session_id
         conv = self._get_conversation(state)
         conv.push(msg, ephemeral=ephemeral)
 
@@ -997,27 +998,49 @@ Generate the content/response now.
             )
         
         if req_ctx.is_deep_research:
-            from deepresearch.deepresearch import DeepResearch,ApiModel
-            if input_data :
-                if isinstance(input_data, dict):
-                    user_input = input_data.get("message")
-                elif isinstance(input_data, str):
-                    user_input = input_data
-            model_config = {
-                        "api_key": "empty",
-                        "base_url": "http://192.168.10.180:8088/v1",
-                        "model": "qwen3_vl"
-                    }
-            api_model = ApiModel(model_config)
-            assistant = DeepResearch(llm=api_model, write_llm=api_model)
-
-            # 传递 BaseStreamer 给 deepresearch，使其使用 assistant 的事件系统
-            # 这样 deepresearch 发送的事件会通过 bus 广播，event_generator 可以订阅并收到
-            streamer = self.get_streamer(session_id)
-            # run_async 内部已经启动了监听器，会实时输出事件
-            
-            await assistant.run_async(user_input, streamer,uid=uuid.uuid4(), enable_listener=True)
-            return
+                if input_data :
+                    if isinstance(input_data, dict):
+                        user_input = input_data.get("message")
+                    elif isinstance(input_data, str):
+                        user_input = input_data
+                    
+                from ai4search import DeepResearchAgent,DeepResearchConfig
+                # 创建配置
+                config = DeepResearchConfig(
+                    llm_config={
+                        "model": "qwen2",
+                        "api_key": "api_key",
+                        "base_url": "http://192.168.10.137:8086/v1"
+                    },
+                    rerank_url="http://192.168.10.137:8079/rerank",
+                    enable_local_doc=True,
+                    enable_exhibits=True,
+                    enable_online_search=False,
+                    max_depth=3,
+                    max_steps=3,
+                    max_concurrent=1,
+                )
+                # 创建 agent
+                deepresearch_agent = DeepResearchAgent(config=config)
+                streamer = self.get_streamer(session_id)
+                # 执行任务
+                query = user_input
+                background_info = ''
+                
+                result = await deepresearch_agent.research(
+                    query=query,
+                    background_info=background_info,
+                    enable_write=True,
+                    streamer=streamer  # ← 传入自定义 streamer
+                )
+                ## 重要信息
+                markdown = result["write"]["markdown_content"]
+                search_conclusion = result["search"]["notebook"]
+                
+                await self.add_message(state.session_id, Message.user(user_input), state)
+                await self.add_message(state.session_id, Message.assistant(markdown), state)
+                
+                return
             
            
     
@@ -1064,19 +1087,6 @@ Generate the content/response now.
             
             state = AgentState(**state_data) if state_data else AgentState(session_id=session_id)
             
-            # [关键步骤 A]：处理上下文数据 (Input Context)
-            # 如果有上传文件或页面内容，将其放入 Shared Memory，以便工具（如 read_file）可以访问
-            # if req_ctx.file_path:
-            #     state.shared_memory["_current_file_path"] = req_ctx.file_path
-            #     # 可选：生成一条系统消息告知 Agent
-            #     # state.history.append({"role": "system", "content": f"User uploaded file: {req_ctx.file_path}"})
-            
-            # if req_ctx.page_content:
-            #     state.shared_memory["_page_content"] = req_ctx.page_content
-
-            # [关键步骤 B]：处理配置标志 (Config)
-            # 将 Deep Thinking 标志存入 State (如果需要在多轮对话中保持)
-            # 或者仅在本次 run_task 中生效
             state.run_config["deep_thinking"] = req_ctx.deep_thinking
             state.run_config["is_deep_research"] = req_ctx.is_deep_research
             
@@ -1094,6 +1104,8 @@ Generate the content/response now.
                 if state.status == AgentStatus.WAITING_APPROVAL:
                     # 传递 gen
                     if not await self._process_approval(state, approval_data or {}, gen): return
+                    
+                
             else:
                 await self._emit_event(EventType.RUN_START, {
                     "session_id": session_id
@@ -1156,21 +1168,27 @@ Generate the content/response now.
                     state.status = AgentStatus.RUNNING
                     
                     # Intent Phase (传递 gen)
-                    direct_res = await self._handle_intent_phase(user_input, state, gen)
-                    
-                    # 存入数据库
-                    await self.add_message(state.session_id, Message.user(user_input), state)
-                        
-                    if direct_res:
-                        # 存入数据库
-                        await self.add_message(state.session_id, Message.assistant(direct_res), state)
-                        await self._emit_event(EventType.TOKEN, direct_res)
-                        self._schedule_state_save(state.session_id, state)
+                # 每个回合开始时，清空结构化信息收集
+                state.turn_structured_info = {}
 
-                        # 执行请求结束 Hooks
-                        if self.hook_manager:
-                            await self.hook_manager.on_request_end(hook_ctx, direct_res)
-                        return
+                direct_res = await self._handle_intent_phase(user_input, state, gen)
+
+                # 存入数据库
+                await self.add_message(state.session_id, Message.user(user_input), state)
+
+                if direct_res:
+                    # 存入数据库，携带回合的结构化信息
+                    assistant_msg = Message.assistant(direct_res)
+                    # if state.turn_structured_info:
+                    #     assistant_msg.metadata = state.turn_structured_info.copy()
+                    await self.add_message(state.session_id, assistant_msg, state)
+                    await self._emit_event(EventType.TOKEN, direct_res)
+                    self._schedule_state_save(state.session_id, state)
+
+                    # 执行请求结束 Hooks
+                    if self.hook_manager:
+                        await self.hook_manager.on_request_end(hook_ctx, direct_res)
+                    return
 
             while state.status == AgentStatus.RUNNING:
                 await asyncio.sleep(0.01)
@@ -1362,27 +1380,38 @@ You must strictly follow this two-phase output format, regardless of any previou
                 await self._emit_event(EventType.TOKEN_END, {})
                         
                 logger.info(f"📊 LLM returned: text_len={len(full_content_text)}, tool_requests={len(received_tool_requests)}")
-                if received_tool_requests:
-                    for req in received_tool_requests:
-                        name = req.tool_call.value.name if req.tool_call and req.tool_call.value else "unknown"
-                        logger.info(f"   Tool request: {req.id} -> {name}")
-
-                # 4. Update History (Assistant Response)
-                # ======================================
-                assistant_content = []
-                if full_content_text:
-                    assistant_content.append(TextContent(text=full_content_text))
                 
                 if received_tool_requests:
+                    # 将工具请求序列化存储到回合结构化信息中
+                    if "tool_requests" not in state.turn_structured_info:
+                        state.turn_structured_info["tool_requests"] = []
+                        
+                    for req in received_tool_requests:
+                        state.turn_structured_info["tool_requests"].append(req)
+
+                    assistant_content = []
+                    if full_content_text:
+                        assistant_content.append(TextContent(text=full_content_text))
                     assistant_content.extend(received_tool_requests)
+                    await self.add_message(state.session_id, Message(role=Role.ASSISTANT, content=assistant_content).only_agent_visible(), state)
+                
                     
                 # Create the finalized assistant message and dump to dict for DB
-                assistant_msg = Message(role=Role.ASSISTANT, content=assistant_content)
-                await self.add_message(state.session_id, assistant_msg,state)
+                # assistant_msg = Message(role=Role.ASSISTANT, content=assistant_content)
+                # await self.add_message(state.session_id, assistant_msg,state)
                 
                 # 5. Handle Tools or Stop
                 # =======================
                 if not received_tool_requests:
+                    assistant_content = []
+                    if full_content_text:
+                        assistant_content.append(TextContent(text=full_content_text))
+                    
+                    if state.turn_structured_info["tool_responses"]:
+                        assistant_content.extend(state.turn_structured_info["tool_responses"])
+                    
+                    await self.add_message(state.session_id, Message(role=Role.ASSISTANT, content=assistant_content), state)
+                    
                     self._schedule_state_save(state.session_id, state)
                     break # Turn complete
 
@@ -1394,15 +1423,20 @@ You must strictly follow this two-phase output format, regardless of any previou
  
 
                 # 创建带有 artifact 信息的消息 metadata
-                message_metadata = {}
-                for i, (req,resp) in enumerate(zip(received_tool_requests,exec_results)):
-  
+                # 初始化工具响应列表
+                if "tool_responses" not in state.turn_structured_info:
+                    state.turn_structured_info["tool_responses"] = []
+
+                for i, (req, resp) in enumerate(zip(received_tool_requests, exec_results)):
                     # Construct Tool Response Message using Goose models
                     # Note: OpenAIProvider._prepare_messages will separate this into the correct format
                     tool_msg = Message.tool_response(resp)
-                    
+
                     # 存入数据库（add_message 会自动同步到 history）
                     await self.add_message(state.session_id, tool_msg, state)
+
+
+                    state.turn_structured_info["tool_responses"].append(resp)
 
                 self._schedule_state_save(state.session_id, state)
 

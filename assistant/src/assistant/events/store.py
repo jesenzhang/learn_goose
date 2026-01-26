@@ -66,7 +66,7 @@ class AsyncEventStore(IEventStore):
             # 解析 run_id 为 session_id
             session_id = int(event.run_id)
 
-            # await self.db.save_event(session_id, event_data)
+            await self.db.save_event(session_id, event_data)
 
         except Exception as e:
             logger.error(f"Failed to save event: {e}", exc_info=e)
