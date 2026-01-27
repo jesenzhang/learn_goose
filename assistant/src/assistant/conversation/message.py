@@ -475,3 +475,188 @@ class Message(BaseModel):
     @property
     def tool_calls(self) -> List[ToolRequest]:
         return [c for c in self.content if isinstance(c, ToolRequest)]
+# =============================================================================
+# Token State
+# =============================================================================
+
+class TokenState:
+    """Token 状态跟踪"""
+    def __init__(
+        self,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        accumulated_input_tokens: int = 0,
+        accumulated_output_tokens: int = 0,
+        accumulated_total_tokens: int = 0
+    ):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.total_tokens = total_tokens
+        self.accumulated_input_tokens = accumulated_input_tokens
+        self.accumulated_output_tokens = accumulated_output_tokens
+        self.accumulated_total_tokens = accumulated_total_tokens
+
+    def add_input(self, tokens: int):
+        self.input_tokens += tokens
+        self.accumulated_input_tokens += tokens
+        self.accumulated_total_tokens += tokens
+        self.total_tokens += tokens
+        return self
+
+    def add_output(self, tokens: int):
+        self.output_tokens += tokens
+        self.accumulated_output_tokens += tokens
+        self.accumulated_total_tokens += tokens
+        self.total_tokens += tokens
+        return self
+
+    def total(self) -> int:
+        return self.total_tokens
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "accumulated_input_tokens": self.accumulated_input_tokens,
+            "accumulated_output_tokens": self.accumulated_output_tokens,
+            "accumulated_total_tokens": self.accumulated_total_tokens,
+        }
+    @property
+    def as_tool_request(self) -> Optional[ToolRequest]:
+        for c in self.content:
+            if isinstance(c, ToolRequest):
+                return c
+        return None
+
+    @property
+    def as_tool_response(self) -> Optional[ToolResponse]:
+        for c in self.content:
+            if isinstance(c, ToolResponse):
+                return c
+        return None
+
+    @property
+    def as_action_required(self) -> Optional[ActionRequired]:
+        for c in self.content:
+            if isinstance(c, ActionRequired):
+                return c
+        return None
+
+    @property
+    def as_thinking(self) -> Optional[ThinkingContent]:
+        for c in self.content:
+            if isinstance(c, ThinkingContent):
+                return c
+        return None
+
+    @property
+    def as_redacted_thinking(self) -> Optional[RedactedThinkingContent]:
+        for c in self.content:
+            if isinstance(c, RedactedThinkingContent):
+                return c
+        return None
+
+    @property
+    def as_system_notification(self) -> Optional[SystemNotification]:
+        for c in self.content:
+            if isinstance(c, SystemNotification):
+                return c
+        return None
+
+    @property
+    def as_text(self) -> Optional[str]:
+        if isinstance(c, TextContent):
+            return c.text
+        return None
+
+    @property
+    def as_tool_response_text(self) -> Optional[str]:
+        if tool_response := self.as_tool_response():
+            if hasattr(tool_response, 'tool_result'):
+                tr = tool_response.tool_result
+                if hasattr(tr, 'content'):
+                    texts = []
+                    for content_item in tr.content:
+                        if hasattr(content_item, 'text') and content_item.text:
+                            texts.append(content_item.text)
+                    if texts:
+                        return "\n".join(texts)
+        return None
+
+    @property
+    def as_concat_text(self) -> str:
+        texts = []
+        for c in self.content:
+            if isinstance(c, TextContent):
+                texts.append(c.text)
+        return "\n".join(texts)
+
+    def get_tool_ids(self) -> List[str]:
+        ids = set()
+        for c in self.content:
+            if isinstance(c, ToolRequest):
+                ids.add(c.id)
+            elif isinstance(c, ToolResponse):
+                ids.add(c.id)
+        return list(ids)
+
+    def get_tool_request_ids(self) -> List[str]:
+        ids = []
+        for c in self.content:
+            if isinstance(c, ToolRequest):
+                ids.append(c.id)
+        return ids
+
+    def get_tool_response_ids(self) -> List[str]:
+        ids = []
+        for c in self.content:
+            if isinstance(c, ToolResponse):
+                ids.append(c.id)
+        return ids
+
+    def has_only_text_content(self) -> bool:
+        return all(isinstance(c, TextContent) for c in self.content)
+
+    def debug(self) -> str:
+        return f"Message(role={self.role}, content_count={len(self.content)}, id={self.id})"
+
+    def with_id(self, id: str) -> "Message":
+        self.id = id
+        return self
+
+    def with_content(self, content: Any) -> "Message":
+        if isinstance(content, list):
+            self.content.extend(content)
+        else:
+            self.content.append(content)
+        return self
+
+    def with_text(self, text: str) -> "Message":
+        self.content.append(TextContent(text=text))
+        return self
+
+    def with_tool_request(self, id: str, tool_call: Any) -> "Message":
+        self.content.append(ToolRequest(id=id, tool_call=tool_call))
+        return self
+
+    def with_tool_response(self, id: str, tool_result: Any) -> "Message":
+        self.content.append(ToolResponse(id=id, tool_result=tool_result))
+        return self
+
+    def with_action_required(self, data: Any) -> "Message":
+        self.content.append(ActionRequired(data=data))
+        return self
+
+    def with_thinking(self, thinking: str, signature: str = "") -> "Message":
+        self.content.append(ThinkingContent(thinking=thinking, signature=signature))
+        return self
+
+    def with_redacted_thinking(self, data: str) -> "Message":
+        self.content.append(RedactedThinkingContent(data=data))
+        return self
+
+    def with_system_notification(self, notification_type: Any, msg: str) -> "Message":
+        self.content.append(SystemNotification(notification_type=notification_type, msg=msg))
+        return self

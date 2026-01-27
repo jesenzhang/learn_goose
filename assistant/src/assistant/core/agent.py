@@ -35,10 +35,16 @@ from .executor import ToolExecutor
 # Artifact Storage Import
 from .artifact_storage import init_manager, get_manager
 
+
+
+# [NEW] 导入 Truncation 和 ChatRecall 模块
+from ..truncation import TruncationManager
+from ..chatrecall import ChatRecall
+
     # 需要引入的依赖 (放在文件头部)
 from ..intent.models import IntentResult
 from ..intent.recognizer import IntentRecognizer
-from ..intent.strategy import IntentExecutor, ExecutionMode, TerminationAction 
+from ..intent.strategy import IntentExecutor, ExecutionMode, TerminationAction
 from ..intent.config_loader import IntentConfigLoader
 from .watcher import ConfigWatcher
 from .generation import AgentGeneration
@@ -80,6 +86,12 @@ class MicroAgent:
 
         # Initialize Artifact Manager
         self.artifact_manager = init_manager(config_path=self.config_path)
+
+        # Initialize Truncation Manager
+        self.truncation_manager: Optional[TruncationManager] = None
+
+        # Initialize ChatRecall
+        self.chat_recall: Optional[ChatRecall] = None
 
         # 状态保存管理器 - 延迟批量保存
         self._pending_state_save = False
@@ -171,6 +183,52 @@ class MicroAgent:
     def _build_generation(self, config: ConfigLoader) -> AgentGeneration:
         """构建新一代资源"""
         logger.debug("Building agent components...")
+
+        # Initialize Truncation Manager
+        if config.provider.llm:
+            # 直接使用 config.truncation 属性获取 dataclass 配置
+            truncation_config = config.truncation
+            # 使用 LLM provider 创建 Truncation Manager
+            llm_provider = ProviderFactory.create_llm(
+                config.provider.llm.provider,
+                config.provider.llm.config
+            )
+            self.truncation_manager = TruncationManager(
+                provider=llm_provider,
+                config=truncation_config
+            )
+            logger.info("Truncation Manager initialized")
+        else:
+            self.truncation_manager = None
+
+        # Initialize ChatRecall
+        # 直接使用 config.chatrecall 属性获取 dataclass 配置
+        chat_recall_config = config.chatrecall
+
+        # 定义会话查询函数
+        async def session_query_func(**kwargs) -> Dict[str, Any]:
+            """查询会话数据的函数"""
+            if kwargs.get("session_id"):
+                # 加载单个会话
+                session_data = await self.db.load_state(kwargs["session_id"])
+                if session_data:
+                    return {
+                        "messages": session_data.get("history", []),
+                        "created_at": session_data.get("created_at"),
+                        "updated_at": session_data.get("updated_at"),
+                        "system_prompt": session_data.get("system_prompt"),
+                    }
+            else:
+                # 加载所有会话
+                all_sessions = await self.db.list_sessions()
+                return {sid: {"messages": data.get("history", [])} for sid, data in all_sessions.items()}
+
+        self.chat_recall = ChatRecall(
+            session_query_func=session_query_func,
+            config=chat_recall_config
+        )
+        logger.info("ChatRecall initialized")
+
         # 提取 SkillsConfig (它是 Pydantic 对象)
         skills_cfg = config.skills_config
         skill_loader = SkillLoader(
@@ -179,7 +237,7 @@ class MicroAgent:
             global_sensitive_tools=set(config.security.sensitive_tools)
         )
         logger.info("Skill loader initialized")
-        
+
         # 1. LLM
         llm = None
         if config.provider.llm:
@@ -265,6 +323,12 @@ class MicroAgent:
             messages.reverse()
             messages.sort(key=lambda x: x.created_at)
             state._conversation = Conversation(messages=messages)
+
+        # 设置 Truncation Manager（如果已初始化）
+        if self.truncation_manager and hasattr(state._conversation, 'set_truncation_manager'):
+            if state._conversation.get_truncation_manager() is None:
+                state._conversation.set_truncation_manager(self.truncation_manager)
+
         return state._conversation
 
     def _sync_history_from_conversation(self, state: AgentState):
@@ -1192,7 +1256,27 @@ Generate the content/response now.
 
             while state.status == AgentStatus.RUNNING:
                 await asyncio.sleep(0.01)
-                
+
+                # ==============================
+                # [Truncation Integration] 检查并应用消息压缩
+                # ==============================
+                conv = self._get_conversation(state)
+                if self.truncation_manager and hasattr(conv, 'check_and_apply_truncation'):
+                    # 构建 system prompt 用于 Truncation 估算
+                    system_prompt = self._build_system_prompt(state, gen, req_ctx)
+                    tools = self._get_tools_schema(state, gen)
+
+                    # 执行 Truncation 检查
+                    truncated = await conv.check_and_apply_truncation(
+                        system_prompt=system_prompt,
+                        tools=tools
+                    )
+
+                    if truncated:
+                        # 如果执行了压缩，更新 history
+                        self._sync_history_from_conversation(state)
+                        logger.info("✅ Truncation applied and conversation compacted")
+
                 # 1. Build System Prompt & Update Conversation
                 # ==============================================
                 prompt = self._build_system_prompt(state, gen, req_ctx)

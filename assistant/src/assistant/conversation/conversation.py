@@ -2,11 +2,19 @@ from typing import List, Tuple, Set, Optional, Any
 from pydantic import BaseModel, Field, PrivateAttr
 from .message import (
     Message, MessageContent, Role, MessageVisible,
-    TextContent, ToolRequest, ToolResponse, 
+    TextContent, ToolRequest, ToolResponse,
     ThinkingContent, RedactedThinkingContent,
     FrontendToolRequest, ToolConfirmationRequest,
     ActionRequired, SystemNotification
 )
+
+# 导入 Truncation Mixin
+try:
+    from ..truncation.conversation_integration import ConversationTruncationMixin
+    _TRUNCATION_AVAILABLE = True
+except ImportError:
+    _TRUNCATION_AVAILABLE = False
+    ConversationTruncationMixin = object  # 降级为空类
 
 class InvalidConversation(Exception):
     def __init__(self, reason: str, conversation: "Conversation"):
@@ -14,7 +22,7 @@ class InvalidConversation(Exception):
         self.conversation = conversation
         super().__init__(reason)
 
-class Conversation(BaseModel):
+class Conversation(ConversationTruncationMixin, BaseModel):
     """
     增强版 Conversation 类，支持双流消息管理：
 
@@ -394,3 +402,92 @@ def populate_if_empty(messages: List[Message]) -> Tuple[List[Message], List[str]
         messages.append(Message.user("Hello"))
         issues.append("Added placeholder user message")
     return messages, issues
+
+def get_last_assistant_message(conversation: "Conversation") -> Optional[Message]:
+    """获取最后一条助手消息"""
+    for msg in reversed(conversation.messages):
+        if msg.role == Role.ASSISTANT:
+            return msg
+    return None
+
+def get_tool_calls_from_last_message(conversation: "Conversation") -> List[Dict[str, Any]]:
+    """从最后一条助手消息获取工具调用"""
+    last_msg = get_last_assistant_message(conversation)
+    if not last_msg:
+        return []
+
+    calls = []
+    for c in last_msg.content:
+        if isinstance(c, ToolRequest):
+            if hasattr(c, 'tool_call'):
+                tool_call = c.tool_call
+                if hasattr(tool_call, 'value') and tool_call.value:
+                    calls.append({
+                        "id": c.id,
+                        "name": tool_call.value.name if hasattr(tool_call.value, 'name') else "",
+                        "arguments": tool_call.value.arguments if hasattr(tool_call.value, 'arguments') else {}
+                    })
+    return calls
+
+def to_provider_format(conversation: "Conversation") -> List[Dict[str, Any]]:
+    """将 Conversation 转换为 Provider 格式"""
+    result = []
+    for msg in conversation.messages:
+        if not msg.visible_to_agent:
+            continue
+
+        if msg.role == Role.SYSTEM:
+            result.append({"role": "system", "content": msg.text})
+        elif msg.role == Role.USER:
+            result.append({"role": "user", "content": msg.text})
+        elif msg.role == Role.ASSISTANT:
+            tool_calls = []
+            for c in msg.content:
+                if isinstance(c, ToolRequest):
+                    if hasattr(c, 'tool_call'):
+                        tool_call = c.tool_call
+                        if hasattr(tool_call, 'value') and tool_call.value:
+                            tool_calls.append({
+                                "id": c.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call.value.name if hasattr(tool_call.value, 'name') else "",
+                                    "arguments": json.dumps(tool_call.value.arguments if hasattr(tool_call.value, 'arguments') else {})
+                                }
+                            })
+
+            if tool_calls:
+                result.append({
+                    "role": "assistant",
+                    "content": msg.text or "",
+                    "tool_calls": tool_calls
+                })
+            else:
+                result.append({"role": "assistant", "content": msg.text or ""})
+        elif msg.role == Role.TOOL:
+            for c in msg.content:
+                if isinstance(c, ToolResponse):
+                    if hasattr(c, 'tool_result'):
+                        tr = c.tool_result
+                        content_text = ""
+                        if hasattr(tr, 'content'):
+                            texts = []
+                            for item in tr.content:
+                                if hasattr(item, 'text') and item.text:
+                                    texts.append(item.text)
+                                elif isinstance(item, dict):
+                                    texts.append(str(item))
+                                else:
+                                    texts.append(str(item))
+                            content_text = "\n".join(texts)
+                        elif not content_text:
+                            content_text = "Success"
+
+                        result.append({
+                            "role": "tool",
+                            "tool_call_id": c.id,
+                            "content": content_text,
+                            "is_error": tr.is_error if hasattr(tr, 'is_error') else False
+                        })
+    return result
+

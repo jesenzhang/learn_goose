@@ -10,8 +10,11 @@ import yaml
 from pydantic import ValidationError
 
 from .models import AppConfig
-# Import directly from the single source of truth
+# Import directly from single source of truth
 from ..intent.models import IntentDefinition, SlotSchema
+# Import module configuration classes
+from ..truncation import TruncationConfig as TruncationModuleConfig
+from ..chatrecall import ChatRecallConfig as ChatRecallModuleConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +31,13 @@ TYPE_MAP: Dict[str, Type] = {
 class ConfigLoader:
     def __init__(self, config_path: str = "agent_config.yaml"):
         self.config_path = config_path
-        
+
         # 1. Load Raw YAML (Preserved for flexible execution configs)
         self.raw_data: Dict[str, Any] = self._load_raw_yaml()
-        
+
         # 2. Validate Core Config (Pydantic)
         self.config: AppConfig = self._validate_core_config()
-        
+
         logger.info(f"Configuration loaded from {self.config_path}")
 
     def _load_raw_yaml(self) -> Dict[str, Any]:
@@ -63,19 +66,19 @@ class ConfigLoader:
         Transform raw config dicts into Runtime IntentDefinitions.
         """
         definitions = []
-        
+
         # self.config.intents is Dict[str, Any]
         for name, data in self.config.intents.items():
             try:
                 # 1. Parse Slots
                 slots = []
                 slots_data = data.get("slots", {})
-                
+
                 for slot_name, slot_def in slots_data.items():
                     # Map string type (e.g. "int") to Python type (int)
                     type_str = slot_def.get("type", "str")
                     py_type = TYPE_MAP.get(type_str.lower(), str)
-                    
+
                     slots.append(SlotSchema(
                         name=slot_name,
                         description=slot_def.get("description", ""),
@@ -110,7 +113,7 @@ class ConfigLoader:
 
     @property
     def database(self): return self.config.database
-    
+
     @property
     def skills_directory(self) -> str:
         return self.config.skills_directory
@@ -124,6 +127,30 @@ class ConfigLoader:
     def skills_config(self) -> Dict[str, Dict[str, Any]]:
         """Get skills configuration dict."""
         return self.config.skills_config.root
+
+    @property
+    def truncation(self) -> TruncationModuleConfig:
+        """Get truncation configuration as dataclass."""
+        config = self.config.truncation
+        return TruncationModuleConfig(
+            enabled=config.enabled,
+            threshold=config.threshold,
+            auto_compact=config.auto_compact,
+            max_messages_before_compact=config.max_messages_before_compact,
+            keep_recent_messages=config.keep_recent_messages,
+            check_interval=config.check_interval,
+        )
+
+    @property
+    def chatrecall(self) -> ChatRecallModuleConfig:
+        """Get chatrecall configuration as dataclass."""
+        config = self.config.chatrecall
+        return ChatRecallModuleConfig(
+            enabled=config.enabled,
+            max_results=config.max_results,
+            max_session_messages=config.max_session_messages,
+            min_similarity=config.min_similarity,
+        )
 
     @property
     def hooks(self) -> Dict[str, Any]:

@@ -12,6 +12,9 @@ from .conversation import (
     populate_if_empty,
     remove_empty_messages,
     trim_assistant_text_whitespace,
+    get_last_assistant_message,
+    get_tool_calls_from_last_message,
+    to_provider_format,
 )
 from .message import (
     ActionRequired,
@@ -33,7 +36,8 @@ from .message import (
     ToolConfirmationRequest,
     ToolRequest,
     ToolResponse,
-    MessageContent
+    MessageContent,
+    TokenState,
 )
 
 __all__ = [
@@ -41,10 +45,8 @@ __all__ = [
     'ActionRequiredData',
     'CallToolRequestParam',
     'CallToolResult',
-    'Conversation',
     'FrontendToolRequest',
     'ImageContent',
-    'InvalidConversation',
     'Message',
     'MessageVisible',
     'RawContent',
@@ -58,6 +60,10 @@ __all__ = [
     'ToolConfirmationRequest',
     'ToolRequest',
     'ToolResponse',
+    'MessageContent',
+    'TokenState',
+    'Conversation',
+    'InvalidConversation',
     'fix_conversation',
     'fix_lead_trail',
     'fix_messages',
@@ -67,5 +73,7 @@ __all__ = [
     'populate_if_empty',
     'remove_empty_messages',
     'trim_assistant_text_whitespace',
-    'MessageContent'
+    'get_last_assistant_message',
+    'get_tool_calls_from_last_message',
+    'to_provider_format',
 ]

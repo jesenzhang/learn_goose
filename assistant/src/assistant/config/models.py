@@ -52,6 +52,23 @@ class ToolsConfig(RootModel[Dict[str, ToolConfig]]):
     def get(self, key: str, default: Any = None) -> Any:
         return self.root.get(key, default)
 
+# Truncation and ChatRecall configuration
+# Note: These use Pydantic wrapping for YAML parsing, then convert to module dataclass at runtime
+class TruncationConfigWrapper(BaseModel):
+    """Pydantic wrapper for TruncationConfig (for YAML parsing)"""
+    enabled: bool = True
+    threshold: float = 0.8
+    auto_compact: bool = True
+    max_messages_before_compact: int = 50
+    keep_recent_messages: int = 5
+    check_interval: int = 5
+
+class ChatRecallConfigWrapper(BaseModel):
+    """Pydantic wrapper for ChatRecallConfig (for YAML parsing)"""
+    enabled: bool = True
+    max_results: int = 10
+    max_session_messages: int = 3
+    min_similarity: float = 0.3
 
 # ==================== Hook Configuration Models ====================
 
@@ -123,6 +140,9 @@ class AppConfig(BaseModel):
     # Hooks configuration
     hooks_config: HooksConfig = Field(default_factory=lambda: HooksConfig({}))
 
+
+    truncation: TruncationConfigWrapper = Field(default_factory=TruncationConfigWrapper)
+    chatrecall: ChatRecallConfigWrapper = Field(default_factory=ChatRecallConfigWrapper)
     class Config:
         extra = "allow"
 
