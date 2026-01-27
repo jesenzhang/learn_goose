@@ -1,0 +1,31 @@
+table,column,datatype,nullable,default,description,rust_field,notes
+sessions,id,TEXT,false,,"id",Session.id
+sessions,name,TEXT,true,,"",Session.name
+sessions,description,TEXT,true,,"",Session.description
+sessions,user_set_name,BOOLEAN,true,"",Session.user_set_name
+sessions,session_type,TEXT,false,default 'user',"Session type",Session.session_type
+sessions,working_dir,TEXT,true,,"",Session.working_dir
+sessions,created_at,TIMESTAMP,true,,"",Session.created_at
+sessions,updated_at,TIMESTAMP,true,,"",Session.updated_at
+sessions,extension_data,TEXT,true,"{}",Session.extension_data
+sessions,total_tokens,INTEGER,true,,"",Session.total_tokens
+sessions,input_tokens,INTEGER,true,,"",Session.input_tokens
+sessions,output_tokens,INTEGER,true,,"",Session.output_tokens
+sessions,accumulated_total_tokens,INTEGER,true,,"",Session.accumulated_total_tokens
+sessions,accumulated_input_tokens,INTEGER,true,,"",Session.accumulated_input_tokens
+sessions,accumulated_output_tokens,INTEGER,true,,"",Session.accumulated_output_tokens
+sessions,schedule_id,TEXT,true,,"",Session.schedule_id
+sessions,recipe_json,TEXT,true,,"",Session.recipe_json
+sessions,user_recipe_values_json,TEXT,true,,"",Session.user_recipe_values_json
+sessions,provider_name,TEXT,true,,"",Session.provider_name
+sessions,model_config_json,TEXT,true,,"",Session.model_config_json
+messages,id,INTEGER,true,,AUTO,Message.id
+messages,session_id,TEXT,false,,"",Message.session_id
+messages,role,TEXT,false,,"",Message.role
+messages,content_json,TEXT,false,,"",Message.content_json
+messages,created_timestamp,INTEGER,true,,"",Message.created
+messages,timestamp,TIMESTAMP,true,,"",Message.timestamp
+messages,tokens,INTEGER,true,,"",Message.tokens
+messages,metadata_json,TEXT,true,,"",Message.metadata_json
+schema_version,version,INTEGER,false,,Schema version
+schema_version,applied_at,TIMESTAMP,true,,"Schema.applied_at
