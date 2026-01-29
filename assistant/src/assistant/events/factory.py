@@ -13,8 +13,9 @@ class StreamerFactory:
         self._bus = bus
         self._store = store
 
-    def create(self, run_id: str, streamer_cls: Type[T] = BaseStreamer) -> T:
+    def create(self, session_id: int, run_id: str, streamer_cls: Type[T] = BaseStreamer) -> T:
         return streamer_cls(
+            session_id=session_id,
             run_id=run_id,
             bus=self._bus,
             store=self._store

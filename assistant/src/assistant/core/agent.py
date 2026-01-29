@@ -23,7 +23,7 @@ from ..conversation import (Message, Role, TextContent,
                             ThinkingContent, RedactedThinkingContent, Conversation)
 
 # Core Imports
-from ..events import MemoryEventBus, AsyncEventStore, StreamerFactory
+from ..events import MemoryEventBus, AsyncEventStore, StreamerFactory,BaseStreamer
 from ..events.legacy import EventType
 from .state import AgentState, AgentStatus
 from ..db import get_db, DatabaseManager
@@ -62,6 +62,44 @@ def update_plan(steps: List[str], _ctx=None) -> str:
 
 def submit_intent(slots: Dict, _ctx=None) -> str:
     return "SUBMITTED"
+
+
+class TaskHandle:
+    """
+    任务句柄 - 跟踪运行中的任务状态
+    """
+    def __init__(self, task: asyncio.Task, created_at: float, task_id: str, start_signal: asyncio.Event, input_data: Any = None):
+        self.task = task
+        self.created_at = created_at
+        self.task_id = task_id  # 注入 task_id
+        self.input_data = input_data
+        self._start_signal = start_signal
+        
+    def start(self):
+        """放行 Agent 逻辑"""
+        self._start_signal.set()
+        
+    @property
+    def is_running(self) -> bool:
+        """任务是否正在运行"""
+        return not self.task.done()
+
+    @property
+    def is_done(self) -> bool:
+        """任务是否已完成（无异常）"""
+        return self.task.done() and not self.task.exception()
+
+    @property
+    def is_failed(self) -> bool:
+        """任务是否失败"""
+        return self.task.done() and self.task.exception() is not None
+
+    def get_exception(self) -> Optional[Exception]:
+        """获取任务异常"""
+        if self.is_failed:
+            return self.task.exception()
+        return None
+
 
 class MicroAgent:
     """
@@ -110,16 +148,53 @@ class MicroAgent:
         # 初始化 Hook Manager 并加载配置的 Hooks
         self.hook_manager = HookManager()
         self._init_hooks(initial_config)
-        
+
         self._streamers = {}
+
+        # 任务管理：session_id -> TaskHandle
+        self._running_tasks: Dict[int, TaskHandle] = {}
 
         logger.info("MicroAgent initialized")
 
-    def get_streamer(self, session_id: int):
+    def get_streamer(self, session_id: int, run_id: str) -> "BaseStreamer":
         """获取指定会话的事件流"""
         if session_id not in self._streamers:
-            self._streamers[session_id] = self._factory.create(str(session_id))
-        return self._streamers[session_id]
+            self._streamers[session_id] ={}
+        
+        if run_id not in self._streamers[session_id]:
+            self._streamers[session_id][run_id] = self._factory.create(session_id, str(run_id))
+            
+        return self._streamers[session_id][run_id]
+
+    def get_task_handle(self, session_id: int) -> Optional[TaskHandle]:
+        """
+        获取会话的任务句柄
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            TaskHandle 对象，如果会话没有运行中的任务则返回 None
+        """
+        return self._running_tasks.get(session_id)
+
+    async def cancel_running_task(self, session_id: int) -> bool:
+        """
+        取消运行中的任务
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            是否成功取消
+        """
+        handle = self._running_tasks.get(session_id)
+        if handle and handle.is_running:
+            handle.task.cancel()
+            del self._running_tasks[session_id]
+            logger.info(f"Cancelled running task for session {session_id}")
+            return True
+        return False
 
     async def _emit_event(self, event_type, data: Any, session_id: Optional[int] = None):
         """
@@ -136,9 +211,17 @@ class MicroAgent:
         if session_id is None:
             logger.warning("Cannot emit event: no session_id set")
             return
-
-        streamer = self.get_streamer(str(session_id))
-        await streamer.emit(event_type, data)
+        
+        # 尝试从运行中的句柄获取当前的 task_id 和 user_id
+        handle = self.get_task_handle(session_id)
+        run_id = handle.task_id if handle else "system"
+        
+        user_id = getattr(self, "_active_user_id", "unknown")
+        metadata = {
+            "user_id": user_id,
+        }
+        streamer = self.get_streamer(session_id,run_id)
+        await streamer.emit(event_type, data, metadata=metadata)
 
     async def _flush_state_save(self, session_id: int):
         """立即执行待保存的状态"""
@@ -1034,8 +1117,425 @@ Generate the content/response now.
     # =========================================================================
     # Main Entry Point
     # =========================================================================
-
     async def run_task(self, session_id: int, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None):
+        """
+        入口方法：负责任务调度逻辑
+        """
+        start_signal = asyncio.Event() # 创建一个事件锁
+        self._current_session_id = session_id
+        current_run_id = None
+
+        # 1. 先从数据库拿到最实时的状态
+        state_data = await self.db.load_state(session_id)
+        state = AgentState(**state_data) if state_data else None
+
+        # 2. 判断是否真的可以 Resume
+        # 只有当状态是 WAITING_APPROVAL 时，复用 run_id 才有意义
+        can_resume = (
+            resume and 
+            state and 
+            state.status == AgentStatus.WAITING_APPROVAL
+        )
+
+        if can_resume:
+            current_run_id = state.current_run_id
+            logger.info(f"♻️ Resuming approval-locked task: {current_run_id}")
+        else:
+            # 如果任务已完成、已取消，或者用户没要求 resume
+            # 开启一个全新的 RunID，这标志着一次新的交互轮次
+            current_run_id = f"task_{uuid.uuid4().hex[:12]}"
+            logger.info(f"🚀 Starting a new interaction round: {current_run_id}")
+            
+        # 1. 优先检查当前内存中是否已有任务运行（最高优先级，防止重复创建）
+        handle = self.get_task_handle(session_id)
+        if handle and handle.is_running:
+            logger.info(f"Task for session {session_id} is already running [RunID: {handle.task_id}]")
+            return handle
+
+
+        # 3. 异步启动包装器（不阻塞当前 API 请求，立即返回句柄）
+        # 我们不再 await _task_wrapper，而是让它在后台跑，run_task 立即返回 handle
+        task = asyncio.create_task(self._task_wrapper(
+            session_id=session_id,
+            task_id=current_run_id,
+            input_data=input_data, 
+            resume=resume, 
+            approval_data=approval_data, 
+            user_id=user_id,
+            start_signal=start_signal # 新增参数
+        ))
+        
+        # 4. 手动构造并注册 handle，确保 run_task 返回时，管理字典里已经有它了
+        handle = TaskHandle(task, time.time(), current_run_id, start_signal, input_data)
+        self._running_tasks[session_id] = handle
+        
+        # # 如果你想立即启动，但要确保顺序：
+        # loop = asyncio.get_running_loop()
+        # loop.call_soon(start_signal.set) # 在下一个事件循环周期启动，给返回 handle 留出时间
+        
+        return handle
+    
+    async def _task_wrapper(self, session_id: int,task_id: str, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None,start_signal: asyncio.Event = None):
+        """
+        任务包装函数 - 实现真正的隔离运行与生命周期管理
+        """
+        
+        try:
+            await self._run_task_body(session_id, task_id, input_data, resume, approval_data, user_id,start_signal)
+        except asyncio.CancelledError:
+            logger.info(f"Task for session {session_id} was cancelled.")
+            await self._emit_event(EventType.CANCELLED, {"msg": "Task cancelled"}, session_id=session_id)
+            raise
+        except Exception as e:
+            logger.error(f"Task execution failed for session {session_id}: {e}", exc_info=True)
+            await self._emit_event(EventType.ERROR, {"error": str(e), "type": type(e).__name__}, session_id=session_id)
+        finally:
+            # 确保任务结束事件总能发出
+            await self._emit_event(EventType.DONE, {"session_id": session_id, "run_id": task_id})
+            self._running_tasks.pop(session_id, None)
+
+        
+    
+    async def _run_task_body(self, session_id: int, task_id: str, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None,start_signal: asyncio.Event = None):
+        """
+        核心执行逻辑 (从原 run_task 迁移过来的主体)
+        """
+        # 先等待信号，确保外界已经准备好接收事件了
+        if start_signal:
+            await start_signal.wait()
+        
+        current_gen_ref = self.current_generation
+        if not current_gen_ref:
+            raise RuntimeError("Agent not initialized")
+
+        async with current_gen_ref.context_scope() as gen:
+            try:
+                # 统一发送任务开始事件
+                await self._emit_event(EventType.RUN_START, {"session_id": session_id, "run_id": task_id})
+                # 1. 加载状态
+                state_data = await self.db.load_state_for_user(user_id, session_id) if user_id else await self.db.load_state(session_id)
+                state = AgentState(**state_data) if state_data else AgentState(session_id=session_id)
+                
+                # 关键：将 task_id 存入 state 并在 metadata 中透传
+                state.current_run_id = task_id
+                state.user_id = user_id
+                
+                # 2. 预处理：Deep Thinking 等配置注入
+                auth_token = get_auth_token()
+                req_ctx = RequestContext(token=auth_token)
+                if isinstance(input_data, dict):
+                    req_ctx.deep_thinking = input_data.get("deep_thinking", False)
+                    user_input = input_data.get("message")
+                else:
+                    user_input = input_data
+
+                # 3. 处理审批恢复 (Resume Logic)
+                if resume and state.status == AgentStatus.WAITING_APPROVAL:
+                    logger.info(f"Resuming session {session_id} from approval...")
+                    approved = await self._process_approval(state, approval_data or {}, gen)
+                    if not approved: return # 依然没通过或需要继续等待
+
+                # 4. 如果是新输入，处理 Hook 和 意图
+                elif user_input:
+                    # --- Hook Pipeline ---
+                    hook_ctx = HookContext(user_input=user_input, state=state, gen=gen, req_ctx=req_ctx)
+                    if self.hook_manager:
+                        hook_res = await self.hook_manager.on_user_input(hook_ctx)
+                        if hook_res and hook_res.action == HookAction.INTERCEPT:
+                            await self.add_message(session_id, Message.assistant(hook_res.response), state)
+                            await self._emit_event(EventType.TOKEN, hook_res.response)
+                            state.status = AgentStatus.IDLE
+                            return
+
+                    # --- Intent Analysis ---
+                    state.status = AgentStatus.RUNNING
+                    direct_res = await self._handle_intent_phase(user_input, state, gen)
+                    await self.add_message(session_id, Message.user(user_input), state)
+
+                    if direct_res:
+                        await self.add_message(session_id, Message.assistant(direct_res), state)
+                        await self._emit_event(EventType.TOKEN, direct_res)
+                        state.status = AgentStatus.IDLE
+                        return
+
+                # 5. 主循环：LLM + Tool Execution
+                while state.status == AgentStatus.RUNNING:
+                    await asyncio.sleep(0.01)
+
+                    # ==============================
+                    # [Truncation Integration] 检查并应用消息压缩
+                    # ==============================
+                    conv = self._get_conversation(state)
+                    if self.truncation_manager and hasattr(conv, 'check_and_apply_truncation'):
+                        # 构建 system prompt 用于 Truncation 估算
+                        system_prompt = self._build_system_prompt(state, gen, req_ctx)
+                        tools = self._get_tools_schema(state, gen)
+
+                        # 执行 Truncation 检查
+                        truncated = await conv.check_and_apply_truncation(
+                            system_prompt=system_prompt,
+                            tools=tools
+                        )
+
+                        if truncated:
+                            # 如果执行了压缩，更新 history
+                            self._sync_history_from_conversation(state)
+                            logger.info("✅ Truncation applied and conversation compacted")
+
+                    # 1. Build System Prompt & Update Conversation
+                    # ==============================================
+                    prompt = self._build_system_prompt(state, gen, req_ctx)
+                    
+                    # 使用 Conversation 的 update_system_prompt 方法更新系统提示词（临时消息）
+                    conv = self._get_conversation(state)
+                    conv.update_system_prompt(prompt)
+                    
+                    # 2. 准备 LLM 推理消息
+                    # ==============================
+                    # Deep Thinking 指令定义
+                    deep_thinking_instruction = """
+                    \n\n--- SYSTEM OVERRIDE: DEEP THINKING PROTOCOL ---
+                    You must strictly follow this two-phase output format, regardless of any previous constraints about "JSON only" or "conciseness":
+
+                    **PHASE 1: REASONING (Internal Monologue)**
+                    - You MUST start your response with a `<thinking>` block.
+                    - Explain your reasoning step-by-step inside this block.
+                    - This phase is MANDATORY and acts as a scratchpad.
+
+                    **PHASE 2: FINAL RESPONSE (User Fulfillment)**
+                    - After closing `</thinking>` tag, proceed to answer user's request.
+                    - IN THIS PHASE, you must strictly adhere to user's original formatting requirements (e.g., JSON only, Python code only, short answer).
+                    - Do NOT output thinking block if it violates user's format; instead, output it *before* user's format content.
+
+                    **Example Structure:**
+                    <thinking>
+                    ... analysis ...
+                    </thinking>
+                    { "result": "This is JSON that user asked for" }
+                    """ if req_ctx.deep_thinking else None
+
+                    # 使用 Conversation 的 for_llm 方法生成用于 LLM 的消息列表
+                    input_messages = conv.for_llm(
+                        deep_thinking=req_ctx.deep_thinking,
+                        deep_thinking_instruction=deep_thinking_instruction
+                    )
+                    
+                    # 3. 获取工具 schema
+                    # ==============================
+                    tools = self._get_tools_schema(state, gen)
+                    logger.info(f"🔧 Available tools count: {len(tools) if tools else 0}, active_skill: {state.active_skill}")
+                    
+                    # 4. Call BaseLLM
+                    # ===============
+                    # 发送 TOKEN_START 事件(LLM 开始生成)
+                    await self._emit_event(EventType.TOKEN_START, {})
+
+                    full_content_text = ""
+                    received_tool_requests: List[ToolRequest] = []
+                    # [NEW] 思考过程状态追踪
+                    is_thinking = False
+                    # [解析器变量] 用于解析 Prompt 模式下的 <thinking> 标签
+                    parse_state = "normal" # normal, check_open, thinking, check_close
+                    tag_buffer = ""        # 缓存标签字符 (如 "<thi")
+
+                    async for partial_msg, usage in gen.llm.astream(
+                        messages=input_messages,
+                        tools=tools or None
+                    ):
+                        if partial_msg and partial_msg.content:
+                            for c in partial_msg.content:
+                                # =================================================
+                                # Case A: 模型原生支持思考 (DeepSeek R1 / Native)
+                                # =================================================
+                                if isinstance(c, (ThinkingContent, RedactedThinkingContent)):
+                                    if not is_thinking:
+                                        await self._emit_event(EventType.THINKING_START, {})
+                                        is_thinking = True
+                                    
+                                    content = c.thinking if isinstance(c, ThinkingContent) else ""
+                                    if content:
+                                        await self._emit_event(EventType.THINKING_TOKEN, content)
+
+                                # =================================================
+                                # Case B: 普通文本 (需处理 Prompt 模式下的标签)
+                                # =================================================
+                                elif isinstance(c, TextContent):
+                                    text_chunk = c.text
+                                    
+                                    # 1. 如果没开 deep_thinking，直接作为普通文本发送
+                                    if not req_ctx.deep_thinking:
+                                        # 如果之前是 Native Thinking 状态，先结束
+                                        if is_thinking and not isinstance(c, ThinkingContent): 
+                                            await self._emit_event(EventType.THINKING_END, {})
+                                            is_thinking = False
+                                            
+                                        full_content_text += text_chunk
+                                        await self._emit_event(EventType.TOKEN, text_chunk)
+                                        continue
+
+                                    # 2. 开启了 deep_thinking，启动状态机解析
+                                    for char in text_chunk:
+                                        # --- 状态 1: 正常文本 ---
+                                        if parse_state == "normal":
+                                            if char == "<":
+                                                parse_state = "check_open"
+                                                tag_buffer = "<"
+                                            else:
+                                                full_content_text += char
+                                                await self._emit_event(EventType.TOKEN, char)
+                                        
+                                        # --- 状态 2: 检查开始标签 <thinking> ---
+                                        elif parse_state == "check_open":
+                                            tag_buffer += char
+                                            if tag_buffer == "<thinking>":
+                                                # 命中开始！
+                                                if not is_thinking:
+                                                    await self._emit_event(EventType.THINKING_START, {})
+                                                    is_thinking = True
+                                                parse_state = "thinking"
+                                                tag_buffer = ""
+                                            elif not "<thinking>".startswith(tag_buffer):
+                                                # 匹配失败，原样吐出缓存
+                                                full_content_text += tag_buffer
+                                                await self._emit_event(EventType.TOKEN, tag_buffer)
+                                                parse_state = "normal"
+                                                tag_buffer = ""
+                                        
+                                        # --- 状态 3: 思考内容中 ---
+                                        elif parse_state == "thinking":
+                                            if char == "<":
+                                                parse_state = "check_close"
+                                                tag_buffer = "<"
+                                            else:
+                                                # 发送思考 Token
+                                                await self._emit_event(EventType.THINKING_TOKEN, char)
+                                        
+                                        # --- 状态 4: 检查结束标签 </thinking> ---
+                                        elif parse_state == "check_close":
+                                            tag_buffer += char
+                                            if tag_buffer == "</thinking>":
+                                                # 命中结束！
+                                                if is_thinking:
+                                                    await self._emit_event(EventType.THINKING_END, {})
+                                                    is_thinking = False
+                                                parse_state = "normal"
+                                                tag_buffer = ""
+                                            elif not "</thinking>".startswith(tag_buffer):
+                                                # 匹配失败（可能是思考内容里的 < 符号）
+                                                await self._emit_event(EventType.THINKING_TOKEN, tag_buffer)
+                                                parse_state = "thinking" # 回到思考状态
+                                                tag_buffer = ""
+
+                                # =================================================
+                                # Case C: 工具请求
+                                # =================================================
+                                elif isinstance(c, ToolRequest):
+                                    # 遇到工具调用，强制结束思考
+                                    if is_thinking:
+                                        await self._emit_event(EventType.THINKING_END, {})
+                                        is_thinking = False
+                                        # 重置解析器状态
+                                        parse_state = "normal"
+                                        tag_buffer = ""
+                                    
+                                    received_tool_requests.append(c)
+                                        
+                    
+                    # 兜底：如果循环结束还在 is_thinking 状态，强制结束
+                    if is_thinking:
+                        await self._emit_event(EventType.THINKING_END, {})
+
+                    # 如果解析器卡在 buffer 里（例如流中断导致只输出了 "<think"），把残余发出来
+                    if tag_buffer:
+                        if parse_state in ["check_open", "normal"]:
+                            await self._emit_event(EventType.TOKEN, tag_buffer)
+                            full_content_text += tag_buffer
+                        elif parse_state in ["thinking", "check_close"]:
+                            await self._emit_event(EventType.THINKING_TOKEN, tag_buffer)
+
+                    # 发送 TOKEN_END 事件（LLM 生成结束）
+                    await self._emit_event(EventType.TOKEN_END, {})
+                            
+                    logger.info(f"📊 LLM returned: text_len={len(full_content_text)}, tool_requests={len(received_tool_requests)}")
+                    
+                    if received_tool_requests:
+                        # 将工具请求序列化存储到回合结构化信息中
+                        if "tool_requests" not in state.turn_structured_info:
+                            state.turn_structured_info["tool_requests"] = []
+                            
+                        for req in received_tool_requests:
+                            state.turn_structured_info["tool_requests"].append(req)
+
+                        assistant_content = []
+                        if full_content_text:
+                            assistant_content.append(TextContent(text=full_content_text))
+                        assistant_content.extend(received_tool_requests)
+                        await self.add_message(state.session_id, Message(role=Role.ASSISTANT, content=assistant_content).only_agent_visible(), state)
+                    
+                        
+                    # Create the finalized assistant message and dump to dict for DB
+                    # assistant_msg = Message(role=Role.ASSISTANT, content=assistant_content)
+                    # await self.add_message(state.session_id, assistant_msg,state)
+                    
+                    # 5. Handle Tools or Stop
+                    # =======================
+                    if not received_tool_requests:
+                        assistant_content = []
+                        if full_content_text:
+                            assistant_content.append(TextContent(text=full_content_text))
+                        
+                        if state.turn_structured_info["tool_responses"]:
+                            assistant_content.extend(state.turn_structured_info["tool_responses"])
+                        
+                        await self.add_message(state.session_id, Message(role=Role.ASSISTANT, content=assistant_content), state)
+                        state.status = AgentStatus.IDLE
+                        self._schedule_state_save(state.session_id, state)
+                        break # Turn complete
+
+                    # Execute Tools (传递 gen)
+                    exec_results = await self._execute_tools_concurrent(received_tool_requests, state, gen, req_ctx)
+
+                    if state.status == AgentStatus.WAITING_APPROVAL:
+                        # 这种情况下，我们需要保留 WAITING 状态并退出 Task
+                        logger.info("Task suspended for approval.")
+                        return # Pause execution
+    
+
+                    # 创建带有 artifact 信息的消息 metadata
+                    # 初始化工具响应列表
+                    if "tool_responses" not in state.turn_structured_info:
+                        state.turn_structured_info["tool_responses"] = []
+
+                    for i, (req, resp) in enumerate(zip(received_tool_requests, exec_results)):
+                        # Construct Tool Response Message using Goose models
+                        # Note: OpenAIProvider._prepare_messages will separate this into the correct format
+                        tool_msg = Message.tool_response(resp)
+
+                        # 存入数据库（add_message 会自动同步到 history）
+                        await self.add_message(state.session_id, tool_msg, state)
+
+
+                        state.turn_structured_info["tool_responses"].append(resp)
+                        
+                    self._schedule_state_save(state.session_id, state)
+
+                
+            except Exception as e:
+                    # 统一异常处理格式
+                    error_msg = str(e)
+                    error_type = type(e).__name__
+                    logger.error(f"LLM Error [{error_type}]: {error_msg}")
+                    await self._emit_event(EventType.ERROR, {
+                        "error": error_msg,
+                        "error_type": error_type
+                    })
+                    state.status = AgentStatus.ERROR
+                    raise
+            finally:
+                await self._ensure_state_saved(session_id, state)
+
+            
+    async def run_task0(self, session_id: int, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None):
         # 设置当前会话 ID
         self._current_session_id = session_id
 
@@ -1045,7 +1545,21 @@ Generate the content/response now.
         if not current_gen_ref:
             raise RuntimeError("Agent not initialized")
 
-        # 2. 构建 RequestContext
+        # 2. 检查是否有运行中的任务
+        existing_handle = self._running_tasks.get(session_id)
+        if existing_handle and existing_handle.is_running:
+            if resume:
+                # Resume 场景：任务已运行，只返回，让 event_generator 继续消费事件
+                logger.info(f"Session {session_id} already running, resuming without creating new task")
+                return
+            else:
+                # 非 Resume 场景：应该取消旧任务
+                logger.warning(f"Session {session_id} already running, cancelling old task before starting new one")
+                existing_handle.task.cancel()
+                # 给一点时间让任务取消
+                await asyncio.sleep(0.1)
+
+        # 3. 构建 RequestContext
         # Token 由中间件通过 contextvars 自动注入，从 get_auth_token() 获取
         # 其他参数从 input_data 中获取
         auth_token = get_auth_token()
@@ -1289,25 +1803,25 @@ Generate the content/response now.
                 # ==============================
                 # Deep Thinking 指令定义
                 deep_thinking_instruction = """
-\n\n--- SYSTEM OVERRIDE: DEEP THINKING PROTOCOL ---
-You must strictly follow this two-phase output format, regardless of any previous constraints about "JSON only" or "conciseness":
+                \n\n--- SYSTEM OVERRIDE: DEEP THINKING PROTOCOL ---
+                You must strictly follow this two-phase output format, regardless of any previous constraints about "JSON only" or "conciseness":
 
-**PHASE 1: REASONING (Internal Monologue)**
-- You MUST start your response with a `<thinking>` block.
-- Explain your reasoning step-by-step inside this block.
-- This phase is MANDATORY and acts as a scratchpad.
+                **PHASE 1: REASONING (Internal Monologue)**
+                - You MUST start your response with a `<thinking>` block.
+                - Explain your reasoning step-by-step inside this block.
+                - This phase is MANDATORY and acts as a scratchpad.
 
-**PHASE 2: FINAL RESPONSE (User Fulfillment)**
-- After closing `</thinking>` tag, proceed to answer user's request.
-- IN THIS PHASE, you must strictly adhere to user's original formatting requirements (e.g., JSON only, Python code only, short answer).
-- Do NOT output thinking block if it violates user's format; instead, output it *before* user's format content.
+                **PHASE 2: FINAL RESPONSE (User Fulfillment)**
+                - After closing `</thinking>` tag, proceed to answer user's request.
+                - IN THIS PHASE, you must strictly adhere to user's original formatting requirements (e.g., JSON only, Python code only, short answer).
+                - Do NOT output thinking block if it violates user's format; instead, output it *before* user's format content.
 
-**Example Structure:**
-<thinking>
-... analysis ...
-</thinking>
-{ "result": "This is JSON that user asked for" }
-""" if req_ctx.deep_thinking else None
+                **Example Structure:**
+                <thinking>
+                ... analysis ...
+                </thinking>
+                { "result": "This is JSON that user asked for" }
+                """ if req_ctx.deep_thinking else None
 
                 # 使用 Conversation 的 for_llm 方法生成用于 LLM 的消息列表
                 input_messages = conv.for_llm(

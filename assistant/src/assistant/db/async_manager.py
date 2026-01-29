@@ -589,13 +589,14 @@ class AsyncDatabaseManager:
     async def load_events(
         self,
         session_id: int,
+        run_id: str,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """加载事件"""
         try:
-            query = "SELECT event FROM events WHERE session_id = ? ORDER BY timestamp ASC"
-            params = [session_id]
+            query = "SELECT event FROM events WHERE session_id = ? AND run_id = ? ORDER BY timestamp ASC"
+            params = [session_id, run_id]
 
             if since:
                 query += " AND timestamp >= ?"

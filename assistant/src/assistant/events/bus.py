@@ -39,7 +39,7 @@ class IEventBus(ABC,Generic[E]):
         """关闭 Topic，断开所有连接"""
         pass
 
-class MemoryEventBus(IEventBus[Event]):
+class MemoryEventBus0(IEventBus[Event]):
     """
     [企业级实现] 内存事件总线
     
@@ -136,3 +136,72 @@ class MemoryEventBus(IEventBus[Event]):
                     self._buffers.pop(t, None)
                     self._access_log.pop(t, None)
                     logger.debug(f"GC: Cleaned up topic {t}")
+                    
+
+
+class MemoryEventBus(IEventBus[Event]):
+    def __init__(self, buffer_size: int = 1000, ttl: int = 3600):
+        self._subscribers: Dict[str, Set[asyncio.Queue]] = defaultdict(set)
+        self._buffers: Dict[str, deque[Event]] = defaultdict(lambda: deque(maxlen=buffer_size))
+        self._access_log: Dict[str, float] = {}
+        self._ttl = ttl
+        self._gc_task = asyncio.create_task(self._gc_loop())
+
+    async def publish(self, topic: str, event: Event) -> None:
+        self._access_log[topic] = time.time()
+
+        # 写 ring buffer
+        self._buffers[topic].append(event)
+
+        # 广播
+        for q in list(self._subscribers.get(topic, [])):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning(f"Drop event {event.seq_id} for topic {topic}")
+            except Exception:
+                pass
+
+    def subscribe(self, topic: str, after_seq_id: int = -1) -> AsyncGenerator[Event, None]:
+        self._access_log[topic] = time.time()
+        q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+
+        # ---------- Phase 0: RingBuffer 回填 ----------
+        if after_seq_id >= 0:
+            for event in self._buffers.get(topic, []):
+                if event.seq_id > after_seq_id:
+                    try:
+                        q.put_nowait(event)
+                    except asyncio.QueueFull:
+                        break
+
+        # ---------- Phase 1: 同步注册 subscriber（关键） ----------
+        self._subscribers[topic].add(q)
+
+        # ---------- Phase 2: Generator ----------
+        async def _gen():
+            try:
+                while True:
+                    evt = await q.get()
+                    if evt is None:
+                        break
+                    yield evt
+            finally:
+                self._subscribers[topic].discard(q)
+                if not self._subscribers[topic]:
+                    self._subscribers.pop(topic, None)
+
+        return _gen()
+
+    async def close_topic(self, topic: str) -> None:
+        for q in list(self._subscribers.get(topic, [])):
+            await q.put(None)
+
+    async def _gc_loop(self):
+        while True:
+            await asyncio.sleep(600)
+            now = time.time()
+            for topic, last in list(self._access_log.items()):
+                if now - last > self._ttl and topic not in self._subscribers:
+                    self._buffers.pop(topic, None)
+                    self._access_log.pop(topic, None)

@@ -22,6 +22,7 @@ class AgentStatus(str, Enum):
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
     CANCELLED = "cancelled"  # 任务已取消
+    ERROR = "error"
 
 
 class AgentState(BaseModel):
@@ -43,6 +44,7 @@ class AgentState(BaseModel):
         last_active: Human-readable last activity time
     """
     session_id: int
+    current_run_id: Optional[str] = Field(default=None, description="Current run identifier")
     user_id: Optional[int] = Field(default=None, description="User identifier for multi-user support")
     status: AgentStatus = AgentStatus.IDLE
     history: List[Dict] = Field(default_factory=list, exclude=True)

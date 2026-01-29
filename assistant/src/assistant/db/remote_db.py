@@ -308,6 +308,7 @@ class RemoteDatabaseManager:
     async def load_events(
         self,
         session_id: int,
+        run_id: str,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -328,7 +329,9 @@ class RemoteDatabaseManager:
                 params["limit"] = limit
             if since:
                 params["since"] = since
-            result = await self._request("GET", f"/events/{session_id}", params=params)
+            if run_id:
+                params["run_id"] = run_id
+            result = await self._request("GET", f"/agent/handle/load_event/{session_id}", params=params)
             return result.get("events", [])
         except Exception as e:
             logger.error(f"Failed to load events: {e}")

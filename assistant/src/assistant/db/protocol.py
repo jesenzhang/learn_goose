@@ -78,6 +78,7 @@ class DatabaseProtocol(Protocol):
     async def load_events(
         self,
         session_id: int,
+        run_id: str,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:

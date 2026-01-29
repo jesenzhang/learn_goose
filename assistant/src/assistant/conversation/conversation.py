@@ -1,4 +1,4 @@
-from typing import List, Tuple, Set, Optional, Any
+from typing import List, Tuple, Set, Optional, Any, Dict
 from pydantic import BaseModel, Field, PrivateAttr
 from .message import (
     Message, MessageContent, Role, MessageVisible,

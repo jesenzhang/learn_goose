@@ -74,6 +74,20 @@ agent:
 
     现在，请根据用户的输入开始工作。
 
+chatrecall:
+  enabled: true
+  max_results: 10
+  max_session_messages: 3
+  min_similarity: 0.3
+
+truncation:
+  enabled: true
+  threshold: 0.8
+  auto_compact: true
+  max_messages_before_compact: 50
+  keep_recent_messages: 5
+  check_interval: 5
+
 
 artifact_manager:
     enabled: true

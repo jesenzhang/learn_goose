@@ -31,24 +31,26 @@ class Event(BaseModel):
             meta={
                 "run_id": streamer_event.run_id,
                 "seq_id": streamer_event.seq_id,
+                "session_id": streamer_event.session_id,
                 "producer_id": streamer_event.producer_id,
                 "parent_run_id": streamer_event.parent_run_id,
                 **streamer_event.metadata
             }
         )
 
-    def to_streamer_event(self, run_id: str, seq_id: int) -> StreamerEvent:
+    def to_streamer_event(self) -> StreamerEvent:
         """Convert Event to StreamerEvent."""
         meta = self.meta or {}
         return StreamerEvent(
             id=self.id,
-            run_id=run_id,
-            seq_id=seq_id,
+            session_id=meta.get("session_id"),
+            run_id=meta.get("run_id"),
+            seq_id=meta.get("seq_id"),
             type=self.type,
             data=self.data,
             timestamp=self.timestamp,
             producer_id=meta.get("producer_id"),
             parent_run_id=meta.get("parent_run_id"),
             metadata={k: v for k, v in meta.items()
-                     if k not in ["run_id", "seq_id", "producer_id", "parent_run_id"]}
+                     if k not in ["run_id", "seq_id", "session_id", "producer_id", "parent_run_id"]}
         )

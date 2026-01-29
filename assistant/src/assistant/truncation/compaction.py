@@ -82,6 +82,11 @@ class MessageCompactor:
         Returns:
             Tuple of (needs_compaction, usage_info)
         """
+        # --- 新增防御代码 ---
+        if context_limit is None or context_limit <= 0:
+            logger.warning("Compaction skipped: context_limit is None or invalid.")
+            return False, {"reason": "Invalid context_limit"}
+        
         if self.config.threshold <= 0.0 or self.config.threshold >= 1.0:
             return False, {"reason": "Compaction disabled by threshold"}
 

@@ -104,7 +104,7 @@ def _format_sse(data: Dict[str, Any], event_type: Optional[str] = None) -> str:
     buffer += "\n"
     return buffer
 
-async def event_generator(
+async def event_generator0(
     session_id: int,
     last_event_id: Optional[int] = -1,
     input_data: Optional[Dict] = None,
@@ -141,10 +141,12 @@ async def event_generator(
         # bus.subscribe() 返回一个异步生成器，我们包装成队列模式
         q: asyncio.Queue = asyncio.Queue()
 
+    
         async def streamer_to_queue():
             """从 bus 订阅事件并放入队列"""
             try:
-                async for streamer_event in agent._bus.subscribe(str(session_id), after_seq_id=last_event_id):
+                streamer = agent.get_streamer(session_id,current_task_id)
+                async for streamer_event in streamer.listen(after_seq_id=last_event_id):
                     # 将 StreamerEvent 转换为 Event 格式
                     event = Event(
                         id=streamer_event.id,
@@ -270,6 +272,108 @@ async def event_generator(
         if 'streamer_task' in locals() and not streamer_task.done():
             streamer_task.cancel()
         if task and not task.done(): task.cancel()
+
+async def event_generator(
+    session_id: int,
+    last_event_id: Optional[int] = -1,
+    input_data: Optional[Dict] = None,
+    resume: bool = False,
+    approval_data: Optional[ApprovalRequest] = None,
+    user_id: Optional[int] = None,
+    format: str = "ndjson",
+    heart_beat: float = 15.0
+) -> AsyncGenerator[str, None]:
+    
+    agent = get_agent()
+    q: asyncio.Queue = asyncio.Queue()
+    # --- 1. 触发任务并获取句柄 ---
+    # 我们先调用 run_task。根据你之前的实现，它会立即返回一个 handle
+    # handle 里包含了本次生成的 current_run_id (即 task_id)
+    handle = await agent.run_task(
+        session_id,
+        input_data=input_data,
+        resume=resume,
+        approval_data=approval_data.model_dump() if approval_data else None,
+        user_id=user_id
+    )
+    
+    current_task_id = handle.task_id  # 获取本次任务的唯一 ID
+
+    # --- 1. 定义监听器 (必须在启动任务前或同时准备好) ---
+    async def streamer_to_queue():
+        try:
+            streamer = agent.get_streamer(session_id, current_task_id)
+            await streamer.subscribe(after_seq_id=last_event_id)
+            if hasattr(handle, 'start'):
+                handle.start() # 这一步会执行 start_signal.set()
+            else:
+                # 如果你没在 handle 封装，可以直接在 agent 层处理
+                # 视你之前的具体实现而定
+                pass
+            # 这里的 listen 是异步生成器，会持续监听 bus 上的新事件
+            async for streamer_event in streamer.stream():
+                
+                if streamer_event.run_id != current_task_id:
+                    continue
+                event = Event.from_streamer_event(streamer_event)
+                
+                await q.put(event)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Streamer Error: {e}")
+
+    # 启动监听后台任务
+    streamer_task = asyncio.create_task(streamer_to_queue())
+    
+    # --- 3. 消费循环 (并行处理队列消息) ---
+    last_activity_time = time.time()
+    
+    try:
+        while True:
+            # 动态检查任务句柄状态
+            handle = agent.get_task_handle(session_id)
+            
+            try:
+                # 缩短超时时间，以便频繁检查 handle 状态
+                event = await asyncio.wait_for(q.get(), timeout=1.0)
+                
+                # 转换并发送
+                event_data = event.model_dump(mode='json')
+                if format == "sse":
+                    yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                else:
+                    yield json.dumps(event_data, ensure_ascii=False) + "\n"
+                
+                last_activity_time = time.time()
+                q.task_done()
+
+            except asyncio.TimeoutError:
+                # 检查任务是否已经结束 (包括正常结束、崩溃、或者进入了等待审批的 return)
+                # 如果 handle 为 None 且队列空了，说明任务执行体已经退出
+                if q.empty() and (handle is None or not handle.is_running):
+                    # 如果是因为报错结束的，可以最后补发一个错误事件
+                    if handle and handle.is_failed:
+                        err_msg = str(handle.get_exception())
+                        yield _format_error_event(err_msg, format)
+                    break
+
+                # 心跳检查
+                if (time.time() - last_activity_time) >= heart_beat:
+                    yield ": keep-alive\n\n" if format == "sse" else '{"type":"ping"}\n'
+                    last_activity_time = time.time()
+
+    finally:
+        # 清理工作
+        if not streamer_task.done():
+            streamer_task.cancel()
+        # 注意：不要 cancel agent_trigger_task，除非你希望用户一关网页 Agent 就停止工作
+        logger.info(f"Stream connection closed for session {session_id}")
+
+def _format_error_event(msg: str, format: str) -> str:
+    data = {"type": "error", "data": msg}
+    return f"data: {json.dumps(data)}\n\n" if format == "sse" else json.dumps(data) + "\n"
+
 
 def create_router() -> APIRouter:
     """Create and configure the API router."""
@@ -483,6 +587,7 @@ def create_router() -> APIRouter:
     async def handle_approval(
         session_id: int,
         req: ApprovalRequest,
+        last_event_id: int = Query(default=-1, description="Last event ID for resuming"),
         format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
     ):
         """
@@ -499,7 +604,7 @@ def create_router() -> APIRouter:
         logger.info(f"Approval received for {session_id}: {req.approved}")
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
-            event_generator(session_id, resume=True, approval_data=req, format=format),
+            event_generator(session_id, resume=True, last_event_id=last_event_id, approval_data=req, format=format),
             media_type=media_type,
             headers=STREAMING_HEADERS
         )

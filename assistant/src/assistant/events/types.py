@@ -31,6 +31,7 @@ class Event(BaseModel):
     设计原则：扁平化，包含重建时间轴所需的所有元数据。
     """
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    session_id: int
     run_id: str
     seq_id: int              # 关键：用于前端排序和去重
     type: str

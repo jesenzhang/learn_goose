@@ -28,8 +28,18 @@ class IStreamer(ABC):
         """监听流 (Memory Bus + Backfill)"""
         pass
 
+    @abstractmethod
+    async def subscribe(self, after_seq_id: int = -1) -> None:
+        """同步完成 DB backfill + Bus subscribe"""
+        pass
 
-class BaseStreamer(IStreamer):
+    @abstractmethod
+    async def stream(self) -> AsyncGenerator[Event, None]:
+        """纯消费，不做任何副作用"""
+        pass
+
+
+class BaseStreamer0(IStreamer):
     """
     [基础层] 通用流式管理器。
     职责：
@@ -39,10 +49,12 @@ class BaseStreamer(IStreamer):
     """
     def __init__(
         self, 
+        session_id: int, 
         run_id: str, 
         bus: IEventBus, 
         store: IEventStore
     ):
+        self.session_id = session_id 
         self.run_id = run_id
         self.bus = bus
         self.store = store
@@ -55,6 +67,7 @@ class BaseStreamer(IStreamer):
         type_str = event_type.value if isinstance(event_type, Enum) else str(event_type)
         
         event = Event(
+            session_id=self.session_id,
             run_id=self.run_id,
             seq_id=self._seq_counter,
             type=type_str,
@@ -83,11 +96,11 @@ class BaseStreamer(IStreamer):
         """
         last_seq_id = after_seq_id
         is_terminal = False
-
+       
         # --- Phase 1: Backfill (从数据库拉取冷数据) ---
         # 即使工作流正在运行，新连接的客户端也需要先看之前的记录
         try:
-            history_events = await self.store.get_events(self.run_id, after_seq_id)
+            history_events = await self.store.get_events(self.session_id,self.run_id, after_seq_id)
             logger.info(f'Backfilled {len(history_events)} events from store for {self.run_id}')
             
             for event in history_events:
@@ -108,7 +121,11 @@ class BaseStreamer(IStreamer):
         # --- Phase 2: Live Listen (从总线监听热数据) ---
         logger.info(f"Switching to live bus listener for {self.run_id} after seq {last_seq_id}")
         
-        async for event in self.bus.subscribe(self.run_id):
+        
+        # Phase 2: Bus listen（此刻才 subscribe）
+        subscription = self.bus.subscribe(self.run_id,after_seq_id)
+        
+        async for event in subscription:
             # [去重关键] 只有当 Bus 传来的事件 ID 比 DB 里读到的更新时才推送
             # 防止 DB 刚写入还没读出来，Bus 又推了一遍造成的重复
             if event.seq_id > last_seq_id:
@@ -121,7 +138,7 @@ class BaseStreamer(IStreamer):
             
     async def sync_history(self) -> AsyncGenerator[Event, None]:
         """纯冷数据拉取"""
-        events = await self.store.get_events(self.run_id)
+        events = await self.store.get_events(self.session_id,self.run_id)
         for evt in events:
             yield evt
     
@@ -130,3 +147,175 @@ class BaseStreamer(IStreamer):
             await self.store.save_event(event)
         except Exception as e:
             logger.error(f"EventStore save failed: {e}")
+
+class BaseStreamer(IStreamer):
+    def __init__(self, 
+                session_id: int, 
+                run_id: str, 
+                bus: IEventBus, 
+                store: IEventStore):
+        
+        self.session_id = session_id
+        self.run_id = run_id
+        self.bus = bus
+        self.store = store
+
+        self._last_seq_id = -1
+        self._seq_counter = 0
+        self._subscription = None
+        self._terminated = False
+    
+    async def _safe_save(self, event: Event):
+        try:
+            await self.store.save_event(event)
+        except Exception as e:
+            logger.error(f"EventStore save failed: {e}")
+        
+    async def emit(self, event_type: Union[str, Enum], data: Any, producer_id: str = None, **metadata) -> None:
+        self._seq_counter += 1
+        
+        # 统一类型转换
+        type_str = event_type.value if isinstance(event_type, Enum) else str(event_type)
+        
+        event = Event(
+            session_id=self.session_id,
+            run_id=self.run_id,
+            seq_id=self._seq_counter,
+            type=type_str,
+            data=data,
+            producer_id=producer_id,
+            metadata=metadata
+        )
+
+        # 1. 内存广播 (Fast path)
+        await self.bus.publish(self.run_id, event)
+
+        # 2. 异步持久化 (Slow path)
+        # 策略：关键生命周期事件必须落地，高频 Token 流可以 Fire-and-forget
+        is_critical = type_str.endswith("_completed") or type_str.endswith("_ended") or type_str.endswith("_failed") or type_str.endswith("_succeeded") or type_str.endswith("_started")
+        
+        if is_critical:
+            await self._safe_save(event)
+        else:
+            asyncio.create_task(self._safe_save(event))
+            
+            
+    async def listen(self, after_seq_id: int = -1) -> AsyncGenerator[Event, None]:
+        """
+        [核心修复] 智能混合监听
+        1. 先从 DB 拉取历史 (Backfill)
+        2. 如果流程未结束，再监听 Bus (Real-time)
+        """
+        self._last_seq_id = after_seq_id
+        self._terminated = False
+       
+        # --- Phase 1: Backfill (从数据库拉取冷数据) ---
+        # 即使工作流正在运行，新连接的客户端也需要先看之前的记录
+        try:
+            history_events = await self.store.get_events(self.session_id,self.run_id, after_seq_id)
+            logger.info(f'Backfilled {len(history_events)} events from store for {self.run_id}')
+            
+            for event in history_events:
+                yield event
+                self._last_seq_id = max(self._last_seq_id, event.seq_id)
+                
+                # 检查是否有终止信号
+                if event.type in [SystemEvents.WORKFLOW_COMPLETED, SystemEvents.WORKFLOW_FAILED]:
+                    self._terminated = True
+        except Exception as e:
+            logger.error(f"Failed to backfill events from store: {e}")
+
+        # 如果通过回填发现工作流已经结束，直接退出，不要去监听 Bus
+        if self._terminated:
+            logger.info(f"Stream {self.run_id} is already finished. Backfill complete.")
+            return
+
+        # --- Phase 2: Live Listen (从总线监听热数据) ---
+        logger.info(f"Switching to live bus listener for {self.run_id} after seq {self._last_seq_id}")
+        
+        
+        # Phase 2: Bus listen（此刻才 subscribe）
+        subscription = self.bus.subscribe(self.run_id,after_seq_id)
+        
+        async for event in subscription:
+            # [去重关键] 只有当 Bus 传来的事件 ID 比 DB 里读到的更新时才推送
+            # 防止 DB 刚写入还没读出来，Bus 又推了一遍造成的重复
+            if event.seq_id > self._last_seq_id:
+                yield event
+                self._last_seq_id = event.seq_id
+                
+                # 实时流中遇到结束事件，也要退出循环
+                if event.type in [SystemEvents.WORKFLOW_COMPLETED, SystemEvents.WORKFLOW_FAILED]:
+                    break
+        
+    async def sync_history(self) -> AsyncGenerator[Event, None]:
+        """纯冷数据拉取"""
+        events = await self.store.get_events(self.session_id,self.run_id)
+        for evt in events:
+            yield evt
+    
+    
+    async def subscribe(self, after_seq_id: int = -1) -> None:
+        """
+        明确语义：
+        - 执行完这个方法后：
+          1. DB 已回填
+          2. Bus 已订阅
+          3. 后续事件不会丢
+        """
+        self._last_seq_id = after_seq_id
+
+        # 1. DB backfill
+        history = await self.store.get_events(
+            self.session_id,
+            self.run_id,
+            after_seq_id
+        )
+
+        self._history_buffer = []
+        for event in history:
+            self._history_buffer.append(event)
+            self._last_seq_id = max(self._last_seq_id, event.seq_id)
+
+            if event.type in (
+                SystemEvents.WORKFLOW_COMPLETED,
+                SystemEvents.WORKFLOW_FAILED,
+            ):
+                self._terminated = True
+
+        if self._terminated:
+            return
+
+        # 2. Bus subscribe（同步生效）
+        self._subscription = self.bus.subscribe(
+            self.run_id,
+            after_seq_id=self._last_seq_id
+        )
+
+    async def stream(self) -> AsyncGenerator[Event, None]:
+        """
+        纯流式输出：
+        - 不做 subscribe
+        - 不访问 DB
+        - 不产生副作用
+        """
+        # 1. 先吐历史
+        for event in self._history_buffer:
+            yield event
+
+        if self._terminated or not self._subscription:
+            return
+
+        # 2. 再吐实时
+        async for event in self._subscription:
+            if event.seq_id <= self._last_seq_id:
+                continue
+
+            yield event
+            self._last_seq_id = event.seq_id
+
+            if event.type in (
+                SystemEvents.WORKFLOW_COMPLETED,
+                SystemEvents.WORKFLOW_FAILED,
+            ):
+                break
