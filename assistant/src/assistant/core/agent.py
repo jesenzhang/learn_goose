@@ -1194,7 +1194,44 @@ Generate the content/response now.
             await self._emit_event(EventType.DONE, {"session_id": session_id, "run_id": task_id})
             self._running_tasks.pop(session_id, None)
 
+    async def _run_deepresearch(self, session_id: int, task_id: str, req_ctx: RequestContext, user_input: str, start_signal: asyncio.Event = None, state: AgentState = None):
+        from ai4search import DeepResearchAgent,DeepResearchConfig
+        # 创建配置
+        config = DeepResearchConfig(
+            llm_config={
+                "model": "qwen2",
+                "api_key": "api_key",
+                "base_url": "http://192.168.10.137:8086/v1"
+            },
+            rerank_url="http://192.168.10.137:8079/rerank",
+            enable_local_doc=True,
+            enable_exhibits=True,
+            enable_online_search=False,
+            max_depth=3,
+            max_steps=3,
+            max_concurrent=1,
+        )
+        # 创建 agent
+        deepresearch_agent = DeepResearchAgent(config=config)
+        streamer = self.get_streamer(session_id,task_id)
+        # 执行任务
+        query = user_input
+        background_info = ''
         
+        result = await deepresearch_agent.research(
+            query=query,
+            background_info=background_info,
+            enable_write=True,
+            streamer=streamer  # ← 传入自定义 streamer
+        )
+        ## 重要信息
+        markdown = result["write"]["markdown_content"]
+        search_conclusion = result["search"]["notebook"]
+        
+        await self.add_message(state.session_id, Message.user(user_input), state)
+        await self.add_message(state.session_id, Message.assistant(markdown), state)
+        
+        return
     
     async def _run_task_body(self, session_id: int, task_id: str, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None,start_signal: asyncio.Event = None):
         """
@@ -1223,12 +1260,21 @@ Generate the content/response now.
                 # 2. 预处理：Deep Thinking 等配置注入
                 auth_token = get_auth_token()
                 req_ctx = RequestContext(token=auth_token)
+                
                 if isinstance(input_data, dict):
-                    req_ctx.deep_thinking = input_data.get("deep_thinking", False)
+                    req_ctx.server_type = input_data.get("server_type", "show")
+                    req_ctx.file_path = input_data.get("file_path"),
+                    req_ctx.page_content = input_data.get("page_content"),
+                    req_ctx.deep_thinking = input_data.get("deep_thinking", False),
+                    req_ctx.is_deep_research=input_data.get("is_deep_research", False)
                     user_input = input_data.get("message")
                 else:
                     user_input = input_data
 
+                if req_ctx.is_deep_research:
+                    await self._run_deepresearch(session_id, task_id, req_ctx, user_input, start_signal, state)
+                    return
+                
                 # 3. 处理审批恢复 (Resume Logic)
                 if resume and state.status == AgentStatus.WAITING_APPROVAL:
                     logger.info(f"Resuming session {session_id} from approval...")
@@ -1484,7 +1530,11 @@ Generate the content/response now.
                         if full_content_text:
                             assistant_content.append(TextContent(text=full_content_text))
                         
-                        if state.turn_structured_info["tool_responses"]:
+                        # 将工具请求序列化存储到回合结构化信息中
+                        if "tool_responses" not in state.turn_structured_info:
+                            state.turn_structured_info["tool_responses"] = []
+                            
+                        if state and state.turn_structured_info and state.turn_structured_info["tool_responses"]:
                             assistant_content.extend(state.turn_structured_info["tool_responses"])
                         
                         await self.add_message(state.session_id, Message(role=Role.ASSISTANT, content=assistant_content), state)
