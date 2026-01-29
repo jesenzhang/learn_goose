@@ -83,7 +83,12 @@ class RemoteDatabaseManager:
         """获取或创建 HTTP 客户端会话"""
         if self._session is None or self._session.is_closed:
             self._session = httpx.AsyncClient(
-                timeout=self.timeout
+                timeout=httpx.Timeout(
+                    connect=2.0,
+                    read=3.0,
+                    write=3.0,
+                    pool=1.0
+                ),
             )
         self._session.headers.update(self._get_headers())
         return self._session

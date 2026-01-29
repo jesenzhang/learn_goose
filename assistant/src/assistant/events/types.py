@@ -34,6 +34,7 @@ class Event(BaseModel):
     session_id: int
     run_id: str
     seq_id: int              # 关键：用于前端排序和去重
+    
     type: str
     data: Any                # 业务载荷
     
@@ -42,3 +43,5 @@ class Event(BaseModel):
     parent_run_id: Optional[str] = None # 子工作流追踪
     timestamp: float = Field(default_factory=time.time)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    

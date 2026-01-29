@@ -146,6 +146,7 @@ class MemoryEventBus(IEventBus[Event]):
         self._access_log: Dict[str, float] = {}
         self._ttl = ttl
         self._gc_task = asyncio.create_task(self._gc_loop())
+        
 
     async def publish(self, topic: str, event: Event) -> None:
         self._access_log[topic] = time.time()

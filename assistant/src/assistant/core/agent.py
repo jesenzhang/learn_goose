@@ -12,7 +12,7 @@ import inspect
 import time
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 # [NEW] Import Service Abstractions and Models
@@ -100,6 +100,24 @@ class TaskHandle:
             return self.task.exception()
         return None
 
+class ThinkingTracker:
+    def __init__(self, emit):
+        self.emit = emit
+        self.active = False
+
+    async def start(self):
+        if not self.active:
+            await self.emit(EventType.THINKING_START, {})
+            self.active = True
+
+    async def token(self, text: str):
+        if self.active and text:
+            await self.emit(EventType.THINKING_TOKEN, text)
+
+    async def end(self):
+        if self.active:
+            await self.emit(EventType.THINKING_END, {})
+            self.active = False
 
 class MicroAgent:
     """
@@ -221,7 +239,7 @@ class MicroAgent:
             "user_id": user_id,
         }
         streamer = self.get_streamer(session_id,run_id)
-        await streamer.emit(event_type, data, metadata=metadata)
+        await streamer.emit(event_type, data, **metadata)
 
     async def _flush_state_save(self, session_id: int):
         """立即执行待保存的状态"""
@@ -1114,6 +1132,14 @@ Generate the content/response now.
             loaded = self.hook_manager.load_from_config(hook_configs)
             logger.info(f"🪝 Loaded {loaded} custom hooks from config")
 
+    @asynccontextmanager
+    async def event_scope(self, start_evt: EventType, end_evt: EventType, payload=None):
+        await self._emit_event(start_evt, payload or {})
+        try:
+            yield
+        finally:
+            await self._emit_event(end_evt, {})
+        
     # =========================================================================
     # Main Entry Point
     # =========================================================================
@@ -1175,24 +1201,66 @@ Generate the content/response now.
         
         return handle
     
-    async def _task_wrapper(self, session_id: int,task_id: str, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None,start_signal: asyncio.Event = None):
+    async def _task_wrapper(
+        self,
+        session_id: int,
+        task_id: str,
+        input_data: Dict | str = None,
+        resume: bool = False,
+        approval_data: Dict = None,
+        user_id: Optional[int] = None,
+        start_signal: asyncio.Event = None,
+    ):
         """
-        任务包装函数 - 实现真正的隔离运行与生命周期管理
+        任务包装函数 - 任务级生命周期唯一入口
         """
-        
+
+        await self._emit_event(
+            EventType.RUN_START,
+            {"session_id": session_id, "run_id": task_id},
+            session_id=session_id,
+        )
+
         try:
-            await self._run_task_body(session_id, task_id, input_data, resume, approval_data, user_id,start_signal)
+            await self._run_task_body(
+                session_id,
+                task_id,
+                input_data,
+                resume,
+                approval_data,
+                user_id,
+                start_signal,
+            )
+
         except asyncio.CancelledError:
             logger.info(f"Task for session {session_id} was cancelled.")
-            await self._emit_event(EventType.CANCELLED, {"msg": "Task cancelled"}, session_id=session_id)
+            await self._emit_event(
+                EventType.CANCELLED,
+                {"msg": "Task cancelled"},
+                session_id=session_id,
+            )
             raise
+
         except Exception as e:
-            logger.error(f"Task execution failed for session {session_id}: {e}", exc_info=True)
-            await self._emit_event(EventType.ERROR, {"error": str(e), "type": type(e).__name__}, session_id=session_id)
+            logger.error(
+                f"Task execution failed for session {session_id}: {e}",
+                exc_info=True,
+            )
+            await self._emit_event(
+                EventType.ERROR,
+                {"error": str(e), "type": type(e).__name__},
+                session_id=session_id,
+            )
+
         finally:
-            # 确保任务结束事件总能发出
-            await self._emit_event(EventType.DONE, {"session_id": session_id, "run_id": task_id})
+            # DONE 永远只在 wrapper 发
+            await self._emit_event(
+                EventType.DONE,
+                {"session_id": session_id, "run_id": task_id},
+                session_id=session_id,
+            )
             self._running_tasks.pop(session_id, None)
+
 
     async def _run_deepresearch(self, session_id: int, task_id: str, req_ctx: RequestContext, user_input: str, start_signal: asyncio.Event = None, state: AgentState = None):
         from ai4search import DeepResearchAgent,DeepResearchConfig
@@ -1247,8 +1315,6 @@ Generate the content/response now.
 
         async with current_gen_ref.context_scope() as gen:
             try:
-                # 统一发送任务开始事件
-                await self._emit_event(EventType.RUN_START, {"session_id": session_id, "run_id": task_id})
                 # 1. 加载状态
                 state_data = await self.db.load_state_for_user(user_id, session_id) if user_id else await self.db.load_state(session_id)
                 state = AgentState(**state_data) if state_data else AgentState(session_id=session_id)
@@ -1374,133 +1440,109 @@ Generate the content/response now.
                     # 4. Call BaseLLM
                     # ===============
                     # 发送 TOKEN_START 事件(LLM 开始生成)
-                    await self._emit_event(EventType.TOKEN_START, {})
+                    # await self._emit_event(EventType.TOKEN_START, {})
 
                     full_content_text = ""
                     received_tool_requests: List[ToolRequest] = []
-                    # [NEW] 思考过程状态追踪
-                    is_thinking = False
                     # [解析器变量] 用于解析 Prompt 模式下的 <thinking> 标签
                     parse_state = "normal" # normal, check_open, thinking, check_close
                     tag_buffer = ""        # 缓存标签字符 (如 "<thi")
 
-                    async for partial_msg, usage in gen.llm.astream(
-                        messages=input_messages,
-                        tools=tools or None
-                    ):
-                        if partial_msg and partial_msg.content:
-                            for c in partial_msg.content:
-                                # =================================================
-                                # Case A: 模型原生支持思考 (DeepSeek R1 / Native)
-                                # =================================================
-                                if isinstance(c, (ThinkingContent, RedactedThinkingContent)):
-                                    if not is_thinking:
-                                        await self._emit_event(EventType.THINKING_START, {})
-                                        is_thinking = True
-                                    
-                                    content = c.thinking if isinstance(c, ThinkingContent) else ""
-                                    if content:
-                                        await self._emit_event(EventType.THINKING_TOKEN, content)
+                    thinking = ThinkingTracker(self._emit_event)
+                    async with self.event_scope(EventType.TOKEN_START, EventType.TOKEN_END):
+                        try:
+                            async for partial_msg, usage in gen.llm.astream(
+                                messages=input_messages,
+                                tools=tools or None
+                            ):
+                                if partial_msg and partial_msg.content:
+                                    for c in partial_msg.content:
+                                        # =================================================
+                                        # Case A: 模型原生支持思考 (DeepSeek R1 / Native)
+                                        # =================================================
+                                        if isinstance(c, (ThinkingContent, RedactedThinkingContent)):
+                                            await thinking.start()
+                                            await thinking.token(c.thinking)
 
-                                # =================================================
-                                # Case B: 普通文本 (需处理 Prompt 模式下的标签)
-                                # =================================================
-                                elif isinstance(c, TextContent):
-                                    text_chunk = c.text
-                                    
-                                    # 1. 如果没开 deep_thinking，直接作为普通文本发送
-                                    if not req_ctx.deep_thinking:
-                                        # 如果之前是 Native Thinking 状态，先结束
-                                        if is_thinking and not isinstance(c, ThinkingContent): 
-                                            await self._emit_event(EventType.THINKING_END, {})
-                                            is_thinking = False
+                                        # =================================================
+                                        # Case B: 普通文本 (需处理 Prompt 模式下的标签)
+                                        # =================================================
+                                        elif isinstance(c, TextContent):
+                                            text_chunk = c.text
                                             
-                                        full_content_text += text_chunk
-                                        await self._emit_event(EventType.TOKEN, text_chunk)
-                                        continue
+                                            # 1. 如果没开 deep_thinking，直接作为普通文本发送
+                                            if not req_ctx.deep_thinking:
+                                                await thinking.end()
+                                                await self._emit_event(EventType.TOKEN, c.text)
+                                                full_content_text += c.text
+                                                continue
 
-                                    # 2. 开启了 deep_thinking，启动状态机解析
-                                    for char in text_chunk:
-                                        # --- 状态 1: 正常文本 ---
-                                        if parse_state == "normal":
-                                            if char == "<":
-                                                parse_state = "check_open"
-                                                tag_buffer = "<"
-                                            else:
-                                                full_content_text += char
-                                                await self._emit_event(EventType.TOKEN, char)
-                                        
-                                        # --- 状态 2: 检查开始标签 <thinking> ---
-                                        elif parse_state == "check_open":
-                                            tag_buffer += char
-                                            if tag_buffer == "<thinking>":
-                                                # 命中开始！
-                                                if not is_thinking:
-                                                    await self._emit_event(EventType.THINKING_START, {})
-                                                    is_thinking = True
-                                                parse_state = "thinking"
-                                                tag_buffer = ""
-                                            elif not "<thinking>".startswith(tag_buffer):
-                                                # 匹配失败，原样吐出缓存
-                                                full_content_text += tag_buffer
-                                                await self._emit_event(EventType.TOKEN, tag_buffer)
-                                                parse_state = "normal"
-                                                tag_buffer = ""
-                                        
-                                        # --- 状态 3: 思考内容中 ---
-                                        elif parse_state == "thinking":
-                                            if char == "<":
-                                                parse_state = "check_close"
-                                                tag_buffer = "<"
-                                            else:
-                                                # 发送思考 Token
-                                                await self._emit_event(EventType.THINKING_TOKEN, char)
-                                        
-                                        # --- 状态 4: 检查结束标签 </thinking> ---
-                                        elif parse_state == "check_close":
-                                            tag_buffer += char
-                                            if tag_buffer == "</thinking>":
-                                                # 命中结束！
-                                                if is_thinking:
-                                                    await self._emit_event(EventType.THINKING_END, {})
-                                                    is_thinking = False
-                                                parse_state = "normal"
-                                                tag_buffer = ""
-                                            elif not "</thinking>".startswith(tag_buffer):
-                                                # 匹配失败（可能是思考内容里的 < 符号）
-                                                await self._emit_event(EventType.THINKING_TOKEN, tag_buffer)
-                                                parse_state = "thinking" # 回到思考状态
-                                                tag_buffer = ""
+                                            # 2. 开启了 deep_thinking，启动状态机解析
+                                            for char in text_chunk:
+                                                # --- 状态 1: 正常文本 ---
+                                                if parse_state == "normal":
+                                                    if char == "<":
+                                                        parse_state = "check_open"
+                                                        tag_buffer = "<"
+                                                    else:
+                                                        full_content_text += char
+                                                        await self._emit_event(EventType.TOKEN, char)
+                                                
+                                                # --- 状态 2: 检查开始标签 <thinking> ---
+                                                elif parse_state == "check_open":
+                                                    tag_buffer += char
+                                                    if tag_buffer == "<thinking>":
+                                                        await thinking.start()
+                                                        parse_state = "thinking"
+                                                        tag_buffer = ""
+                                                    elif not "<thinking>".startswith(tag_buffer):
+                                                        await thinking.end()
+                                                        full_content_text += tag_buffer
+                                                        await self._emit_event(EventType.TOKEN, tag_buffer)
+                                                        parse_state = "normal"
+                                                        tag_buffer = ""
+                                                
+                                                # --- 状态 3: 思考内容中 ---
+                                                elif parse_state == "thinking":
+                                                    if char == "<":
+                                                        parse_state = "check_close"
+                                                        tag_buffer = "<"
+                                                    else:
+                                                        await thinking.token(char)
+                                                
+                                                # --- 状态 4: 检查结束标签 </thinking> ---
+                                                elif parse_state == "check_close":
+                                                    tag_buffer += char
+                                                    if tag_buffer == "</thinking>":
+                                                        await thinking.end()
+                                                        parse_state = "normal"
+                                                        tag_buffer = ""
+                                                    elif not "</thinking>".startswith(tag_buffer):
+                                                        await thinking.token(tag_buffer)
+                                                        parse_state = "thinking" # 回到思考状态
+                                                        tag_buffer = ""
 
-                                # =================================================
-                                # Case C: 工具请求
-                                # =================================================
-                                elif isinstance(c, ToolRequest):
-                                    # 遇到工具调用，强制结束思考
-                                    if is_thinking:
-                                        await self._emit_event(EventType.THINKING_END, {})
-                                        is_thinking = False
-                                        # 重置解析器状态
-                                        parse_state = "normal"
-                                        tag_buffer = ""
-                                    
-                                    received_tool_requests.append(c)
-                                        
+                                        # =================================================
+                                        # Case C: 工具请求
+                                        # =================================================
+                                        elif isinstance(c, ToolRequest):
+                                            await thinking.end()
+                                            received_tool_requests.append(c)
+                        finally:
+                            # 无论何种退出路径
+                            await thinking.end()                        
                     
-                    # 兜底：如果循环结束还在 is_thinking 状态，强制结束
-                    if is_thinking:
-                        await self._emit_event(EventType.THINKING_END, {})
 
                     # 如果解析器卡在 buffer 里（例如流中断导致只输出了 "<think"），把残余发出来
                     if tag_buffer:
                         if parse_state in ["check_open", "normal"]:
-                            await self._emit_event(EventType.TOKEN, tag_buffer)
                             full_content_text += tag_buffer
-                        elif parse_state in ["thinking", "check_close"]:
-                            await self._emit_event(EventType.THINKING_TOKEN, tag_buffer)
+                            await self._emit_event(EventType.TOKEN, tag_buffer)
+                        else:
+                            await thinking.token(tag_buffer)
 
-                    # 发送 TOKEN_END 事件（LLM 生成结束）
-                    await self._emit_event(EventType.TOKEN_END, {})
+                    # # 发送 TOKEN_END 事件（LLM 生成结束）
+                    # await self._emit_event(EventType.TOKEN_END, {})
                             
                     logger.info(f"📊 LLM returned: text_len={len(full_content_text)}, tool_requests={len(received_tool_requests)}")
                     
@@ -1584,517 +1626,6 @@ Generate the content/response now.
             finally:
                 await self._ensure_state_saved(session_id, state)
 
-            
-    async def run_task0(self, session_id: int, input_data: Dict|str = None, resume: bool = False, approval_data: Dict = None, user_id: Optional[int] = None):
-        # 设置当前会话 ID
-        self._current_session_id = session_id
-
-        # 1. 捕获当前时刻的 Generation (快照)
-        # 此时必须立即 acquire，防止它在下一行代码还没执行时就被 drain 了
-        current_gen_ref = self.current_generation
-        if not current_gen_ref:
-            raise RuntimeError("Agent not initialized")
-
-        # 2. 检查是否有运行中的任务
-        existing_handle = self._running_tasks.get(session_id)
-        if existing_handle and existing_handle.is_running:
-            if resume:
-                # Resume 场景：任务已运行，只返回，让 event_generator 继续消费事件
-                logger.info(f"Session {session_id} already running, resuming without creating new task")
-                return
-            else:
-                # 非 Resume 场景：应该取消旧任务
-                logger.warning(f"Session {session_id} already running, cancelling old task before starting new one")
-                existing_handle.task.cancel()
-                # 给一点时间让任务取消
-                await asyncio.sleep(0.1)
-
-        # 3. 构建 RequestContext
-        # Token 由中间件通过 contextvars 自动注入，从 get_auth_token() 获取
-        # 其他参数从 input_data 中获取
-        auth_token = get_auth_token()
-        req_ctx = RequestContext(token=auth_token)
-
-        if input_data and isinstance(input_data, dict):
-            req_ctx = RequestContext(
-                token=auth_token,  # 从 contextvars 获取
-                server_type=input_data.get("server_type", "show"),
-                file_path=input_data.get("file_path"),
-                page_content=input_data.get("page_content"),
-                deep_thinking=input_data.get("deep_thinking", False),
-                is_deep_research=input_data.get("is_deep_research", False)
-            )
-        
-        if req_ctx.is_deep_research:
-                if input_data :
-                    if isinstance(input_data, dict):
-                        user_input = input_data.get("message")
-                    elif isinstance(input_data, str):
-                        user_input = input_data
-                    
-                from ai4search import DeepResearchAgent,DeepResearchConfig
-                # 创建配置
-                config = DeepResearchConfig(
-                    llm_config={
-                        "model": "qwen2",
-                        "api_key": "api_key",
-                        "base_url": "http://192.168.10.137:8086/v1"
-                    },
-                    rerank_url="http://192.168.10.137:8079/rerank",
-                    enable_local_doc=True,
-                    enable_exhibits=True,
-                    enable_online_search=False,
-                    max_depth=3,
-                    max_steps=3,
-                    max_concurrent=1,
-                )
-                # 创建 agent
-                deepresearch_agent = DeepResearchAgent(config=config)
-                streamer = self.get_streamer(session_id)
-                # 执行任务
-                query = user_input
-                background_info = ''
-                
-                result = await deepresearch_agent.research(
-                    query=query,
-                    background_info=background_info,
-                    enable_write=True,
-                    streamer=streamer  # ← 传入自定义 streamer
-                )
-                ## 重要信息
-                markdown = result["write"]["markdown_content"]
-                search_conclusion = result["search"]["notebook"]
-                
-                await self.add_message(state.session_id, Message.user(user_input), state)
-                await self.add_message(state.session_id, Message.assistant(markdown), state)
-                
-                return
-            
-           
-    
-    
-        # 使用 context manager 自动管理计数
-        async with current_gen_ref.context_scope() as gen:
-            # 如果提供了 user_id，则加载该用户的会话
-            state_data = None
-            try:
-                if user_id:
-                    state_data = await self.db.load_state_for_user(user_id, session_id)
-                else:
-                    state_data = await self.db.load_state(session_id)
-            except Exception as e:
-                # 统一异常处理：提取错误信息发送给客户端
-                error_msg = str(e)
-                error_type = type(e).__name__
-                error_detail = None
-
-                # 尝试提取更多信息（可选）
-                if hasattr(e, 'response'):
-                    error_detail = getattr(e, 'response')
-
-                logger.error(f"Error in run_task [{error_type}]: {error_msg}")
-                await self._emit_event(EventType.ERROR, {
-                    "error": error_msg,
-                    "error_type": error_type,
-                    "error_detail": str(error_detail) if error_detail else None
-                })
-                await self._emit_event(EventType.DONE, {
-                    "session_id": session_id
-                })
-                return
-
-            if state_data is None:
-                logger.error(f"Loaded state for session {session_id} Failed.")
-                await self._emit_event(EventType.ERROR, {
-                    "error": f"Failed to load state for session {session_id}"
-                })
-                await self._emit_event(EventType.DONE, {
-                    "session_id": session_id
-                })
-                return
-            
-            state = AgentState(**state_data) if state_data else AgentState(session_id=session_id)
-            
-            state.run_config["deep_thinking"] = req_ctx.deep_thinking
-            state.run_config["is_deep_research"] = req_ctx.is_deep_research
-            
-            if input_data :
-                if isinstance(input_data, dict):
-                    user_input = input_data.get("message")
-                elif isinstance(input_data, str):
-                    user_input = input_data
-                    
-            # 设置 user_id 到 state
-            if user_id:
-                state.user_id = user_id
-
-            if resume:
-                if state.status == AgentStatus.WAITING_APPROVAL:
-                    # 传递 gen
-                    if not await self._process_approval(state, approval_data or {}, gen): return
-                    
-                
-            else:
-                await self._emit_event(EventType.RUN_START, {
-                    "session_id": session_id
-                })
-                if user_input:
-                    # 清理上一次请求的 FAQ 标记（如果存在）
-                    state.shared_memory.pop("_faq_already_queried", None)
-
-                    # ==================== Hook Pipeline: User Input ====================
-                    # 创建 Hook Context
-                    hook_ctx = HookContext(
-                        user_input=user_input,
-                        state=state,
-                        gen=gen,
-                        req_ctx=req_ctx
-                    )
-
-                    # [关键] 执行用户输入 Hooks - FAQ、敏感词过滤等
-                    if self.hook_manager:
-                        hook_result = await self.hook_manager.on_user_input(hook_ctx)
-
-                        if hook_result:
-                            logger.info(f"🪝 Hook result: action={hook_result.action}, response={hook_result.response[:50] if hook_result.response else None}...")
-                            # 处理 Hook 结果
-                            if str(hook_result.action) == "intercept" or hook_result.action == HookAction.INTERCEPT:
-                                # Hook 拦截了，直接返回响应
-                                final_response = hook_result.response or ""
-
-                                # 如果 response_data 是 CallToolResult，提取 artifact 信息
-                                # 发送 TOOL_END 事件来传递 artifact 数据
-                                if hook_result.response_data and isinstance(hook_result.response_data, CallToolResult):
-                                    # 提取 artifacts
-                                    artifacts = self._extract_artifacts_from_result(hook_result.response_data, "hook_response")
-
-                                    # 存储 artifacts 到 ArtifactManager
-                                    await self._store_artifacts_to_manager(artifacts, state)
-
-                                    if artifacts:
-                                        await self._emit_event(EventType.TOOL_END, {
-                                            "name": "hook_response",
-                                            "result": final_response,
-                                            "meta": {"artifacts": artifacts}
-                                        })
-
-                                await self.add_message(state.session_id, Message.assistant(final_response), state)
-
-                                await self._emit_event(EventType.TOKEN, final_response)
-                                self._schedule_state_save(state.session_id, state)
-
-                                # 执行请求结束 Hooks
-                                await self.hook_manager.on_request_end(hook_ctx, final_response)
-                                return
-
-                            elif hook_result.action == HookAction.MODIFY:
-                                # Hook 修改了输入
-                                user_input = hook_result.modified_input
-                                hook_ctx.user_input = user_input
-
-                    # 更新状态和历史
-                    state.status = AgentStatus.RUNNING
-                    
-                    # Intent Phase (传递 gen)
-                # 每个回合开始时，清空结构化信息收集
-                state.turn_structured_info = {}
-
-                direct_res = await self._handle_intent_phase(user_input, state, gen)
-
-                # 存入数据库
-                await self.add_message(state.session_id, Message.user(user_input), state)
-
-                if direct_res:
-                    # 存入数据库，携带回合的结构化信息
-                    assistant_msg = Message.assistant(direct_res)
-                    # if state.turn_structured_info:
-                    #     assistant_msg.metadata = state.turn_structured_info.copy()
-                    await self.add_message(state.session_id, assistant_msg, state)
-                    await self._emit_event(EventType.TOKEN, direct_res)
-                    self._schedule_state_save(state.session_id, state)
-
-                    # 执行请求结束 Hooks
-                    if self.hook_manager:
-                        await self.hook_manager.on_request_end(hook_ctx, direct_res)
-                    return
-
-            while state.status == AgentStatus.RUNNING:
-                await asyncio.sleep(0.01)
-
-                # ==============================
-                # [Truncation Integration] 检查并应用消息压缩
-                # ==============================
-                conv = self._get_conversation(state)
-                if self.truncation_manager and hasattr(conv, 'check_and_apply_truncation'):
-                    # 构建 system prompt 用于 Truncation 估算
-                    system_prompt = self._build_system_prompt(state, gen, req_ctx)
-                    tools = self._get_tools_schema(state, gen)
-
-                    # 执行 Truncation 检查
-                    truncated = await conv.check_and_apply_truncation(
-                        system_prompt=system_prompt,
-                        tools=tools
-                    )
-
-                    if truncated:
-                        # 如果执行了压缩，更新 history
-                        self._sync_history_from_conversation(state)
-                        logger.info("✅ Truncation applied and conversation compacted")
-
-                # 1. Build System Prompt & Update Conversation
-                # ==============================================
-                prompt = self._build_system_prompt(state, gen, req_ctx)
-                
-                # 使用 Conversation 的 update_system_prompt 方法更新系统提示词（临时消息）
-                conv = self._get_conversation(state)
-                conv.update_system_prompt(prompt)
-                
-                # 2. 准备 LLM 推理消息
-                # ==============================
-                # Deep Thinking 指令定义
-                deep_thinking_instruction = """
-                \n\n--- SYSTEM OVERRIDE: DEEP THINKING PROTOCOL ---
-                You must strictly follow this two-phase output format, regardless of any previous constraints about "JSON only" or "conciseness":
-
-                **PHASE 1: REASONING (Internal Monologue)**
-                - You MUST start your response with a `<thinking>` block.
-                - Explain your reasoning step-by-step inside this block.
-                - This phase is MANDATORY and acts as a scratchpad.
-
-                **PHASE 2: FINAL RESPONSE (User Fulfillment)**
-                - After closing `</thinking>` tag, proceed to answer user's request.
-                - IN THIS PHASE, you must strictly adhere to user's original formatting requirements (e.g., JSON only, Python code only, short answer).
-                - Do NOT output thinking block if it violates user's format; instead, output it *before* user's format content.
-
-                **Example Structure:**
-                <thinking>
-                ... analysis ...
-                </thinking>
-                { "result": "This is JSON that user asked for" }
-                """ if req_ctx.deep_thinking else None
-
-                # 使用 Conversation 的 for_llm 方法生成用于 LLM 的消息列表
-                input_messages = conv.for_llm(
-                    deep_thinking=req_ctx.deep_thinking,
-                    deep_thinking_instruction=deep_thinking_instruction
-                )
-                
-                # 3. 获取工具 schema
-                # ==============================
-                tools = self._get_tools_schema(state, gen)
-                logger.info(f"🔧 Available tools count: {len(tools) if tools else 0}, active_skill: {state.active_skill}")
-                
-                # 4. Call BaseLLM
-                # ===============
-                # 发送 TOKEN_START 事件(LLM 开始生成)
-                await self._emit_event(EventType.TOKEN_START, {})
-
-                full_content_text = ""
-                received_tool_requests: List[ToolRequest] = []
-                # [NEW] 思考过程状态追踪
-                is_thinking = False
-                # [解析器变量] 用于解析 Prompt 模式下的 <thinking> 标签
-                parse_state = "normal" # normal, check_open, thinking, check_close
-                tag_buffer = ""        # 缓存标签字符 (如 "<thi")
-
-                try:
-                    async for partial_msg, usage in gen.llm.astream(
-                        messages=input_messages,
-                        tools=tools or None
-                    ):
-                        if partial_msg and partial_msg.content:
-                            for c in partial_msg.content:
-                                # =================================================
-                                # Case A: 模型原生支持思考 (DeepSeek R1 / Native)
-                                # =================================================
-                                if isinstance(c, (ThinkingContent, RedactedThinkingContent)):
-                                    if not is_thinking:
-                                        await self._emit_event(EventType.THINKING_START, {})
-                                        is_thinking = True
-                                    
-                                    content = c.thinking if isinstance(c, ThinkingContent) else ""
-                                    if content:
-                                        await self._emit_event(EventType.THINKING_TOKEN, content)
-
-                                # =================================================
-                                # Case B: 普通文本 (需处理 Prompt 模式下的标签)
-                                # =================================================
-                                elif isinstance(c, TextContent):
-                                    text_chunk = c.text
-                                    
-                                    # 1. 如果没开 deep_thinking，直接作为普通文本发送
-                                    if not req_ctx.deep_thinking:
-                                        # 如果之前是 Native Thinking 状态，先结束
-                                        if is_thinking and not isinstance(c, ThinkingContent): 
-                                            await self._emit_event(EventType.THINKING_END, {})
-                                            is_thinking = False
-                                            
-                                        full_content_text += text_chunk
-                                        await self._emit_event(EventType.TOKEN, text_chunk)
-                                        continue
-
-                                    # 2. 开启了 deep_thinking，启动状态机解析
-                                    for char in text_chunk:
-                                        # --- 状态 1: 正常文本 ---
-                                        if parse_state == "normal":
-                                            if char == "<":
-                                                parse_state = "check_open"
-                                                tag_buffer = "<"
-                                            else:
-                                                full_content_text += char
-                                                await self._emit_event(EventType.TOKEN, char)
-                                        
-                                        # --- 状态 2: 检查开始标签 <thinking> ---
-                                        elif parse_state == "check_open":
-                                            tag_buffer += char
-                                            if tag_buffer == "<thinking>":
-                                                # 命中开始！
-                                                if not is_thinking:
-                                                    await self._emit_event(EventType.THINKING_START, {})
-                                                    is_thinking = True
-                                                parse_state = "thinking"
-                                                tag_buffer = ""
-                                            elif not "<thinking>".startswith(tag_buffer):
-                                                # 匹配失败，原样吐出缓存
-                                                full_content_text += tag_buffer
-                                                await self._emit_event(EventType.TOKEN, tag_buffer)
-                                                parse_state = "normal"
-                                                tag_buffer = ""
-                                        
-                                        # --- 状态 3: 思考内容中 ---
-                                        elif parse_state == "thinking":
-                                            if char == "<":
-                                                parse_state = "check_close"
-                                                tag_buffer = "<"
-                                            else:
-                                                # 发送思考 Token
-                                                await self._emit_event(EventType.THINKING_TOKEN, char)
-                                        
-                                        # --- 状态 4: 检查结束标签 </thinking> ---
-                                        elif parse_state == "check_close":
-                                            tag_buffer += char
-                                            if tag_buffer == "</thinking>":
-                                                # 命中结束！
-                                                if is_thinking:
-                                                    await self._emit_event(EventType.THINKING_END, {})
-                                                    is_thinking = False
-                                                parse_state = "normal"
-                                                tag_buffer = ""
-                                            elif not "</thinking>".startswith(tag_buffer):
-                                                # 匹配失败（可能是思考内容里的 < 符号）
-                                                await self._emit_event(EventType.THINKING_TOKEN, tag_buffer)
-                                                parse_state = "thinking" # 回到思考状态
-                                                tag_buffer = ""
-
-                                # =================================================
-                                # Case C: 工具请求
-                                # =================================================
-                                elif isinstance(c, ToolRequest):
-                                    # 遇到工具调用，强制结束思考
-                                    if is_thinking:
-                                        await self._emit_event(EventType.THINKING_END, {})
-                                        is_thinking = False
-                                        # 重置解析器状态
-                                        parse_state = "normal"
-                                        tag_buffer = ""
-                                    
-                                    received_tool_requests.append(c)
-                                        
-                                        
-                except Exception as e:
-                    # 统一异常处理格式
-                    error_msg = str(e)
-                    error_type = type(e).__name__
-                    logger.error(f"LLM Error [{error_type}]: {error_msg}")
-                    await self._emit_event(EventType.ERROR, {
-                        "error": error_msg,
-                        "error_type": error_type
-                    })
-                    break
-                
-                # 兜底：如果循环结束还在 is_thinking 状态，强制结束
-                if is_thinking:
-                    await self._emit_event(EventType.THINKING_END, {})
-
-                # 如果解析器卡在 buffer 里（例如流中断导致只输出了 "<think"），把残余发出来
-                if tag_buffer:
-                    if parse_state in ["check_open", "normal"]:
-                        await self._emit_event(EventType.TOKEN, tag_buffer)
-                        full_content_text += tag_buffer
-                    elif parse_state in ["thinking", "check_close"]:
-                        await self._emit_event(EventType.THINKING_TOKEN, tag_buffer)
-
-                # 发送 TOKEN_END 事件（LLM 生成结束）
-                await self._emit_event(EventType.TOKEN_END, {})
-                        
-                logger.info(f"📊 LLM returned: text_len={len(full_content_text)}, tool_requests={len(received_tool_requests)}")
-                
-                if received_tool_requests:
-                    # 将工具请求序列化存储到回合结构化信息中
-                    if "tool_requests" not in state.turn_structured_info:
-                        state.turn_structured_info["tool_requests"] = []
-                        
-                    for req in received_tool_requests:
-                        state.turn_structured_info["tool_requests"].append(req)
-
-                    assistant_content = []
-                    if full_content_text:
-                        assistant_content.append(TextContent(text=full_content_text))
-                    assistant_content.extend(received_tool_requests)
-                    await self.add_message(state.session_id, Message(role=Role.ASSISTANT, content=assistant_content).only_agent_visible(), state)
-                
-                    
-                # Create the finalized assistant message and dump to dict for DB
-                # assistant_msg = Message(role=Role.ASSISTANT, content=assistant_content)
-                # await self.add_message(state.session_id, assistant_msg,state)
-                
-                # 5. Handle Tools or Stop
-                # =======================
-                if not received_tool_requests:
-                    assistant_content = []
-                    if full_content_text:
-                        assistant_content.append(TextContent(text=full_content_text))
-                    
-                    if state.turn_structured_info["tool_responses"]:
-                        assistant_content.extend(state.turn_structured_info["tool_responses"])
-                    
-                    await self.add_message(state.session_id, Message(role=Role.ASSISTANT, content=assistant_content), state)
-                    
-                    self._schedule_state_save(state.session_id, state)
-                    break # Turn complete
-
-                # Execute Tools (传递 gen)
-                exec_results = await self._execute_tools_concurrent(received_tool_requests, state, gen, req_ctx)
-
-                if state.status == AgentStatus.WAITING_APPROVAL:
-                    return # Pause execution
- 
-
-                # 创建带有 artifact 信息的消息 metadata
-                # 初始化工具响应列表
-                if "tool_responses" not in state.turn_structured_info:
-                    state.turn_structured_info["tool_responses"] = []
-
-                for i, (req, resp) in enumerate(zip(received_tool_requests, exec_results)):
-                    # Construct Tool Response Message using Goose models
-                    # Note: OpenAIProvider._prepare_messages will separate this into the correct format
-                    tool_msg = Message.tool_response(resp)
-
-                    # 存入数据库（add_message 会自动同步到 history）
-                    await self.add_message(state.session_id, tool_msg, state)
-
-
-                    state.turn_structured_info["tool_responses"].append(resp)
-
-                self._schedule_state_save(state.session_id, state)
-
-            # 确保最终状态被保存（延迟保存的最后一次刷新）
-            await self._ensure_state_saved(session_id, state)
-
-
-            await self._emit_event(EventType.DONE, {
-                    "session_id": session_id
-                })
 
     async def _process_approval(self, state: AgentState, data: Dict, gen: AgentGeneration) -> bool:
         if state.status != AgentStatus.WAITING_APPROVAL or not state.pending_tool_call: return False
