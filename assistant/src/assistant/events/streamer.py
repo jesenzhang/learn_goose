@@ -60,7 +60,7 @@ class BaseStreamer0(IStreamer):
         self.store = store
         self._seq_counter = 0
 
-    async def emit(self, event_type: Union[str, Enum], data: Any, producer_id: str = None, **metadata) -> None:
+    async def emit(self, event_type: Union[str, Enum], data: Any, **metadata) -> None:
         self._seq_counter += 1
         
         # 统一类型转换
@@ -72,7 +72,6 @@ class BaseStreamer0(IStreamer):
             seq_id=self._seq_counter,
             type=type_str,
             data=data,
-            producer_id=producer_id,
             metadata=metadata
         )
 
@@ -171,7 +170,7 @@ class BaseStreamer(IStreamer):
         except Exception as e:
             logger.error(f"EventStore save failed: {e}")
         
-    async def emit(self, event_type: Union[str, Enum], data: Any, producer_id: str = None, **metadata) -> None:
+    async def emit(self, event_type: Union[str, Enum], data: Any, **metadata) -> None:
         self._seq_counter += 1
         
         # 统一类型转换
@@ -183,7 +182,6 @@ class BaseStreamer(IStreamer):
             seq_id=self._seq_counter,
             type=type_str,
             data=data,
-            producer_id=producer_id,
             metadata=metadata
         )
 

@@ -234,7 +234,9 @@ class DatabaseManager:
 
     def load_events(
         self,
-        session_id: str,
+        session_id: int,
+        run_id: str,
+        seq_id: int = -1,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -266,6 +268,9 @@ class DatabaseManager:
             with self._transaction() as conn:
                 rows = conn.execute(query, params).fetchall()
                 events = [json.loads(row[0]) for row in rows]
+
+            if seq_id is not None and seq_id >= 0:
+                events = [e for e in events if e.get("seq_id", -1) > seq_id]
 
             logger.debug(f"Loaded {len(events)} events for session {session_id}")
             return events

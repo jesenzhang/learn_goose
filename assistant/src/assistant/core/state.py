@@ -40,11 +40,13 @@ class AgentState(BaseModel):
         title: Session title for UI display
         shared_memory: Key-value storage for artifacts and cross-turn data
         run_config: user provided run configuration for the turn
+        active_run_id: Currently running task id
+        pending_run_id: Task id waiting for approval
+        last_run_id: Last known run id for this session
         updated_at: Last activity timestamp
         last_active: Human-readable last activity time
     """
     session_id: int
-    current_run_id: Optional[str] = Field(default=None, description="Current run identifier")
     user_id: Optional[int] = Field(default=None, description="User identifier for multi-user support")
     status: AgentStatus = AgentStatus.IDLE
     history: List[Dict] = Field(default_factory=list, exclude=True)
@@ -58,6 +60,9 @@ class AgentState(BaseModel):
     turn_structured_info: Dict[str, Any] = Field(default_factory=dict)
     shared_memory: Dict[str, Any] = Field(default_factory=dict)
     run_config: Dict[str, Any] = Field(default_factory=dict, exclude=True)
+    active_run_id: Optional[str] = Field(default=None, description="Current running task id")
+    pending_run_id: Optional[str] = Field(default=None, description="Task id waiting for approval")
+    last_run_id: Optional[str] = Field(default=None, description="Last known run id for this session")
     updated_at: float = Field(default_factory=lambda: datetime.now().timestamp())
     last_active: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 

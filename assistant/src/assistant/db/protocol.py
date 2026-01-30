@@ -79,6 +79,7 @@ class DatabaseProtocol(Protocol):
         self,
         session_id: int,
         run_id: str,
+        seq_id: int = -1,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -87,6 +88,8 @@ class DatabaseProtocol(Protocol):
 
         Args:
             session_id: 会话 ID
+            run_id: 运行 ID
+            seq_id: 起始序号（仅返回 seq_id > 此值）
             limit: 返回数量限制
             since: 起始时间（ISO 格式）
 

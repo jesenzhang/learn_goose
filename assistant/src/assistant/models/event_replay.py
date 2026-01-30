@@ -79,7 +79,7 @@ class EventReplayManager:
     ):
         """加载历史事件"""
         try:
-            events = await self.db.load_events(session_id, since=since)
+            events = await self.db.load_events(session_id, run_id="", since=since)
             logger.info(f"Loaded {len(events)} historical events for session {session_id}")
 
             for event in events:
@@ -181,7 +181,7 @@ class EventReplayManager:
             导出的事件数量
         """
         try:
-            events = await self.db.load_events(session_id, since=since)
+            events = await self.db.load_events(session_id, run_id="", since=since)
 
             if until:
                 until_dt = datetime.fromisoformat(until)
@@ -232,7 +232,7 @@ class EventReplayManager:
     async def get_event_stats(self, session_id: str) -> Dict[str, Any]:
         """获取事件统计信息"""
         try:
-            events = await self.db.load_events(session_id)
+            events = await self.db.load_events(session_id, run_id="")
 
             stats = {
                 "total_events": len(events),

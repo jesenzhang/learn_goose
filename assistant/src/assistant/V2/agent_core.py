@@ -25,15 +25,15 @@ from ..conversation import (Message, Role, TextContent,
 # Core Imports
 from ..events import MemoryEventBus, AsyncEventStore, StreamerFactory,BaseStreamer
 from ..events.legacy import EventType
-from .state import AgentState, AgentStatus
+from ..state import AgentState, AgentStatus
 from ..db import get_db, DatabaseManager
 from ..config.loader import ConfigLoader
 from ..skills import SkillLoader
 from ..skills.context import create_context, ServiceContext
 
-from .executor import ToolExecutor
+from ..executor import ToolExecutor
 # Artifact Storage Import
-from .artifact_storage import init_manager, get_manager
+from ..artifact_storage import init_manager, get_manager
 
 
 
@@ -46,10 +46,10 @@ from ..intent.models import IntentResult
 from ..intent.recognizer import IntentRecognizer
 from ..intent.strategy import IntentExecutor, ExecutionMode, TerminationAction
 from ..intent.config_loader import IntentConfigLoader
-from .watcher import ConfigWatcher
-from .generation import AgentGeneration
-from .context import RequestContext
-from .hooks import HookManager, AgentHook, HookContext, HookAction
+from ..watcher import ConfigWatcher
+from ..generation import AgentGeneration
+from ..context import RequestContext
+from ..hooks import HookManager, AgentHook, HookContext, HookAction
 # [NEW] 导入 contextvars 用于获取中间件注入的 token
 from ..utils.ctx_vars import get_auth_token
 AgentContext = ServiceContext[AgentState, DatabaseManager]
@@ -154,7 +154,7 @@ class ThinkingTracker:
             await self.emit(EventType.THINKING_END, {})
             self.active = False
 
-class MicroAgent:
+class MicroAgentV2Core:
     """
     Core Agent using BaseLLM abstraction and Generation-based Hot Reloading.
     """
@@ -1176,9 +1176,9 @@ Generate the content/response now.
         1. 注册内置 Hooks（使用配置文件中的设置覆盖默认值）
         2. 从配置文件加载自定义 Hooks
         """
-        from .hooks import HookConfigLoader, FAQHook, SensitiveWordHook, PromptInjectionHook
-        from .hooks import RequestLoggerHook, InputValidatorHook, StatisticsCollectorHook
-        from .hooks.base import HookConfig
+        from ..hooks import HookConfigLoader, FAQHook, SensitiveWordHook, PromptInjectionHook
+        from ..hooks import RequestLoggerHook, InputValidatorHook, StatisticsCollectorHook
+        from ..hooks.base import HookConfig
 
         # 获取 hooks 配置
         hooks_config = config.hooks

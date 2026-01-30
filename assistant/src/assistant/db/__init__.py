@@ -128,14 +128,28 @@ class UnifiedDatabase:
     async def load_events(
         self,
         session_id: int,
+        run_id: str,
+        seq_id: int = -1,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ):
         """加载事件"""
         if self._remote_db:
-            return await self._remote_db.load_events(session_id, limit, since)
+            return await self._remote_db.load_events(
+                session_id,
+                run_id,
+                seq_id=seq_id,
+                limit=limit,
+                since=since,
+            )
         elif self._local_db:
-            return await self._local_db.load_events(session_id, limit, since)
+            return await self._local_db.load_events(
+                session_id,
+                run_id,
+                seq_id=seq_id,
+                limit=limit,
+                since=since,
+            )
         return []
 
     async def delete_events(self, session_id: int, before: Optional[str] = None) -> int:

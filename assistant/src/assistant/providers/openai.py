@@ -407,7 +407,7 @@ class OpenAIProvider(BaseLLM, BaseEmbedding):
                         "type": "function",
                         "function": {
                             "name": req.tool_call.value.name,
-                            "arguments": json.dumps(req.tool_call.value.arguments or {})
+                            "arguments": json.dumps(req.tool_call.value.arguments or {}, ensure_ascii=False)
                         }
                     } for req in tool_reqs if req.tool_call.value]
 

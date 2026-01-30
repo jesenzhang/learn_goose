@@ -120,7 +120,7 @@ database:
   use_remote: true                  # 是否使用远程数据库gzclabeldebugapi/agent/
   remote_db_url: "http://192.168.11.11:9980/gzclabelaapi"                  # 远程数据库 URL
   remote_db_api_key: null              # 远程数据库 API 密钥 (作为 token 使用)
-  remote_db_timeout: 30                 # 远程数据库请求超时（秒）
+  remote_db_timeout: 3              # 远程数据库请求超时（秒）
   local_db_path: "agent_ultra.db"         # 本地数据库路径（use_remote=false 时使用）
 
 

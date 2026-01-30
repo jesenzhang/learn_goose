@@ -14,8 +14,9 @@ import json
 import logging
 from typing import Optional, Dict, Any, AsyncGenerator
 import time
+import uuid
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Header
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Header, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic.v1.types import NoneStrBytes
@@ -24,7 +25,7 @@ from ..core.events import EventType
 from ..events.event_wrapper import Event
 from ..core.state import AgentState
 from ..db import get_db
-from ..core.agent import MicroAgent
+from ..core import MicroAgent
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,16 @@ def get_agent() -> MicroAgent:
     return _agent
 
 
+def _generate_run_id(session_id: int) -> str:
+    return f"{session_id}:{int(time.time() * 1000)}:{uuid.uuid4().hex[:8]}"
+
+
+async def get_agent_state(session_id: int) -> AgentState:
+    db = get_db()
+    data = await db.load_state(session_id)
+    return AgentState(**data) if data else AgentState(session_id=session_id)
+
+
 def _format_sse(data: Dict[str, Any], event_type: Optional[str] = None) -> str:
     """
     Format event data as Standard Server-Sent Events (SSE).
@@ -104,176 +115,9 @@ def _format_sse(data: Dict[str, Any], event_type: Optional[str] = None) -> str:
     buffer += "\n"
     return buffer
 
-async def event_generator0(
-    session_id: int,
-    last_event_id: Optional[int] = -1,
-    input_data: Optional[Dict] = None,
-    resume: bool = False,
-    approval_data: Optional[ApprovalRequest] = None,
-    user_id: Optional[int] = None,
-    format: str = "ndjson",
-    heart_beat: float = 15.0
-) -> AsyncGenerator[str, None]:
-    """
-    Generate events for agent execution in NDJSON or SSE format.
-
-    Args:
-        session_id: Session identifier
-        input_text: Optional user input
-        resume: Whether resuming from approval
-        approval_data: Approval decision if resuming
-        user_id: User identifier for multi-user support
-        format: Response format - "ndjson" (default) or "sse"
-
-    Yields:
-        NDJSON: JSON-formatted event strings with newline
-        SSE: SSE-formatted strings with data: prefix and double newline
-    """
-
-    task = None
-
-    # 1. 设置上下文
-    try:
-        agent = get_agent()
-        db = get_db()
-
-        # 直接使用 bus 的订阅机制
-        # bus.subscribe() 返回一个异步生成器，我们包装成队列模式
-        q: asyncio.Queue = asyncio.Queue()
-
-    
-        async def streamer_to_queue():
-            """从 bus 订阅事件并放入队列"""
-            try:
-                streamer = agent.get_streamer(session_id,current_task_id)
-                async for streamer_event in streamer.listen(after_seq_id=last_event_id):
-                    # 将 StreamerEvent 转换为 Event 格式
-                    event = Event(
-                        id=streamer_event.id,
-                        type=streamer_event.type,
-                        data=streamer_event.data,
-                        timestamp=streamer_event.timestamp,
-                        meta={
-                            "run_id": streamer_event.run_id,
-                            "seq_id": streamer_event.seq_id,
-                            **streamer_event.metadata
-                        }
-                    )
-                    await q.put(event)
-            except Exception as e:
-                logger.error(f"Streamer error: {e}", exc_info=e)
-
-        # 启动后台任务监听事件
-        streamer_task = asyncio.create_task(streamer_to_queue())
-
-        def unsubscribe():
-            """取消订阅"""
-            streamer_task.cancel()
-
-        # Start agent task
-        task = asyncio.create_task(
-            agent.run_task(
-                session_id,
-                input_data=input_data,
-                resume=resume,
-                approval_data=approval_data.model_dump() if approval_data else None,
-                user_id=user_id
-            )
-        )
-        last_activity_time = time.time()
-        CHECK_INTERVAL = 0.5
-        
-        while True:
-            now = time.time()
-            is_heartbeat_due = (now - last_activity_time) >= heart_beat
-            
-            try:
-                # Wait for event with short timeout
-                event = await asyncio.wait_for(q.get(), timeout=CHECK_INTERVAL)
-                event_data = event.model_dump(mode='json')
-                # 获取事件类型
-                evt_type = event_data.get("type")
-                
-                if format == "sse":
-                    # SSE format: data: {...}\n\n
-                    yield _format_sse(event_data, evt_type)
-                else:
-                    # NDJSON format (default): {...}\n
-                    yield json.dumps(event_data, ensure_ascii=False) + "\n"
-                    
-                # 重置最后活动时间
-                last_activity_time = time.time()
-                q.task_done()
-                
-            except asyncio.TimeoutError:
-                # === B. 短轮询超时 (0.5s 内无消息) ===
-                # 优先级检查：如果此时任务已经结束且队列空了，就不发心跳了，直接退出
-                if task.done() and q.empty():
-                    break
-                
-                # 2. 检查心跳：如果任务还没停，且距离上次活动超过 15s
-                if is_heartbeat_due:
-                    # 发送心跳包
-                    if format == "sse":
-                        # SSE 标准心跳 (注释行)
-                        yield ": keep-alive\n\n"
-                    else:
-                        # NDJSON 业务心跳
-                        # 构造符合 Event 结构的 Ping 包
-                        ping_event = Event(
-                            type=EventType.PING,
-                            data="keep-alive" # 或者 None，视前端约定而定
-                        )
-                        yield json.dumps(ping_event.model_dump(mode='json'), ensure_ascii=False) + "\n"
-                
-                    # 重置最后活动时间 (就像我们刚发送了一个真实事件一样)
-                    last_activity_time = time.time()
-                    logger.debug(f"💓 Heartbeat sent for {session_id}")
-
-            # === 3. 循环末尾检查：任务是否完成 ===
-            # 注意：如果 task 结束了但队列里还有东西，上面的 try 块会先处理消息
-            # 只有当 q.empty() 且 task.done() 时才真正退出
-            if q.empty() and task.done():
-                if task.exception():
-                    error = task.exception()
-                    logger.error(f"Task failed: {error}", exc_info=error)
-                    err_event = Event(
-                        type=EventType.ERROR,
-                        data=str(error)
-                    )
-                    error_data = err_event.model_dump(mode='json')
-                    if format == "sse":
-                        yield _format_sse(error_data,EventType.ERROR)
-                    else:
-                        yield json.dumps(error_data, ensure_ascii=False) + "\n"
-                else:
-                    logger.debug(f"Task completed for session {session_id}")
-                    # Send end event for SSE
-                
-                if format == "sse":
-                    yield "data: [DONE]\n\n"
-                break
-            await asyncio.sleep(0.01)
-
-    except Exception as e:
-        logger.error(f"Generator error: {e}", exc_info=e)
-        fatal_err_event = Event(
-            type=EventType.ERROR,
-            data=str(e)
-        )
-        error_data=fatal_err_event.model_dump(mode='json')
-        if format == "sse":
-            yield _format_sse(error_data, EventType.ERROR)
-        else:
-            yield json.dumps(error_data, ensure_ascii=False) + "\n"
-
-    finally:
-        # Cleanup
-        if 'streamer_task' in locals() and not streamer_task.done():
-            streamer_task.cancel()
-        if task and not task.done(): task.cancel()
-
 async def event_generator(
+    state: AgentState,
+    run_id: str,
     session_id: int,
     last_event_id: Optional[int] = -1,
     input_data: Optional[Dict] = None,
@@ -285,19 +129,22 @@ async def event_generator(
 ) -> AsyncGenerator[str, None]:
     
     agent = get_agent()
+    if user_id is None:
+        user_id = state.user_id
     q: asyncio.Queue = asyncio.Queue()
     # --- 1. 触发任务并获取句柄 ---
     # 我们先调用 run_task。根据你之前的实现，它会立即返回一个 handle
-    # handle 里包含了本次生成的 current_run_id (即 task_id)
+    # handle 里包含了本次生成的 run_id (即 task_id)
     handle = await agent.run_task(
-        session_id,
+        state,
+        run_id,
         input_data=input_data,
         resume=resume,
         approval_data=approval_data.model_dump() if approval_data else None,
         user_id=user_id
     )
     
-    current_task_id = handle.task_id  # 获取本次任务的唯一 ID
+    current_task_id = run_id  # 获取本次任务的唯一 ID
 
     # --- 1. 定义监听器 (必须在启动任务前或同时准备好) ---
     async def streamer_to_queue():
@@ -311,9 +158,17 @@ async def event_generator(
                 # 视你之前的具体实现而定
                 pass
             # 这里的 listen 是异步生成器，会持续监听 bus 上的新事件
+            mismatch_logged = False
             async for streamer_event in streamer.stream():
-                
                 if streamer_event.run_id != current_task_id:
+                    if not mismatch_logged:
+                        logger.error(
+                            "Stream run_id mismatch detected: expected=%s actual=%s session_id=%s",
+                            current_task_id,
+                            streamer_event.run_id,
+                            session_id,
+                        )
+                        mismatch_logged = True
                     continue
                 event = Event.from_streamer_event(streamer_event)
                 
@@ -372,7 +227,61 @@ async def event_generator(
 
 def _format_error_event(msg: str, format: str) -> str:
     data = {"type": "error", "data": msg}
-    return f"data: {json.dumps(data)}\n\n" if format == "sse" else json.dumps(data) + "\n"
+    return (
+        f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+        if format == "sse"
+        else json.dumps(data, ensure_ascii=False) + "\n"
+    )
+
+
+def _validate_request_identity(
+    *,
+    state: AgentState,
+    session_id: int,
+    run_id: Optional[str],
+    user_id: Optional[int],
+) -> None:
+    if state.session_id != session_id:
+        logger.error(
+            "Session mismatch detected: req.session_id=%s state.session_id=%s run_id=%s user_id=%s state.user_id=%s",
+            session_id,
+            state.session_id,
+            run_id,
+            user_id,
+            state.user_id,
+        )
+        raise HTTPException(status_code=409, detail="session_id mismatch")
+    if user_id is not None and state.user_id is not None and user_id != state.user_id:
+        logger.error(
+            "User mismatch detected: req.user_id=%s state.user_id=%s session_id=%s run_id=%s",
+            user_id,
+            state.user_id,
+            session_id,
+            run_id,
+        )
+        raise HTTPException(status_code=403, detail="user_id mismatch")
+    if run_id and ":" in run_id:
+        prefix = run_id.split(":", 1)[0]
+        if prefix.isdigit() and int(prefix) != session_id:
+            logger.error(
+                "RunId mismatch detected: run_id=%s session_id=%s state.session_id=%s",
+                run_id,
+                session_id,
+                state.session_id,
+            )
+            raise HTTPException(status_code=409, detail="run_id mismatch")
+
+
+def _resolve_run_id_for_resume(state: AgentState, run_id: Optional[str]) -> Optional[str]:
+    if run_id:
+        return run_id
+    if state.pending_run_id:
+        return state.pending_run_id
+    if state.active_run_id:
+        return state.active_run_id
+    if state.last_run_id:
+        return state.last_run_id
+    return None
 
 
 def create_router() -> APIRouter:
@@ -561,8 +470,10 @@ def create_router() -> APIRouter:
         req: ChatRequest,
         session_id: int = Query(description="Session identifier"),
         resume: bool = Query(default=False, description="Resume flag"),
+        run_id: Optional[str] = Query(default=None, description="Run identifier (required for resume)"),
         last_event_id: int = Query(default=-1, description="Last event ID for resuming"),
-        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
+        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'"),
+        state: AgentState = Depends(get_agent_state),
     ):
         """
         Send a message to the agent and get streaming response.
@@ -576,9 +487,30 @@ def create_router() -> APIRouter:
             Streaming response with events in NDJSON or SSE format
         """
         
+        logger.info(
+            "Chat request params: session_id=%s resume=%s last_event_id=%s format=%s body=%s",
+            session_id,
+            resume,
+            last_event_id,
+            format,
+            req.model_dump(),
+        )
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
+        if resume:
+            run_id = _resolve_run_id_for_resume(state, run_id)
+            if not run_id:
+                raise HTTPException(status_code=400, detail="run_id is required when resume=true")
+        else:
+            if not run_id:
+                run_id = _generate_run_id(session_id)
+        _validate_request_identity(
+            state=state,
+            session_id=session_id,
+            run_id=run_id,
+            user_id=state.user_id,
+        )
         return StreamingResponse(
-            event_generator(session_id, resume=resume, last_event_id=last_event_id, input_data=req.model_dump(), format=format),
+            event_generator(state, run_id, session_id, resume=resume, last_event_id=last_event_id, input_data=req.model_dump(), format=format),
             media_type=media_type,
             headers=STREAMING_HEADERS
         )
@@ -587,8 +519,10 @@ def create_router() -> APIRouter:
     async def handle_approval(
         session_id: int,
         req: ApprovalRequest,
+        run_id: Optional[str] = Query(default=None, description="Run identifier (required)"),
         last_event_id: int = Query(default=-1, description="Last event ID for resuming"),
-        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
+        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'"),
+        state: AgentState = Depends(get_agent_state),
     ):
         """
         Handle approval for a pending tool call.
@@ -602,9 +536,18 @@ def create_router() -> APIRouter:
             Streaming response with continuation events
         """
         logger.info(f"Approval received for {session_id}: {req.approved}")
+        run_id = _resolve_run_id_for_resume(state, run_id)
+        if not run_id:
+            raise HTTPException(status_code=400, detail="run_id is required for approval")
+        _validate_request_identity(
+            state=state,
+            session_id=session_id,
+            run_id=run_id,
+            user_id=state.user_id,
+        )
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
-            event_generator(session_id, resume=True, last_event_id=last_event_id, approval_data=req, format=format),
+            event_generator(state, run_id, session_id, resume=True, last_event_id=last_event_id, approval_data=req, format=format),
             media_type=media_type,
             headers=STREAMING_HEADERS
         )
@@ -612,7 +555,9 @@ def create_router() -> APIRouter:
     @router.post("/approve/{session_id}")
     async def quick_approve(
         session_id: int,
-        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
+        run_id: Optional[str] = Query(default=None, description="Run identifier (required)"),
+        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'"),
+        state: AgentState = Depends(get_agent_state),
     ):
         """
         Quick approve without feedback (auto-approve pending action).
@@ -625,9 +570,18 @@ def create_router() -> APIRouter:
             Streaming response with continuation events
         """
         approval = ApprovalRequest(approved=True, feedback="")
+        run_id = _resolve_run_id_for_resume(state, run_id)
+        if not run_id:
+            raise HTTPException(status_code=400, detail="run_id is required for approval")
+        _validate_request_identity(
+            state=state,
+            session_id=session_id,
+            run_id=run_id,
+            user_id=state.user_id,
+        )
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
-            event_generator(session_id, resume=True, approval_data=approval, format=format),
+            event_generator(state, run_id, session_id, resume=True, approval_data=approval, format=format),
             media_type=media_type,
             headers=STREAMING_HEADERS
         )
@@ -639,7 +593,9 @@ def create_router() -> APIRouter:
         user_id: int,
         session_id: int,
         req: ChatRequest,
-        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'")
+        run_id: Optional[str] = Query(default=None, description="Run identifier"),
+        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'"),
+        state: AgentState = Depends(get_agent_state),
     ):
         """
         Send a message to agent for a specific user and get streaming response.
@@ -653,9 +609,17 @@ def create_router() -> APIRouter:
         Returns:
             Streaming response with events in NDJSON or SSE format
         """
+        if not run_id:
+            run_id = _generate_run_id(session_id)
+        _validate_request_identity(
+            state=state,
+            session_id=session_id,
+            run_id=run_id,
+            user_id=user_id,
+        )
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
-            event_generator(session_id,input_data=req.model_dump(), user_id=user_id, format=format),
+            event_generator(state, run_id, session_id, input_data=req.model_dump(), user_id=user_id, format=format),
             media_type=media_type,
             headers=STREAMING_HEADERS
         )

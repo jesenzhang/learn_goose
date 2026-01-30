@@ -168,7 +168,7 @@ class LocalAuthProvider:
 
                 # 插入用户记录
                 now = datetime.now().isoformat()
-                permissions_json = json.dumps(kwargs.get('permissions', {}))
+                permissions_json = json.dumps(kwargs.get('permissions', {}), ensure_ascii=False)
 
                 await conn.execute("""
                     INSERT INTO users (user_id, username, password_hash, display_name, email, permissions, created_at, last_active)

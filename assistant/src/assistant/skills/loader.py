@@ -141,6 +141,10 @@ class SkillLoader:
         # 4. Scan for Functions (scripts/*.py AND impl.py)
         functions = self._scan_functions(skill_id, path)
 
+        # Apply module-level config override for function-based skills
+        if specific_config and specific_config.config:
+            self._apply_module_config(skill_id, path, specific_config.config)
+
         # 5. Try Loading Class (impl.py)
         skill_instance = self._try_load_skill_class(skill_id, path)
 
@@ -265,6 +269,23 @@ class SkillLoader:
         if str_root not in sys.path:
             sys.path.insert(0, str_root)
         return str_root
+
+    def _apply_module_config(self, skill_id: str, path: Path, config: Dict[str, Any]) -> None:
+        """Apply config to module-level skill implementations (function-based)."""
+        if not config:
+            return
+        try:
+            self._prepare_sys_path(path)
+            module_name = f"{skill_id}.impl"
+            if module_name in sys.modules:
+                module = sys.modules[module_name]
+            else:
+                module = importlib.import_module(module_name)
+            if hasattr(module, "set_skill_config"):
+                module.set_skill_config(config)
+                logger.info(f"🔧 Applied config to skill '{skill_id}' via set_skill_config")
+        except Exception as e:
+            logger.warning(f"Failed to apply config to skill '{skill_id}': {e}")
 
     def _try_load_skill_class(self, skill_id: str, path: Path) -> Optional[SkillBase]:
         """Attempt to instantiate SkillBase from impl.py using import_module."""

@@ -452,7 +452,10 @@ def to_provider_format(conversation: "Conversation") -> List[Dict[str, Any]]:
                                 "type": "function",
                                 "function": {
                                     "name": tool_call.value.name if hasattr(tool_call.value, 'name') else "",
-                                    "arguments": json.dumps(tool_call.value.arguments if hasattr(tool_call.value, 'arguments') else {})
+                                    "arguments": json.dumps(
+                                        tool_call.value.arguments if hasattr(tool_call.value, 'arguments') else {},
+                                        ensure_ascii=False
+                                    )
                                 }
                             })
 
@@ -490,4 +493,3 @@ def to_provider_format(conversation: "Conversation") -> List[Dict[str, Any]]:
                             "is_error": tr.is_error if hasattr(tr, 'is_error') else False
                         })
     return result
-

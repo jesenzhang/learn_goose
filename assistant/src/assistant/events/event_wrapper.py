@@ -32,7 +32,6 @@ class Event(BaseModel):
                 "run_id": streamer_event.run_id,
                 "seq_id": streamer_event.seq_id,
                 "session_id": streamer_event.session_id,
-                "producer_id": streamer_event.producer_id,
                 "parent_run_id": streamer_event.parent_run_id,
                 **streamer_event.metadata
             }
@@ -49,8 +48,7 @@ class Event(BaseModel):
             type=self.type,
             data=self.data,
             timestamp=self.timestamp,
-            producer_id=meta.get("producer_id"),
             parent_run_id=meta.get("parent_run_id"),
             metadata={k: v for k, v in meta.items()
-                     if k not in ["run_id", "seq_id", "session_id", "producer_id", "parent_run_id"]}
+                     if k not in ["run_id", "seq_id", "session_id", "parent_run_id"]}
         )

@@ -40,7 +40,9 @@ class DatabaseProtocol(Protocol):
 
     def load_events(
         self,
-        session_id: str,
+        session_id: int,
+        run_id: str,
+        seq_id: int = -1,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:

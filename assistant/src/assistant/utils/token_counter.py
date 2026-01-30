@@ -77,7 +77,7 @@ class TokenCounter:
                 # Rust: format!("{}:{}:{:?}", id, name, arguments)
                 if content.tool_call.value:
                     tool_call = content.tool_call.value
-                    args_str = json.dumps(tool_call.arguments)
+                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     text = f"{content.id}:{tool_call.name}:{args_str}"
                     num_tokens += self.count_tokens(text)
             

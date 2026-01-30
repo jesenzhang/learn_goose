@@ -10,13 +10,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.status import HTTP_422_UNPROCESSABLE_ENTITY
 import uvicorn
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
@@ -42,7 +45,7 @@ def create_app() -> FastAPI:
     """创建 FastAPI 应用"""
     from assistant.config.loader import ConfigLoader
     from assistant.db import configure_db
-    from assistant.core.agent import MicroAgent
+    from assistant.core import MicroAgent
     from assistant.api.routes import create_router, set_agent
     from assistant.api.middleware import AuthContextMiddleware
     
@@ -107,6 +110,21 @@ def create_app() -> FastAPI:
     )
     
     app.add_middleware(AuthContextMiddleware)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        # Log 422 details to pinpoint which parameter failed validation.
+        logger.warning(
+            "422 ValidationError: %s %s | query=%s | errors=%s",
+            request.method,
+            request.url.path,
+            dict(request.query_params),
+            exc.errors(),
+        )
+        return JSONResponse(
+            status_code=HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": exc.errors()},
+        )
 
     # 主路由
     router = create_router()

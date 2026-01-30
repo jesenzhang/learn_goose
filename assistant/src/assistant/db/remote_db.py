@@ -6,6 +6,7 @@
 """
 
 import asyncio
+from doctest import debug
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -314,6 +315,7 @@ class RemoteDatabaseManager:
         self,
         session_id: int,
         run_id: str,
+        seq_id: int = 0,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -330,14 +332,25 @@ class RemoteDatabaseManager:
         """
         try:
             params = {"p": "w"}
-            if limit:
-                params["limit"] = limit
-            if since:
-                params["since"] = since
+           
+            if session_id:
+                params["session_id"] = session_id
+                
             if run_id:
                 params["run_id"] = run_id
-            result = await self._request("GET", f"/agent/handle/load_event/{session_id}", params=params)
-            return result.get("events", [])
+                
+            if seq_id < 0:
+                seq_id=0
+            
+            params["seq_id"] = seq_id
+            
+            result = await self._request("GET", f"/agent/handle/load_event", params=params)
+            
+            if result.get("status") == 1:
+                return result.get("data", [])
+            else:
+                logger.warning(f"Load events failed: {result}")
+                return []
         except Exception as e:
             logger.error(f"Failed to load events: {e}")
             # 抛出异常以便上层捕获和发送错误事件

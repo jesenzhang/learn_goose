@@ -84,12 +84,32 @@ class AsyncDatabaseManager:
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id INTEGER NOT NULL,
+                    run_id TEXT,
+                    seq_id INTEGER DEFAULT 0,
+                    event_id TEXT,
                     event TEXT NOT NULL,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 )
             """)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, timestamp DESC)")
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_events_session_seq
+                ON events(session_id, seq_id)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_events_run_id
+                ON events(run_id)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_events_event_id
+                ON events(event_id)
+            """)
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_events_run_seq_unique
+                ON events(session_id, run_id, seq_id)
+                WHERE run_id IS NOT NULL AND seq_id > 0
+            """)
 
             # Memories Table
             await conn.execute("""
@@ -301,12 +321,42 @@ class AsyncDatabaseManager:
                     ON events(run_id)
                 """)
 
+                # 添加 event_id 列
+                await conn.execute("ALTER TABLE events ADD COLUMN event_id TEXT")
+
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_events_event_id
+                    ON events(event_id)
+                """)
+
+                await conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_events_run_seq_unique
+                    ON events(session_id, run_id, seq_id)
+                    WHERE run_id IS NOT NULL AND seq_id > 0
+                """)
+
                 # 为现有事件生成 seq_id
                 await self._generate_seq_ids_for_existing_events(conn)
 
                 await conn.commit()
                 logger.info("seq_id column migration completed")
             else:
+                # Ensure event_id column exists even if seq_id is already present.
+                cursor = await conn.execute("PRAGMA table_info(events)")
+                columns = await cursor.fetchall()
+                column_names = {col[1] for col in columns}
+                if "event_id" not in column_names:
+                    logger.info("Migrating database: adding event_id column to events table")
+                    await conn.execute("ALTER TABLE events ADD COLUMN event_id TEXT")
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_events_event_id
+                    ON events(event_id)
+                """)
+                await conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_events_run_seq_unique
+                    ON events(session_id, run_id, seq_id)
+                    WHERE run_id IS NOT NULL AND seq_id > 0
+                """)
                 logger.debug("seq_id column already exists")
 
         except Exception as e:
@@ -346,7 +396,7 @@ class AsyncDatabaseManager:
                         UPDATE events
                         SET event = ?, seq_id = ?, run_id = ?
                         WHERE id = ?
-                    """, (json.dumps(event_data), seq_id, str(session_id), event_id))
+                    """, (json.dumps(event_data, ensure_ascii=False), seq_id, str(session_id), event_id))
 
             logger.info(f"Generated seq_ids for {len(session_ids)} sessions")
 
@@ -574,12 +624,26 @@ class AsyncDatabaseManager:
                 event['timestamp'] = datetime.now().isoformat()
 
             event_json = json.dumps(event, ensure_ascii=False)
+            run_id = event.get("run_id")
+            seq_id = event.get("seq_id", 0)
+            event_id = event.get("id")
 
             async with self._transaction() as conn:
-                await conn.execute(
-                    "INSERT INTO events (session_id, event, timestamp) VALUES (?, ?, ?)",
-                    (session_id, event_json, event['timestamp'])
-                )
+                try:
+                    await conn.execute(
+                        """
+                        INSERT OR IGNORE INTO events
+                        (session_id, run_id, seq_id, event_id, event, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (session_id, run_id, seq_id, event_id, event_json, event['timestamp'])
+                    )
+                except Exception:
+                    # Fallback for legacy schema without extra columns.
+                    await conn.execute(
+                        "INSERT INTO events (session_id, event, timestamp) VALUES (?, ?, ?)",
+                        (session_id, event_json, event['timestamp'])
+                    )
             logger.debug(f"Saved event for session {session_id}")
             return True
         except Exception as e:
@@ -590,6 +654,7 @@ class AsyncDatabaseManager:
         self,
         session_id: int,
         run_id: str,
+        seq_id: int = -1,
         limit: Optional[int] = None,
         since: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -607,10 +672,26 @@ class AsyncDatabaseManager:
                 params.append(limit)
 
             async with self._transaction() as conn:
-                cursor = await conn.execute(query, params)
-                rows = await cursor.fetchall()
+                try:
+                    cursor = await conn.execute(query, params)
+                    rows = await cursor.fetchall()
+                except Exception:
+                    # Legacy schema: no run_id column
+                    fallback_query = "SELECT event FROM events WHERE session_id = ? ORDER BY timestamp ASC"
+                    fallback_params = [session_id]
+                    if since:
+                        fallback_query += " AND timestamp >= ?"
+                        fallback_params.append(since)
+                    if limit:
+                        fallback_query += " LIMIT ?"
+                        fallback_params.append(limit)
+                    cursor = await conn.execute(fallback_query, fallback_params)
+                    rows = await cursor.fetchall()
 
                 events = [json.loads(row[0]) for row in rows]
+
+            if seq_id is not None and seq_id >= 0:
+                events = [e for e in events if e.get("seq_id", -1) > seq_id]
 
             logger.debug(f"Loaded {len(events)} events for session {session_id}")
             return events

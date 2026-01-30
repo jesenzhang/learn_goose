@@ -39,7 +39,6 @@ class Event(BaseModel):
     data: Any                # 业务载荷
     
     # 元数据
-    producer_id: Optional[str] = None   # node_id
     parent_run_id: Optional[str] = None # 子工作流追踪
     timestamp: float = Field(default_factory=time.time)
     metadata: Dict[str, Any] = Field(default_factory=dict)
