@@ -11,6 +11,7 @@ class SystemConfig(BaseModel):
     """System-level configuration."""
     memory_enabled: bool = False
     timezone: str = "Asia/Shanghai"
+    hot_reload_enabled: bool = False
 
 class AgentConfig(BaseModel):
     """Agent persona and behavior configuration."""

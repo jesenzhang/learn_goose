@@ -116,19 +116,20 @@ def _format_sse(data: Dict[str, Any], event_type: Optional[str] = None) -> str:
     return buffer
 
 async def event_generator(
-    state: AgentState,
-    run_id: str,
-    session_id: int,
-    last_event_id: Optional[int] = -1,
-    input_data: Optional[Dict] = None,
-    resume: bool = False,
-    approval_data: Optional[ApprovalRequest] = None,
-    user_id: Optional[int] = None,
-    format: str = "ndjson",
-    heart_beat: float = 15.0
-) -> AsyncGenerator[str, None]:
+        state: AgentState,
+        run_id: str,
+        session_id: int,
+        last_event_id: Optional[int] = -1,
+        input_data: Optional[Dict] = None,
+        resume: bool = False,
+        approval_data: Optional[ApprovalRequest] = None,
+        user_id: Optional[int] = None,
+        format: str = "ndjson",
+        heart_beat: float = 15.0
+    ) -> AsyncGenerator[str, None]:
     
     agent = get_agent()
+    db = get_db()
     if user_id is None:
         user_id = state.user_id
     q: asyncio.Queue = asyncio.Queue()
@@ -184,6 +185,15 @@ async def event_generator(
     # --- 3. 消费循环 (并行处理队列消息) ---
     last_activity_time = time.time()
     
+    last_saved_seq_id = state.last_delivered_seq_id or -1
+    last_save_ts = time.time()
+
+    async def _schedule_state_save():
+        try:
+            await db.save_state(session_id, state.model_dump(exclude_none=True))
+        except Exception as e:
+            logger.warning(f"Failed to save state for last_delivered_seq_id: {e}")
+
     try:
         while True:
             # 动态检查任务句柄状态
@@ -199,6 +209,19 @@ async def event_generator(
                     yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
                 else:
                     yield json.dumps(event_data, ensure_ascii=False) + "\n"
+
+                # Track last delivered seq_id for reconnect safety.
+                meta = event.meta or {}
+                seq_id = meta.get("seq_id")
+                run_id = meta.get("run_id")
+                if isinstance(seq_id, int) and run_id:
+                    state.last_delivered_seq_id = seq_id
+                    state.last_delivered_run_id = str(run_id)
+                    now = time.time()
+                    if (seq_id - last_saved_seq_id) >= 20 or (now - last_save_ts) >= 2.0:
+                        last_saved_seq_id = seq_id
+                        last_save_ts = now
+                        asyncio.create_task(_schedule_state_save())
                 
                 last_activity_time = time.time()
                 q.task_done()
@@ -500,6 +523,8 @@ def create_router() -> APIRouter:
             run_id = _resolve_run_id_for_resume(state, run_id)
             if not run_id:
                 raise HTTPException(status_code=400, detail="run_id is required when resume=true")
+            if last_event_id == -1 and state.last_delivered_run_id == run_id and state.last_delivered_seq_id is not None:
+                last_event_id = state.last_delivered_seq_id
         else:
             if not run_id:
                 run_id = _generate_run_id(session_id)
@@ -539,6 +564,8 @@ def create_router() -> APIRouter:
         run_id = _resolve_run_id_for_resume(state, run_id)
         if not run_id:
             raise HTTPException(status_code=400, detail="run_id is required for approval")
+        if last_event_id == -1 and state.last_delivered_run_id == run_id and state.last_delivered_seq_id is not None:
+            last_event_id = state.last_delivered_seq_id
         _validate_request_identity(
             state=state,
             session_id=session_id,
@@ -570,9 +597,13 @@ def create_router() -> APIRouter:
             Streaming response with continuation events
         """
         approval = ApprovalRequest(approved=True, feedback="")
+        last_event_id = -1
         run_id = _resolve_run_id_for_resume(state, run_id)
         if not run_id:
             raise HTTPException(status_code=400, detail="run_id is required for approval")
+        if state.last_delivered_run_id == run_id and state.last_delivered_seq_id is not None:
+            # Quick-approve has no last_event_id parameter; use stored seq id to avoid full replay.
+            last_event_id = state.last_delivered_seq_id
         _validate_request_identity(
             state=state,
             session_id=session_id,
@@ -581,7 +612,15 @@ def create_router() -> APIRouter:
         )
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
-            event_generator(state, run_id, session_id, resume=True, approval_data=approval, format=format),
+            event_generator(
+                state,
+                run_id,
+                session_id,
+                resume=True,
+                last_event_id=last_event_id,
+                approval_data=approval,
+                format=format,
+            ),
             media_type=media_type,
             headers=STREAMING_HEADERS
         )

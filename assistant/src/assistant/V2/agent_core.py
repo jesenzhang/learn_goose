@@ -193,9 +193,11 @@ class MicroAgentV2Core:
         first_gen = self._build_generation(initial_config)
         self.current_generation = first_gen
 
-        # 启动监听
-        self.watcher = ConfigWatcher(config_path, self.reload_config)
-        self.watcher.start()
+        # 启动监听（默认关闭热更新）
+        self.watcher = None
+        if initial_config.system.hot_reload_enabled:
+            self.watcher = ConfigWatcher(config_path, self.reload_config)
+            self.watcher.start()
 
         # 初始化 Hook Manager 并加载配置的 Hooks
         self.hook_manager = HookManager()

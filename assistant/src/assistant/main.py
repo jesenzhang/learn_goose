@@ -18,13 +18,15 @@ import uvicorn
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+_log_handlers = [logging.StreamHandler()]
+_log_file = os.getenv("ASSISTANT_LOG_FILE", "museum_assistant.log")
+if _log_file and _log_file.lower() != "stdout":
+    _log_handlers.append(logging.FileHandler(_log_file, encoding="utf-8"))
+
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('museum_assistant.log', encoding='utf-8')
-    ],
+    handlers=_log_handlers,
     encoding='utf-8'
 )
 

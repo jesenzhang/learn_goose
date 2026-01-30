@@ -1,18 +1,19 @@
 #!/bin/bash
+# ✅ 关键：第一时间保存用户终端的原始工作目录（在任何 cd 操作前！）
+WORK_DIR=$(pwd)  # 或使用 $(pwd)
 
 SCRIPT_DIR=$(dirname "$0")
 cd "$SCRIPT_DIR"
 SCRIPT_PATH=$(pwd)/$(basename "$0")
 echo "脚本的完整路径是: $SCRIPT_PATH"
 
-WORK_DIR=$(pwd)
 
 echo "目录完整路径是: $WORK_DIR"
 
 cd "$WORK_DIR"
 
 # 定义虚拟环境的路径
-VENV_DIR="$WORK_DIR/venv"
+VENV_DIR="$WORK_DIR/.venv"
 
 # 激活虚拟环境
 source "$VENV_DIR/bin/activate"
@@ -31,11 +32,11 @@ log_file='assistant.log'
 # 使用命令行参数传递配置
 SERVER_HOST="0.0.0.0"
 SERVER_PORT=8400
-CONFIG_FILE="assistant_config.yaml"
+CONFIG_FILE="F:\Workspace\learn_goose\assistant\assistant_config.yaml"
 
 
-server_cmd='nohup python -m assistant.main --host ${SERVER_HOST} --port ${SERVER_PORT} --config ${CONFIG_FILE} \
-            >${log_file} 2>&1'
+server_cmd='ASSISTANT_LOG_FILE=${log_file} nohup python -m assistant.main --host ${SERVER_HOST} --port ${SERVER_PORT} --config ${CONFIG_FILE} \
+            >/dev/null 2>&1'
 
 eval "${server_cmd}" &
 

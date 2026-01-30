@@ -1,6 +1,7 @@
 import time
 import logging
 import asyncio
+import os
 from typing import Callable, Optional
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -15,6 +16,7 @@ class ConfigFileHandler(FileSystemEventHandler):
         self.loop = loop
         self._last_trigger = 0
         self._debounce_seconds = 1.0  # 防抖时间
+        self._log_level = os.getenv("ASSISTANT_WATCHDOG_LOG_LEVEL", "debug").lower()
 
     def on_modified(self, event):
         if event.is_directory:
@@ -25,7 +27,12 @@ class ConfigFileHandler(FileSystemEventHandler):
             current_time = time.time()
             if current_time - self._last_trigger > self._debounce_seconds:
                 self._last_trigger = current_time
-                logger.info(f"⚡ Configuration change detected: {event.src_path}")
+                if self._log_level == "silent":
+                    pass
+                elif self._log_level == "info":
+                    logger.info(f"⚡ Configuration change detected: {event.src_path}")
+                else:
+                    logger.debug(f"⚡ Configuration change detected: {event.src_path}")
                 
                 # 关键：将重载任务调度回主事件循环，保证线程安全
                 if self.loop and self.loop.is_running():
@@ -48,8 +55,14 @@ class ConfigWatcher:
 
     def start(self):
         # 监听配置文件所在的目录
-        import os
         directory = os.path.dirname(os.path.abspath(self.config_path))
+        watchdog_logger = logging.getLogger("watchdog")
+        watchdog_logger.setLevel(logging.WARNING)
+        if not watchdog_logger.handlers:
+            handler = logging.FileHandler("watchdog.log", encoding="utf-8")
+            handler.setLevel(logging.WARNING)
+            watchdog_logger.addHandler(handler)
+            watchdog_logger.propagate = False
         self.observer.schedule(self.handler, directory, recursive=False)
         self.observer.start()
         logger.info(f"👀 Watching for config changes in: {self.config_path}")

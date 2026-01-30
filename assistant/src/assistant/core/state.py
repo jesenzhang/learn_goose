@@ -43,6 +43,8 @@ class AgentState(BaseModel):
         active_run_id: Currently running task id
         pending_run_id: Task id waiting for approval
         last_run_id: Last known run id for this session
+        last_delivered_seq_id: Last delivered event seq_id for reconnect
+        last_delivered_run_id: Run id associated with last_delivered_seq_id
         updated_at: Last activity timestamp
         last_active: Human-readable last activity time
     """
@@ -63,6 +65,8 @@ class AgentState(BaseModel):
     active_run_id: Optional[str] = Field(default=None, description="Current running task id")
     pending_run_id: Optional[str] = Field(default=None, description="Task id waiting for approval")
     last_run_id: Optional[str] = Field(default=None, description="Last known run id for this session")
+    last_delivered_seq_id: Optional[int] = Field(default=None, description="Last delivered event seq_id")
+    last_delivered_run_id: Optional[str] = Field(default=None, description="Run id for last delivered event")
     updated_at: float = Field(default_factory=lambda: datetime.now().timestamp())
     last_active: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 

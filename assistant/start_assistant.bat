@@ -24,6 +24,7 @@ REM 设置默认参数
 set "SERVER_HOST=0.0.0.0"
 set "SERVER_PORT=8400"
 set "CONFIG_FILE=assistant_config.yaml"
+set "LOG_FILE=assistant.log"
 
 REM 检查命令行参数
 :parse_args
@@ -46,13 +47,20 @@ if "%~1"=="--config" (
     shift
     goto parse_args
 )
+if "%~1"=="--log" (
+    set "LOG_FILE=%~2"
+    shift
+    shift
+    goto parse_args
+)
 shift
 goto parse_args
 
 :start_server
 echo Starting server on %SERVER_HOST%:%SERVER_PORT% with config %CONFIG_FILE%
 
-REM 启动服务器
+REM 启动服务器（日志输出到指定文件）
+set "ASSISTANT_LOG_FILE=%LOG_FILE%"
 python -m assistant.main --host %SERVER_HOST% --port %SERVER_PORT% --config %CONFIG_FILE%
 
 pause

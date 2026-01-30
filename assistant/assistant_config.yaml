@@ -2,6 +2,7 @@
 system:
   memory_enabled: true   # 开启长期记忆 (Agent 会自动使用 save_memory/search_memory)
   timezone: "Asia/Shanghai"
+  hot_reload_enabled: false
 
 # ================= 模型配置 =================
 provider:
