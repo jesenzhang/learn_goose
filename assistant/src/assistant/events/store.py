@@ -178,11 +178,27 @@ class AsyncEventStore(IEventStore):
             return
         last_seq_id = buf[-1]["seq_id"]
         first_seq_id = buf[0]["seq_id"]
-        order = "".join("t" if t["type"] == EventType.TOKEN.value else "k" for t in buf)
         token_count = sum(1 for t in buf if t["type"] == EventType.TOKEN.value)
         thinking_count = sum(1 for t in buf if t["type"] == EventType.THINKING_TOKEN.value)
-        agg_text = "".join(t["text"] for t in buf if t["type"] == EventType.TOKEN.value)
-        thinking_text = "".join(t["text"] for t in buf if t["type"] == EventType.THINKING_TOKEN.value)
+        merged_text = "".join(t["text"] for t in buf)
+        spans = []
+        offset = 0
+        for item in buf:
+            part = item.get("text") or ""
+            part_bytes = part.encode("utf-8")
+            length = len(part_bytes)
+            span_type = "t" if item["type"] == EventType.TOKEN.value else "k"
+            spans.append([span_type, offset, length])
+            offset += length
+
+        spans_delta = []
+        prev_offset = 0
+        for span_type, abs_offset, length in spans:
+            delta = abs_offset - prev_offset
+            spans_delta.append([span_type, delta, length])
+            prev_offset = abs_offset
+
+        spans_str = "|".join(f"{t},{d},{l}" for t, d, l in spans_delta)
         agg_dict = {
             "session_id": int(session_id),
             "run_id": str(run_id),
@@ -190,8 +206,8 @@ class AsyncEventStore(IEventStore):
             "seq_id": last_seq_id,
             "type": "token_aggregate",
             "data": {
-                "text": agg_text,
-                "thinking_text": thinking_text,
+                "merged_text": merged_text,
+                "spans": spans_str,
             },
             "timestamp": time.time(),
             "meta": {
@@ -199,7 +215,8 @@ class AsyncEventStore(IEventStore):
                 "end_seq_id": last_seq_id,
                 "token_count": token_count,
                 "thinking_count": thinking_count,
-                "order": order,
+                "spans_unit": "bytes",
+                "spans_format": "delta_str",
             },
         }
         wal_offset = None
@@ -319,13 +336,63 @@ class AsyncEventStore(IEventStore):
             # Expand aggregated token events on replay.
             if ev_data.get("type") == "token_aggregate":
                 meta = ev_data.get("meta", {})
-                order = meta.get("order", "")
                 token_count = int(meta.get("token_count", 0))
                 thinking_count = int(meta.get("thinking_count", 0))
-                start_seq_id = int(meta.get("start_seq_id", max(1, seq_id - len(order) + 1)))
+                total_count = token_count + thinking_count
+                start_seq_id = int(meta.get("start_seq_id", max(1, seq_id - total_count + 1)))
                 data = ev_data.get("data") or {}
+                merged_text = data.get("merged_text", "")
+                spans_raw = data.get("spans") or []
                 text = data.get("text", "")
                 thinking_text = data.get("thinking_text", "")
+
+                spans = []
+                if isinstance(spans_raw, str) and spans_raw:
+                    prev_offset = 0
+                    for part in spans_raw.split("|"):
+                        items = part.split(",")
+                        if len(items) != 3:
+                            continue
+                        span_type, delta_str, length_str = items
+                        try:
+                            delta = int(delta_str)
+                            length = int(length_str)
+                        except ValueError:
+                            continue
+                        abs_offset = prev_offset + delta
+                        spans.append([span_type, abs_offset, length])
+                        prev_offset = abs_offset
+                elif isinstance(spans_raw, list):
+                    spans = spans_raw
+
+                if merged_text and spans:
+                    merged_bytes = merged_text.encode("utf-8")
+                    seq_cursor = start_seq_id
+                    for span in spans:
+                        if not isinstance(span, list) or len(span) != 3:
+                            continue
+                        span_type, offset, length = span
+                        try:
+                            chunk_bytes = merged_bytes[offset:offset + length]
+                            chunk = chunk_bytes.decode("utf-8")
+                        except Exception:
+                            chunk = merged_bytes[offset:offset + length].decode("utf-8", errors="replace")
+
+                        event_type = EventType.TOKEN.value if span_type == "t" else EventType.THINKING_TOKEN.value
+                        result.append(Event(
+                            id=f"{ev_data.get('id')}:{seq_cursor}",
+                            session_id=ev_data.get("session_id", ""),
+                            run_id=ev_data.get("run_id", ""),
+                            seq_id=seq_cursor,
+                            type=event_type,
+                            data=chunk,
+                            timestamp=ev_data.get("timestamp", 0),
+                            parent_run_id=meta.get("parent_run_id"),
+                            metadata={k: v for k, v in meta.items()
+                                     if k not in ["parent_run_id"]},
+                        ))
+                        seq_cursor += 1
+                    continue
 
                 def _split_text(s: str, n: int) -> List[str]:
                     if n <= 0:
@@ -369,6 +436,7 @@ class AsyncEventStore(IEventStore):
                 token_chunks = _split_text(text, token_count)
                 thinking_chunks = _split_text(thinking_text, thinking_count)
 
+                order = meta.get("order", "")
                 if not order:
                     order = ("t" * token_count) + ("k" * thinking_count)
 
