@@ -1,0 +1,27 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Event-sourced, Replayable Agent Runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+jarvis = "examples.demo:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["jarvis_core"]
+
+[tool.setuptools.package-data]
+jarvis_core = ["*.py", "*/**/*.py", "examples/*.py"]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+sqlite = ["aiosqlite>=0.19.0"]
+
+[project.dependencies]
+asyncio = []
+typing-extensions = []

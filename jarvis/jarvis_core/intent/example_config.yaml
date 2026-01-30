@@ -1,0 +1,147 @@
+# ================= 意图执行配置示例 =================
+#
+# 这个示例展示了如何为意图配置不同的执行策略
+# 每个意图可以定义：
+# - mode: 执行模式 (llm/direct/skill/chain/hybrid)
+# - on_complete: 完成后的动作 (continue/stop/await_user/switch_skill)
+# - 模式特定的参数
+
+intents:
+  # ================================================================
+  # 模式 1: DIRECT - 直接执行，跳过 LLM
+  # 适用场景：简单查询、固定逻辑
+  # ================================================================
+  get_current_time:
+    description: "获取当前时间"
+    slots: {}
+    execution:
+      mode: "direct"
+      handler: "time_tools.get_current_time"  # 调用已注册的处理器
+      on_complete: "stop"  # 执行后直接返回结果
+      response_template: "当前时间：{result}"
+
+  # ================================================================
+  # 模式 2: SKILL - 激活 Skill，让 LLM 在 Skill 上下文中工作
+  # 适用场景：需要专用工具集的场景
+  # ================================================================
+  recommend_exhibits:
+    description: "推荐文物藏品"
+    slots:
+      keywords:
+        type: "str"
+        description: "关键词"
+        required: true
+      count:
+        type: "int"
+        description: "数量"
+        default: 5
+    execution:
+      mode: "skill"
+      skill_name: "asset-search"  # 激活这个 skill
+      on_complete: "continue"  # 继续让 LLM 处理结果
+
+  # ================================================================
+  # 模式 3: CHAIN - 预定义工具链
+  # 适用场景：固定的多步骤流程
+  # ================================================================
+  analyze_document:
+    description: "分析文档并生成摘要"
+    slots:
+      document_id:
+        type: "str"
+        required: true
+    execution:
+      mode: "chain"
+      tool_chain:
+        # 步骤1：获取文档内容
+        - tool: "get_document"
+          arguments:
+            doc_id: "$document_id"  # 使用 slot 值
+          output_to: "content"  # 存储结果供后续使用
+
+        # 步骤2：提取摘要
+        - tool: "ai_summarize"
+          arguments:
+            text: "$content"  # 使用上一步的结果
+            max_length: 200
+          output_to: "summary"
+
+        # 步骤3：保存到记忆
+        - tool: "save_memory"
+          arguments:
+            content: "文档摘要：$summary"
+      on_complete: "stop"
+
+  # ================================================================
+  # 模式 4: LLM - 默认模式，LLM 决定使用哪些工具
+  # 适用场景：复杂决策、灵活推理
+  # ================================================================
+  plan_route:
+    description: "规划参观路线"
+    slots:
+      duration:
+        type: "int"
+        default: 120
+      interests:
+        type: "list"
+        default: []
+    execution:
+      mode: "llm"
+      allowed_tools:  # 限制 LLM 只能使用这些工具
+        - "get_exhibition_list"
+        - "get_facility_locations"
+        - "calculate_route"
+      denied_tools: []  # 禁用的工具
+      on_complete: "continue"
+
+  # ================================================================
+  # 模式 5: HYBRID - LLM + 前后置钩子
+  # 适用场景：需要在 LLM 前后执行自定义逻辑
+  # ================================================================
+  complex_query:
+    description: "复杂查询"
+    slots:
+      query:
+        type: "str"
+        required: true
+    execution:
+      mode: "hybrid"
+      pre_hook: "handlers.check_permission"  # LLM 前执行
+      post_hook: "handlers.log_query"  # LLM 后执行
+      allowed_tools:
+        - "search_database"
+        - "query_api"
+      on_complete: "continue"
+
+  # ================================================================
+  # 模式 6: SKILL + 自动切换
+  # 适用场景：完成后自动切换到另一个 skill
+  # ================================================================
+  process_payment:
+    description: "处理支付"
+    slots:
+      amount:
+        type: "float"
+        required: true
+    execution:
+      mode: "skill"
+      skill_name: "payment"
+      on_complete: "switch_skill"  # 执行后切换 skill
+      skill_params:
+        next_skill: "receipt"  # 切换到收据 skill
+
+  # ================================================================
+  # 模式 7: 等待用户输入
+  # 适用场景：需要用户确认或额外信息
+  # ================================================================
+  confirm_action:
+    description: "确认操作"
+    slots:
+      action:
+        type: "str"
+        required: true
+    execution:
+      mode: "llm"
+      allowed_tools:
+        - "present_confirmation"
+      on_complete: "await_user"  # 等待用户响应
