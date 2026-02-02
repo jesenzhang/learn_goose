@@ -2,6 +2,7 @@
 Event Store - 适配 AsyncDatabaseManager 到 IEventStore 接口。
 """
 import logging
+from collections import OrderedDict
 from typing import List, TypeVar, Optional, Dict, Any
 from abc import ABC, abstractmethod
 from pydantic import BaseModel
@@ -68,6 +69,9 @@ class AsyncEventStore(IEventStore):
         self._db_retry_log_every = float(os.getenv("ASSISTANT_DB_RETRY_LOG_EVERY", "10"))
         self._db_last_retry_log: Dict[str, float] = {}
         self._token_buffers: Dict[str, List[Dict[str, Any]]] = {}
+        self._events_cache: "OrderedDict[str, tuple[int, List[Event]]]" = OrderedDict()
+        self._events_cache_size = int(os.getenv("ASSISTANT_EVENTS_CACHE_SIZE", "64"))
+        self._events_version: Dict[str, int] = {}
 
     def _get_file_path(self, session_id: int,run_id:str) -> str:
         return os.path.join(self.storage_dir, f"session_{session_id}_run_{run_id}.jsonl")
@@ -104,6 +108,14 @@ class AsyncEventStore(IEventStore):
 
     def _buffer_key(self, session_id: int, run_id: str) -> str:
         return f"{int(session_id)}:{str(run_id)}"
+
+    def _bump_events_version(self, session_id: int, run_id: str) -> None:
+        key = self._buffer_key(session_id, run_id)
+        self._events_version[key] = self._events_version.get(key, 0) + 1
+        # Drop any cached entries for this session/run.
+        drop_keys = [k for k in self._events_cache.keys() if k.startswith(f"{key}:")]
+        for k in drop_keys:
+            self._events_cache.pop(k, None)
 
     def _ensure_worker(self) -> None:
         if self._db_worker_task is not None and not self._db_worker_task.done():
@@ -263,6 +275,7 @@ class AsyncEventStore(IEventStore):
     async def save_event(self, event: Event) -> None:
         """保存事件，包含降级逻辑"""
         event_dict = self._event_to_dict(event)
+        self._bump_events_version(event.session_id, event.run_id)
         # 0. WAL append (write-ahead)
         try:
             wal_offset = await self._wal.append(event_dict)
@@ -301,6 +314,12 @@ class AsyncEventStore(IEventStore):
         """获取事件，包含合并/降级逻辑"""
         session_id = int(session_id)
         run_id = str(run_id)
+        cache_key = f"{self._buffer_key(session_id, run_id)}:{after_seq_id}"
+        current_version = self._events_version.get(self._buffer_key(session_id, run_id), 0)
+        cached = self._events_cache.get(cache_key)
+        if cached and cached[0] == current_version:
+            self._events_cache.move_to_end(cache_key)
+            return cached[1]
         all_events_data = []
 
         # 1. 尝试从数据库加载
@@ -324,6 +343,8 @@ class AsyncEventStore(IEventStore):
 
         # 3. 转换、过滤和排序
         result = []
+        expand_count = 0
+        expand_ms = 0.0
         seen = set()
         for ev_data in all_events_data:
             seq_id = ev_data.get("seq_id", 0)
@@ -335,6 +356,7 @@ class AsyncEventStore(IEventStore):
             seen.add(dedupe_key)
             # Expand aggregated token events on replay.
             if ev_data.get("type") == "token_aggregate":
+                t_expand = time.monotonic()
                 meta = ev_data.get("meta", {})
                 token_count = int(meta.get("token_count", 0))
                 thinking_count = int(meta.get("thinking_count", 0))
@@ -471,10 +493,25 @@ class AsyncEventStore(IEventStore):
                                      if k not in ["parent_run_id"]},
                         ))
                     seq_cursor += 1
+                expand_count += 1
+                expand_ms += (time.monotonic() - t_expand) * 1000
             else:
                 result.append(self._dict_to_event(ev_data))
 
         result.sort(key=lambda x: x.seq_id)
+        if expand_count:
+            logger.debug(
+                "token_aggregate expand timing: session_id=%s run_id=%s count=%s total_ms=%.2f avg_ms=%.2f",
+                session_id,
+                run_id,
+                expand_count,
+                expand_ms,
+                expand_ms / expand_count,
+            )
+        self._events_cache[cache_key] = (current_version, result)
+        self._events_cache.move_to_end(cache_key)
+        while len(self._events_cache) > self._events_cache_size:
+            self._events_cache.popitem(last=False)
         return result
 
 

@@ -13,6 +13,7 @@ provider:
       model_name: "qwen3_vl"
       base_url: 'http://192.168.10.180:8088/v1'  # Provider 会自动处理末尾 /
       api_key_env: "OPENAI_API_KEY"
+      context_limit: 32768
       timeout: 120.0
       max_retries: 5
 
@@ -75,12 +76,6 @@ agent:
 
     现在，请根据用户的输入开始工作。
 
-chatrecall:
-  enabled: true
-  max_results: 10
-  max_session_messages: 3
-  min_similarity: 0.3
-
 truncation:
   enabled: true
   threshold: 0.8
@@ -90,21 +85,75 @@ truncation:
   check_interval: 5
 
 
-artifact_manager:
+memory:
+  enabled: true
+  stores:
+    memory:
+      enabled: true
+      store_type: memory
+      base_dir: "memories"
+      db_path: "memory_store.db"
+      plugin_path: null
+      plugin_settings: {}
+      memory_threshold: 10240
+      file_threshold: 102400
+      compression: true
+      cleanup_interval: 3600
+      ttl: 86400
+      max_items: 50
+      max_size_bytes: 52428800  # 50MB
+    file:
+      enabled: false
+      store_type: file
+      base_dir: "memories_file"
+      db_path: "memory_store_file.db"
+      plugin_path: null
+      plugin_settings: {}
+    remote:
+      enabled: false
+      store_type: remote
+      plugin_settings: {}
+      # plugin_settings:
+        # base_url: "http://127.0.0.1:8000"
+        # api_key: null
+        # auth_header: "Authorization"
+        # auth_prefix: "Bearer "
+        # wal_enabled: true
+        # wal_dir: "memories_wal"
+        # retry_count: 3
+        # retry_backoff: 0.5
+        # store_path: "/memory/store"
+        # load_path: "/memory/load"
+        # delete_path: "/memory/delete"
+        # list_path: "/memory/list"
+        # stats_path: "/memory/stats"
+        # search_path: "/memory/search"
+  routing:
+    session_memory: memory
+    artifacts: memory
+    history: memory
+  chatrecall:
     enabled: true
-    default_storage: hybrid    # memory, file, hybrid, database
-    # 全局清理配置
-    cleanup_interval: 3600
-    ttl: 86400
-    # 会话级别限制
-    max_items_per_session: 50
-    max_bytes_per_session: 52428800  # 50MB
-    # 各存储类型的特定配置
-    storage_configs:
-      hybrid:
-        memory_threshold: 10240
-        file_threshold: 102400
-        compression: true
+    max_results: 10
+    max_session_messages: 20
+    min_similarity: 0.3
+    query_expand_max_msgs: 4
+    query_max_chars: 800
+    query_rewrite_enabled: false
+    query_rewrite_max_msgs: 6
+    query_rewrite_max_chars: 800
+    query_rewrite_prompt: null
+    use_semantic: false
+    semantic_top_k: 20
+    use_rerank: false
+    rerank_top_k: 10
+    rerank_threshold: 0.0
+    session_memory_enabled: true
+    session_memory_use_llm: false
+    session_summary_max_chars: 400
+    session_facts_max_items: 20
+    session_entities_max_items: 30
+    session_topics_max_items: 20
 
 # ================= 安全策略配置 =================
 security:
@@ -290,6 +339,11 @@ hooks_config:
       enabled: true
       priority: 195
       hook_type: "observer"
+
+# ================= Events 配置 =================
+events:
+  replay_cache_size: 64
+  replay_batch_size: 200
 
 # ================= 意图定义 (Intents) =================
 # 定义文博场景的业务意图和所需参数

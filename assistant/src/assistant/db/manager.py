@@ -154,6 +154,7 @@ class DatabaseManager:
             logger.error(f"Load state failed: {e}")
             return None
 
+
     def list_sessions(self) -> List[Dict[str, Any]]:
         """
         列出所有会话

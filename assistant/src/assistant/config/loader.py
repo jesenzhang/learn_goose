@@ -15,6 +15,8 @@ from ..intent.models import IntentDefinition, SlotSchema
 # Import module configuration classes
 from ..truncation import TruncationConfig as TruncationModuleConfig
 from ..chatrecall import ChatRecallConfig as ChatRecallModuleConfig
+from ..memory import MemoryConfig as MemoryModuleConfig
+from ..store import StoreConfig as StoreModuleConfig
 
 logger = logging.getLogger(__name__)
 
@@ -145,17 +147,119 @@ class ConfigLoader:
     def chatrecall(self) -> ChatRecallModuleConfig:
         """Get chatrecall configuration as dataclass."""
         config = self.config.chatrecall
+        mem_cfg = getattr(self.config, "memory", None)
+        if mem_cfg is not None and getattr(mem_cfg, "chatrecall", None) is not None:
+            config = mem_cfg.chatrecall
         return ChatRecallModuleConfig(
             enabled=config.enabled,
             max_results=config.max_results,
             max_session_messages=config.max_session_messages,
             min_similarity=config.min_similarity,
+            query_expand_max_msgs=config.query_expand_max_msgs,
+            query_max_chars=config.query_max_chars,
+            query_rewrite_enabled=config.query_rewrite_enabled,
+            query_rewrite_max_msgs=config.query_rewrite_max_msgs,
+            query_rewrite_max_chars=config.query_rewrite_max_chars,
+            query_rewrite_prompt=config.query_rewrite_prompt,
+            use_semantic=config.use_semantic,
+            semantic_top_k=config.semantic_top_k,
+            use_rerank=config.use_rerank,
+            rerank_top_k=config.rerank_top_k,
+            rerank_threshold=config.rerank_threshold,
+            session_memory_enabled=config.session_memory_enabled,
+            session_memory_use_llm=config.session_memory_use_llm,
+            session_summary_max_chars=config.session_summary_max_chars,
+            session_facts_max_items=config.session_facts_max_items,
+            session_entities_max_items=config.session_entities_max_items,
+            session_topics_max_items=config.session_topics_max_items,
         )
+
+    @property
+    def memory(self) -> MemoryModuleConfig:
+        """Get memory configuration as dataclass."""
+        mem_cfg = self.config.memory
+        profiles, routing, default_store = self._build_memory_store_profiles(mem_cfg)
+        return MemoryModuleConfig(
+            enabled=getattr(mem_cfg, "enabled", True),
+            store_factory=None,
+            store_profiles=profiles,
+            store_routing=routing,
+            default_store=default_store,
+        )
+
+    @property
+    def memory_store(self) -> StoreModuleConfig:
+        """Get store configuration for memory module."""
+        mem_cfg = self.config.memory
+        profiles, _routing, default_store = self._build_memory_store_profiles(mem_cfg)
+        return profiles.get(default_store, StoreModuleConfig())
+
+    def _build_memory_store_profiles(self, mem_cfg) -> tuple[Dict[str, StoreModuleConfig], Dict[str, str], str]:
+        stores_cfg = getattr(mem_cfg, "stores", None)
+        routing_cfg = getattr(mem_cfg, "routing", None)
+        legacy_artifact_cfg = self.raw_data.get("artifact_manager") if isinstance(self.raw_data, dict) else None
+        profiles: Dict[str, StoreModuleConfig] = {}
+        routing: Dict[str, str] = {}
+
+        if stores_cfg:
+            stores_data = stores_cfg.model_dump() if hasattr(stores_cfg, "model_dump") else dict(stores_cfg)
+            for key, value in stores_data.items():
+                store_data = value.model_dump() if hasattr(value, "model_dump") else dict(value)
+                profiles[key] = StoreModuleConfig(
+                    store_type=store_data.get("store_type", key),
+                    enabled=store_data.get("enabled", True),
+                    base_dir=store_data.get("base_dir", "memories"),
+                    db_path=store_data.get("db_path", "memory_store.db"),
+                    memory_threshold=store_data.get("memory_threshold", 10 * 1024),
+                    file_threshold=store_data.get("file_threshold", 100 * 1024),
+                    compression=store_data.get("compression", True),
+                    max_items=store_data.get("max_items", 50),
+                    max_size_bytes=store_data.get("max_size_bytes", 50 * 1024 * 1024),
+                    ttl=store_data.get("ttl", 86400),
+                    cleanup_interval=store_data.get("cleanup_interval", 3600),
+                    plugin_path=store_data.get("plugin_path"),
+                    plugin_settings=store_data.get("plugin_settings", {}),
+                )
+        else:
+            store_cfg = getattr(mem_cfg, "store", None)
+            if legacy_artifact_cfg:
+                store_cfg = legacy_artifact_cfg
+            if store_cfg is None:
+                store_cfg = {}
+            store_data = store_cfg.model_dump() if hasattr(store_cfg, "model_dump") else dict(store_cfg)
+            profiles["memory"] = StoreModuleConfig(
+                store_type=store_data.get("store_type", "memory"),
+                enabled=store_data.get("enabled", True),
+                base_dir=store_data.get("base_dir", "memories"),
+                db_path=store_data.get("db_path", "memory_store.db"),
+                memory_threshold=store_data.get("memory_threshold", 10 * 1024),
+                file_threshold=store_data.get("file_threshold", 100 * 1024),
+                compression=store_data.get("compression", True),
+                max_items=store_data.get("max_items", 50),
+                max_size_bytes=store_data.get("max_size_bytes", 50 * 1024 * 1024),
+                ttl=store_data.get("ttl", 86400),
+                cleanup_interval=store_data.get("cleanup_interval", 3600),
+                plugin_path=store_data.get("plugin_path"),
+                plugin_settings=store_data.get("plugin_settings", {}),
+            )
+
+        if routing_cfg:
+            routing = routing_cfg.model_dump() if hasattr(routing_cfg, "model_dump") else dict(routing_cfg)
+
+        default_store = "memory"
+        if profiles:
+            default_store = next(iter(profiles.keys()))
+        return profiles, routing, default_store
 
     @property
     def hooks(self) -> Dict[str, Any]:
         """Get hooks configuration dict."""
         return self.config.hooks_config.root
+
+    @property
+    def events(self):
+        """Get events configuration."""
+        return self.config.events
 
     def is_sensitive(self, tool_name: str) -> bool:
         return tool_name in self.config.security.sensitive_tools

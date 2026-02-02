@@ -18,6 +18,7 @@ MODEL_LIMITS = {
     "gpt-3.5-turbo": 16_385,
     "claude-3-5-sonnet": 200_000,
     "qwen": 128_000,
+    "qwen3": 32_768,
     "deepseek": 64_000,
     # ... 其他模型
 }

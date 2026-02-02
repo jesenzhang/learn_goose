@@ -33,7 +33,8 @@ from ..skills.context import create_context, ServiceContext
 
 from .executor import ToolExecutor
 # Artifact Storage Import
-from .artifact_storage import init_manager, get_manager
+from ..memory import init_manager, get_manager
+from ..memory.adapters.store_adapter import create_store_module_adapter
 
 
 
@@ -174,8 +175,8 @@ class MicroAgent:
         # 当前活跃的"一代"
         self.current_generation: Optional[AgentGeneration] = None
 
-        # Initialize Artifact Manager
-        self.artifact_manager = init_manager(config_path=self.config_path)
+        # Memory Manager initialized after config load.
+        self.memory_manager = None
 
         # Initialize Truncation Manager
         self.truncation_manager: Optional[TruncationManager] = None
@@ -190,6 +191,13 @@ class MicroAgent:
 
         # 1. 初始构建
         initial_config = ConfigLoader(config_path)
+        # Initialize Memory Manager with store module backend
+        memory_config = initial_config.memory
+        store_profiles = memory_config.store_profiles or {}
+        memory_config.store_factory = lambda sid, cfg=None: create_store_module_adapter(
+            sid, cfg or store_profiles.get(memory_config.default_store, None)
+        )
+        self.memory_manager = init_manager(config=memory_config)
         first_gen = self._build_generation(initial_config)
         self.current_generation = first_gen
 
@@ -321,6 +329,28 @@ class MicroAgent:
         """构建新一代资源"""
         logger.debug("Building agent components...")
 
+        # 1. LLM
+        llm = None
+        if config.provider.llm:
+            llm = ProviderFactory.create_llm(
+                config.provider.llm.provider, 
+                config.provider.llm.config
+            )
+            
+        # 2. AI Services
+        ai_services = {}
+        if config.provider.embedding:
+            ai_services["embedding"] = ProviderFactory.create_embedding(
+                config.provider.embedding.provider, 
+                config.provider.embedding.config
+            )
+        if config.provider.reranker:
+            ai_services["reranker"] = ProviderFactory.create_reranker(
+                config.provider.reranker.provider, 
+                config.provider.reranker.config
+            )
+            
+            
         # Initialize Truncation Manager
         if config.provider.llm:
             # 直接使用 config.truncation 属性获取 dataclass 配置
@@ -358,11 +388,23 @@ class MicroAgent:
             else:
                 # 加载所有会话
                 all_sessions = await self.db.list_sessions()
-                return {sid: {"messages": data.get("history", [])} for sid, data in all_sessions.items()}
+                sessions = {}
+                for item in all_sessions:
+                    if not isinstance(item, dict):
+                        continue
+                    sid = item.get("id") or item.get("session_id")
+                    if sid is None:
+                        continue
+                    session_data = await self.db.load_state(int(sid))
+                    if session_data:
+                        sessions[str(sid)] = session_data.get("history", [])
+                return sessions
 
         self.chat_recall = ChatRecall(
             session_query_func=session_query_func,
-            config=chat_recall_config
+            config=chat_recall_config,
+            embedding_client=ai_services.get("embedding"),
+            reranker_client=ai_services.get("reranker"),
         )
         logger.info("ChatRecall initialized")
 
@@ -375,27 +417,6 @@ class MicroAgent:
         )
         logger.info("Skill loader initialized")
 
-        # 1. LLM
-        llm = None
-        if config.provider.llm:
-            llm = ProviderFactory.create_llm(
-                config.provider.llm.provider, 
-                config.provider.llm.config
-            )
-            
-        # 2. AI Services
-        ai_services = {}
-        if config.provider.embedding:
-            ai_services["embedding"] = ProviderFactory.create_embedding(
-                config.provider.embedding.provider, 
-                config.provider.embedding.config
-            )
-        if config.provider.reranker:
-            ai_services["reranker"] = ProviderFactory.create_reranker(
-                config.provider.reranker.provider, 
-                config.provider.reranker.config
-            )
-            
         # 3. Intent System
         intent_recognizer = None
         intent_executor = None
@@ -472,12 +493,101 @@ class MicroAgent:
             if state._conversation.get_truncation_manager() is None:
                 state._conversation.set_truncation_manager(self.truncation_manager)
 
+        # 注入压缩后的上下文（不进入 history）
+        self._ensure_compressed_context_message(state, state._conversation)
+
         return state._conversation
 
     def _sync_history_from_conversation(self, state: AgentState):
         """从 Conversation 同步到 history(保持向后兼容）"""
         if hasattr(state, '_conversation') and state._conversation is not None:
-            state.history = [m.model_dump(exclude_none=True, by_alias=True) for m in state._conversation.messages]
+            filtered = []
+            for m in state._conversation.messages:
+                meta = m.metadata or {}
+                if meta.get("is_summary") or meta.get("is_continuation"):
+                    continue
+                filtered.append(m.model_dump(exclude_none=True, by_alias=True))
+            state.history = filtered
+
+    def _ensure_compressed_context_message(self, state: AgentState, conv: Conversation) -> None:
+        """Inject compressed context into ephemeral messages for LLM, without persisting to history."""
+        summary = state.compressed_context
+        if not summary or not hasattr(conv, "_ephemeral_messages"):
+            return
+
+        existing = []
+        for msg in conv._ephemeral_messages:
+            meta = msg.metadata or {}
+            if meta.get("is_compacted_context"):
+                existing.append(msg)
+
+        if existing and existing[-1].metadata.get("compressed_context") == summary:
+            return
+
+        if existing:
+            conv._ephemeral_messages = [
+                msg for msg in conv._ephemeral_messages
+                if not (msg.metadata or {}).get("is_compacted_context")
+            ]
+
+        ctx_msg = Message.user(summary).with_visibility(user_visible=False, agent_visible=True)
+        ctx_msg.metadata = {
+            "is_compacted_context": True,
+            "compressed_context": summary,
+        }
+        conv.push(ctx_msg, ephemeral=True)
+
+    async def _maybe_update_session_memory(
+        self,
+        state: AgentState,
+        gen: AgentGeneration,
+        *,
+        user_input: Optional[str],
+        assistant_text: str,
+    ) -> None:
+        if not self.chat_recall or not self.chat_recall.config.session_memory_enabled:
+            return
+        try:
+            updated = await self.chat_recall.update_session_memory(
+                user_input=user_input or "",
+                assistant_output=assistant_text or "",
+                history=state.history or [],
+                session_summary=state.session_summary,
+                session_facts=state.session_facts or {},
+                session_entities=state.session_entities or [],
+                session_topics=state.session_topics or [],
+                llm=gen.llm,
+            )
+            state.session_summary = updated.get("session_summary")
+            state.session_facts = updated.get("session_facts") or {}
+            state.session_entities = updated.get("session_entities") or []
+            state.session_topics = updated.get("session_topics") or []
+            await self._persist_session_memory(state)
+        except Exception as e:
+            logger.warning(f"Session memory update failed: {e}")
+
+    async def _persist_session_memory(self, state: AgentState) -> None:
+        """Persist session memory snapshot into memory store."""
+        if not self.memory_manager or not state:
+            return
+        payload = {
+            "session_summary": state.session_summary,
+            "session_facts": state.session_facts or {},
+            "session_entities": state.session_entities or [],
+            "session_topics": state.session_topics or [],
+            "updated_at": datetime.now().isoformat(),
+        }
+        try:
+            await self.memory_manager.store(
+                session_id=state.session_id,
+                item_id=f"session_memory:{state.session_id}",
+                item_type="session_memory",
+                data=payload,
+                text=state.session_summary or "",
+                metadata={"session_id": state.session_id},
+            )
+        except Exception as e:
+            logger.warning(f"Persist session memory failed: {e}")
 
     async def add_message(self, session_id: int, msg: Message, state: Optional[AgentState] = None, ephemeral: bool = False):
         """
@@ -852,7 +962,7 @@ Generate the content/response now.
 
     async def _store_artifacts_to_manager(self, artifacts: List[RawContent], state: AgentState) -> None:
         """
-        将 artifact 存储到 ArtifactManager
+        将 artifact 存储到 MemoryManager（artifact storage store）
 
         职责：仅负责存储 artifact 到管理器，更新 shared_memory
 
@@ -860,22 +970,23 @@ Generate the content/response now.
             artifacts: artifact 信息列表
             state: Agent 状态
         """
-        artifact_mgr = get_manager()
-        if not artifact_mgr or not artifact_mgr.config.enabled:
+        memory_mgr = get_manager()
+        if not memory_mgr:
             return
 
         for artifact in artifacts:
             try:
-                ref = await artifact_mgr.store(
+                ref = await memory_mgr.store(
                     session_id=state.session_id,
-                    artifact_id=artifact.id or f"art_{uuid.uuid4().hex[:8]}",
-                    artifact_type=artifact.type,
+                    item_id=artifact.id or f"art_{uuid.uuid4().hex[:8]}",
+                    item_type=artifact.type,
                     data=artifact.data,
                     text=artifact.text,
-                    metadata = {
+                    metadata={
                         "mime_type": artifact.mime_type,
                         **(artifact.metadata or {})
-                    }
+                    },
+                    storage_type="memory",
                 )
                 state.shared_memory[artifact.id] = ref.to_dict()
                 artifact.metadata.update({
@@ -1571,9 +1682,19 @@ Generate the content/response now.
                     # --- ChatRecall (before intent) ---
                     if self.chat_recall:
                         try:
-                            recall_results = await self.chat_recall.search(
-                                query=user_input,
+                            recall_results = await self.chat_recall.search_with_history(
+                                user_input,
+                                state.history or [],
                                 session_id=str(session_id),
+                                max_msgs=self.chat_recall.config.query_expand_max_msgs,
+                                max_chars=self.chat_recall.config.query_max_chars,
+                                llm=gen.llm,
+                                session_memory={
+                                    "summary": state.session_summary,
+                                    "facts": state.session_facts,
+                                    "entities": state.session_entities,
+                                    "topics": state.session_topics,
+                                },
                             )
                             logger.debug(
                                 "chatrecall results: session_id=%s count=%s",
@@ -1582,7 +1703,8 @@ Generate the content/response now.
                             )
                             if recall_results:
                                 recall_text = "\n".join(
-                                    [f"- {r.title}: {r.summary}" for r in recall_results[:3]]
+                                    [f"- {r.session_id}: {len(r.messages)} matches (score={r.score:.2f})"
+                                     for r in recall_results[:3]]
                                 )
                                 await self.add_message(
                                     session_id,
@@ -1590,6 +1712,7 @@ Generate the content/response now.
                                     state,
                                     ephemeral=True,
                                 )
+                                logger.debug(f"ChatRecall Summary:\n{recall_text}", )
                         except Exception as e:
                             logger.warning(f"ChatRecall failed: {e}")
                     # --- Hook Pipeline ---
@@ -1625,6 +1748,12 @@ Generate the content/response now.
 
                     if direct_res:
                         await self.add_message(session_id, Message.assistant(direct_res), state)
+                        await self._maybe_update_session_memory(
+                            state,
+                            gen,
+                            user_input=user_input,
+                            assistant_text=direct_res,
+                        )
                         await self._emit_event(EventType.TOKEN, direct_res, **emit_kwargs)
                         state.status = AgentStatus.IDLE
                         return
@@ -1654,7 +1783,13 @@ Generate the content/response now.
                         )
 
                         if truncated:
-                            # 如果执行了压缩，更新 history
+                            # 如果执行了压缩，记录压缩摘要并更新 history
+                            if hasattr(conv, "get_last_compaction_summary"):
+                                summary = conv.get_last_compaction_summary()
+                                if summary:
+                                    state.compressed_context = summary
+                                    self._ensure_compressed_context_message(state, conv)
+                                    logger.info("Truncation summary stored in AgentState.compressed_context")
                             self._sync_history_from_conversation(state)
                             logger.info("✅ Truncation applied and conversation compacted")
                         else:
@@ -1866,6 +2001,12 @@ Generate the content/response now.
                             assistant_content.extend(state.turn_structured_info["tool_responses"])
                         
                         await self.add_message(state.session_id, Message(role=Role.ASSISTANT, content=assistant_content), state)
+                        await self._maybe_update_session_memory(
+                            state,
+                            gen,
+                            user_input=user_input,
+                            assistant_text=full_content_text,
+                        )
                         state.status = AgentStatus.IDLE
                         self._schedule_state_save(state.session_id, state)
                         logger.debug(
@@ -1991,11 +2132,11 @@ Generate the content/response now.
         Returns:
             清理的数量
         """
-        if self.artifact_manager is None:
+        if self.memory_manager is None:
             return 0
 
         try:
-            count = await self.artifact_manager.cleanup_session(session_id=session_id)
+            count = await self.memory_manager.cleanup_session(session_id=session_id)
             logger.info(f"Cleaned up {count} artifacts for session {session_id}")
             return count
         except Exception as e:
@@ -2067,10 +2208,10 @@ Generate the content/response now.
         if self.watcher:
             self.watcher.stop()
 
-        # 关闭 Artifact Manager
-        if self.artifact_manager:
-            await self.artifact_manager.shutdown()
-            logger.info("Artifact Manager shut down.")
+        # 关闭 Memory Manager
+        if self.memory_manager:
+            await self.memory_manager.shutdown()
+            logger.info("Memory Manager shut down.")
 
         # 关闭数据库连接
         if self.db:

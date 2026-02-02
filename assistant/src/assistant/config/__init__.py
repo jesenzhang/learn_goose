@@ -7,6 +7,8 @@ from .models import (
     AgentConfig,
     SecurityConfig,
     ProviderConfig,
+    MemoryConfigWrapper,
+    MemoryStoreConfigWrapper,
     load_config_from_yaml,
     load_config_from_dict,
 )
@@ -21,6 +23,8 @@ __all__ = [
     "IntentSlotConfig",
     "SecurityConfig",
     "ProviderConfig",
+    "MemoryConfigWrapper",
+    "MemoryStoreConfigWrapper",
     "load_config_from_yaml",
     "load_config_from_dict",
 ]

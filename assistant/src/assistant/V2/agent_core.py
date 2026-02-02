@@ -33,7 +33,7 @@ from ..skills.context import create_context, ServiceContext
 
 from ..executor import ToolExecutor
 # Artifact Storage Import
-from ..artifact_storage import init_manager, get_manager
+from ..memory import init_manager, get_manager
 
 
 
@@ -174,8 +174,8 @@ class MicroAgentV2Core:
         # 当前活跃的"一代"
         self.current_generation: Optional[AgentGeneration] = None
 
-        # Initialize Artifact Manager
-        self.artifact_manager = init_manager(config_path=self.config_path)
+        # Memory Manager initialized after config load.
+        self.memory_manager = None
 
         # Initialize Truncation Manager
         self.truncation_manager: Optional[TruncationManager] = None
@@ -190,6 +190,13 @@ class MicroAgentV2Core:
 
         # 1. 初始构建
         initial_config = ConfigLoader(config_path)
+        # Initialize Memory Manager (store module backend)
+        memory_config = initial_config.memory
+        store_profiles = memory_config.store_profiles or {}
+        memory_config.store_factory = lambda sid, cfg=None: create_store_module_adapter(
+            sid, cfg or store_profiles.get(memory_config.default_store, None)
+        )
+        self.memory_manager = init_manager(config=memory_config)
         first_gen = self._build_generation(initial_config)
         self.current_generation = first_gen
 
@@ -852,7 +859,7 @@ Generate the content/response now.
 
     async def _store_artifacts_to_manager(self, artifacts: List[RawContent], state: AgentState) -> None:
         """
-        将 artifact 存储到 ArtifactManager
+        将 artifact 存储到 MemoryManager（artifact storage store）
 
         职责：仅负责存储 artifact 到管理器，更新 shared_memory
 
@@ -860,22 +867,23 @@ Generate the content/response now.
             artifacts: artifact 信息列表
             state: Agent 状态
         """
-        artifact_mgr = get_manager()
-        if not artifact_mgr or not artifact_mgr.config.enabled:
+        memory_mgr = get_manager()
+        if not memory_mgr:
             return
 
         for artifact in artifacts:
             try:
-                ref = await artifact_mgr.store(
+                ref = await memory_mgr.store(
                     session_id=state.session_id,
-                    artifact_id=artifact.id or f"art_{uuid.uuid4().hex[:8]}",
-                    artifact_type=artifact.type,
+                    item_id=artifact.id or f"art_{uuid.uuid4().hex[:8]}",
+                    item_type=artifact.type,
                     data=artifact.data,
                     text=artifact.text,
-                    metadata = {
+                    metadata={
                         "mime_type": artifact.mime_type,
                         **(artifact.metadata or {})
-                    }
+                    },
+                    storage_type="memory",
                 )
                 state.shared_memory[artifact.id] = ref.to_dict()
                 artifact.metadata.update({
@@ -1991,11 +1999,11 @@ Generate the content/response now.
         Returns:
             清理的数量
         """
-        if self.artifact_manager is None:
+        if self.memory_manager is None:
             return 0
 
         try:
-            count = await self.artifact_manager.cleanup_session(session_id=session_id)
+            count = await self.memory_manager.cleanup_session(session_id=session_id)
             logger.info(f"Cleaned up {count} artifacts for session {session_id}")
             return count
         except Exception as e:
@@ -2068,8 +2076,8 @@ Generate the content/response now.
             self.watcher.stop()
 
         # 关闭 Artifact Manager
-        if self.artifact_manager:
-            await self.artifact_manager.shutdown()
+        if self.memory_manager:
+            await self.memory_manager.shutdown()
             logger.info("Artifact Manager shut down.")
 
         # 关闭数据库连接

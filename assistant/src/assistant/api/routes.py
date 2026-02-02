@@ -151,16 +151,59 @@ async def event_generator(
     async def streamer_to_queue():
         try:
             streamer = agent.get_streamer(session_id, current_task_id)
-            await streamer.subscribe(after_seq_id=last_event_id)
+            # Prepare live subscription first to avoid gaps.
+            subscription = streamer.bus.subscribe(current_task_id, after_seq_id=last_event_id)
+
+            # Replay history when resuming from a specific seq_id.
+            last_seq_id = last_event_id
+            if last_event_id is not None and last_event_id >= 0:
+                from ..events import EventReplayManager, ReplayMode
+
+                replay_cfg = agent.current_generation.config.events if agent.current_generation else None
+                replay_mgr = EventReplayManager(
+                    agent._store,
+                    cache_size=getattr(replay_cfg, "replay_cache_size", None),
+                    batch_size=getattr(replay_cfg, "replay_batch_size", None),
+                )
+                replay_queue = await replay_mgr.start_replay(
+                    session_id=str(session_id),
+                    mode=ReplayMode.REPLAY,
+                    run_id=current_task_id,
+                    after_seq_id=last_event_id,
+                )
+
+                while True:
+                    replay_event = await replay_queue.get()
+                    if not isinstance(replay_event, dict):
+                        continue
+                    replay_type = replay_event.get("type")
+                    if replay_type in {"replay_complete", "replay_error", "replay_stopped"}:
+                        break
+                    meta = {
+                        "run_id": replay_event.get("run_id"),
+                        "seq_id": replay_event.get("seq_id"),
+                        "session_id": replay_event.get("session_id"),
+                        "parent_run_id": replay_event.get("parent_run_id"),
+                        **(replay_event.get("metadata") or {}),
+                    }
+                    event = Event(
+                        id=replay_event.get("id"),
+                        type=replay_event.get("type"),
+                        data=replay_event.get("data"),
+                        timestamp=replay_event.get("timestamp"),
+                        meta=meta,
+                    )
+                    if isinstance(meta.get("seq_id"), int):
+                        last_seq_id = max(last_seq_id, meta["seq_id"])
+                    await q.put(event)
             if hasattr(handle, 'start'):
                 handle.start() # 这一步会执行 start_signal.set()
             else:
                 # 如果你没在 handle 封装，可以直接在 agent 层处理
                 # 视你之前的具体实现而定
                 pass
-            # 这里的 listen 是异步生成器，会持续监听 bus 上的新事件
             mismatch_logged = False
-            async for streamer_event in streamer.stream():
+            async for streamer_event in subscription:
                 if streamer_event.run_id != current_task_id:
                     if not mismatch_logged:
                         logger.error(
@@ -171,7 +214,10 @@ async def event_generator(
                         )
                         mismatch_logged = True
                     continue
+                if last_seq_id is not None and streamer_event.seq_id <= last_seq_id:
+                    continue
                 event = Event.from_streamer_event(streamer_event)
+                last_seq_id = max(last_seq_id, streamer_event.seq_id)
                 
                 await q.put(event)
         except asyncio.CancelledError:
@@ -492,10 +538,10 @@ def create_router() -> APIRouter:
     async def chat(
         req: ChatRequest,
         session_id: int = Query(description="Session identifier"),
-        resume: bool = Query(default=False, description="Resume flag"),
+        resume: Optional[bool]= Query(default=False, description="Resume flag"),
         run_id: Optional[str] = Query(default=None, description="Run identifier (required for resume)"),
-        last_event_id: int = Query(default=-1, description="Last event ID for resuming"),
-        format: str = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'"),
+        last_seq_id: Optional[int] = Query(default=-1, description="Last event ID for resuming"),
+        format: Optional[str] = Query(default="ndjson", description="Response format: 'ndjson' or 'sse'"),
         state: AgentState = Depends(get_agent_state),
     ):
         """
@@ -511,10 +557,10 @@ def create_router() -> APIRouter:
         """
         
         logger.info(
-            "Chat request params: session_id=%s resume=%s last_event_id=%s format=%s body=%s",
+            "Chat request params: session_id=%s resume=%s last_seq_id=%s format=%s body=%s",
             session_id,
             resume,
-            last_event_id,
+            last_seq_id,
             format,
             req.model_dump(),
         )
@@ -523,8 +569,8 @@ def create_router() -> APIRouter:
             run_id = _resolve_run_id_for_resume(state, run_id)
             if not run_id:
                 raise HTTPException(status_code=400, detail="run_id is required when resume=true")
-            if last_event_id == -1 and state.last_delivered_run_id == run_id and state.last_delivered_seq_id is not None:
-                last_event_id = state.last_delivered_seq_id
+            if last_seq_id == -1 and state.last_delivered_run_id == run_id and state.last_delivered_seq_id is not None:
+                last_seq_id = state.last_delivered_seq_id
         else:
             if not run_id:
                 run_id = _generate_run_id(session_id)
@@ -535,7 +581,7 @@ def create_router() -> APIRouter:
             user_id=state.user_id,
         )
         return StreamingResponse(
-            event_generator(state, run_id, session_id, resume=resume, last_event_id=last_event_id, input_data=req.model_dump(), format=format),
+            event_generator(state, run_id, session_id, resume=resume, last_event_id=last_seq_id, input_data=req.model_dump(), format=format),
             media_type=media_type,
             headers=STREAMING_HEADERS
         )
@@ -781,7 +827,11 @@ def create_router() -> APIRouter:
     # ================= Artifact Management Endpoints =================
 
     @router.get("/sessions/{session_id}/artifacts/{artifact_id}")
-    async def get_artifact(session_id: int, artifact_id: str):
+    async def get_artifact(
+        session_id: int,
+        artifact_id: str,
+        storage_type: Optional[str] = Query(default=None, description="Storage type hint"),
+    ):
         """
         Get artifact data by ID.
 
@@ -792,7 +842,7 @@ def create_router() -> APIRouter:
         Returns:
             Artifact data
         """
-        from ..core.artifact_storage import get_manager
+        from ..memory import get_manager
 
         artifact_mgr = get_manager()
         if artifact_mgr is None:
@@ -801,7 +851,8 @@ def create_router() -> APIRouter:
         try:
             data = await artifact_mgr.load(
                 session_id=session_id,
-                artifact_id=artifact_id,
+                item_id=artifact_id,
+                storage_type=storage_type,
             )
 
             if data is None:
@@ -819,7 +870,10 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/sessions/{session_id}/artifacts")
-    async def list_artifacts(session_id: int):
+    async def list_artifacts(
+        session_id: int,
+        storage_type: Optional[str] = Query(default=None, description="Filter by storage_type"),
+    ):
         """
         List all artifacts for a session.
 
@@ -829,35 +883,41 @@ def create_router() -> APIRouter:
         Returns:
             List of artifact references
         """
-        from ..core.artifact_storage import get_manager
+        from ..memory import get_manager
 
         artifact_mgr = get_manager()
         if artifact_mgr is None:
             raise HTTPException(status_code=503, detail="Artifact manager not available")
 
         try:
-            refs = await artifact_mgr.list_all(session_id=session_id)
+            refs = await artifact_mgr.list_all(session_id=session_id, storage_type=storage_type)
 
+            artifacts = [
+                {
+                    "id": ref.id,
+                    "type": ref.type,
+                    "text": ref.text,
+                    "size": ref.size,
+                    "storage_type": ref.storage_type.value,
+                    "created_at": ref.created_at,
+                }
+                for ref in refs
+            ]
+            if storage_type:
+                artifacts = [a for a in artifacts if a.get("storage_type") == storage_type]
             return {
                 "session_id": session_id,
-                "artifacts": [
-                    {
-                        "id": ref.id,
-                        "type": ref.type,
-                        "text": ref.text,
-                        "size": ref.size,
-                        "storage_type": ref.storage_type.value,
-                        "created_at": ref.created_at,
-                    }
-                    for ref in refs
-                ],
+                "artifacts": artifacts,
             }
         except Exception as e:
             logger.error(f"Failed to list artifacts for {session_id}: {e}", exc_info=e)
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/sessions/{session_id}/artifacts/stats")
-    async def get_artifact_stats(session_id: int):
+    async def get_artifact_stats(
+        session_id: int,
+        storage_type: Optional[str] = Query(default=None, description="Storage type hint"),
+    ):
         """
         Get artifact statistics for a session.
 
@@ -867,21 +927,25 @@ def create_router() -> APIRouter:
         Returns:
             Artifact statistics
         """
-        from ..core.artifact_storage import get_manager
+        from ..memory import get_manager
 
         artifact_mgr = get_manager()
         if artifact_mgr is None:
             raise HTTPException(status_code=503, detail="Artifact manager not available")
 
         try:
-            stats = await artifact_mgr.get_stats(session_id=session_id)
+            stats = await artifact_mgr.get_stats(session_id=session_id, storage_type=storage_type)
             return stats
         except Exception as e:
             logger.error(f"Failed to get artifact stats for {session_id}: {e}", exc_info=e)
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete("/sessions/{session_id}/artifacts/{artifact_id}")
-    async def delete_artifact(session_id: int, artifact_id: str):
+    async def delete_artifact(
+        session_id: int,
+        artifact_id: str,
+        storage_type: Optional[str] = Query(default=None, description="Storage type hint"),
+    ):
         """
         Delete an artifact by ID.
 
@@ -892,7 +956,7 @@ def create_router() -> APIRouter:
         Returns:
             Deletion confirmation
         """
-        from ..core.artifact_storage import get_manager
+        from ..memory import get_manager
 
         artifact_mgr = get_manager()
         if artifact_mgr is None:
@@ -901,7 +965,8 @@ def create_router() -> APIRouter:
         try:
             success = await artifact_mgr.delete(
                 session_id=session_id,
-                artifact_id=artifact_id,
+                item_id=artifact_id,
+                storage_type=storage_type,
             )
 
             if not success:
@@ -934,7 +999,7 @@ def create_router() -> APIRouter:
         Returns:
             Cleanup confirmation with count
         """
-        from ..core.artifact_storage import get_manager
+        from ..memory import get_manager
 
         artifact_mgr = get_manager()
         if artifact_mgr is None:
@@ -969,7 +1034,7 @@ def create_router() -> APIRouter:
         Returns:
             Health status of all session storage backends
         """
-        from ..core.artifact_storage import get_manager
+        from ..memory import get_manager
 
         artifact_mgr = get_manager()
         if artifact_mgr is None:

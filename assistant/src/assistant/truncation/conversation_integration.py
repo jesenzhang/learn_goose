@@ -22,6 +22,7 @@ class ConversationTruncationMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._truncation_manager: Optional[TruncationManager] = None
+        self._last_compaction_summary: Optional[str] = None
 
     def set_truncation_manager(self, manager: TruncationManager):
         """设置 Truncation 管理器"""
@@ -110,10 +111,13 @@ class ConversationTruncationMixin:
                     content_list.append(TextContent(text=str(content)))
 
                 # 获取元数据
-                metadata = msg_dict.get("metadata", {})
+                metadata = msg_dict.get("metadata", {}) or {}
 
                 # 创建消息
                 message = Message(role=role, content=content_list)
+                # 保留元数据（用于标记 summary/continuation）
+                if metadata:
+                    message.metadata = dict(metadata)
 
                 # 设置可见性
                 if metadata:
@@ -164,6 +168,7 @@ class ConversationTruncationMixin:
 
             # 应用压缩
             if result.success and result.compacted_message_count < len(messages_dict):
+                self._last_compaction_summary = result.summary
                 compacted_messages = self._truncation_manager.compactor._create_compacted_conversation(
                     messages_dict,
                     result.summary,
@@ -174,6 +179,10 @@ class ConversationTruncationMixin:
                 return True
 
         return False
+
+    def get_last_compaction_summary(self) -> Optional[str]:
+        """Return latest compaction summary (if any)."""
+        return self._last_compaction_summary
 
     def estimate_context_usage(
         self,
@@ -204,4 +213,3 @@ class ConversationTruncationMixin:
 __all__ = [
     "ConversationTruncationMixin",
 ]
-

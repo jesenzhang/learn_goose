@@ -70,6 +70,47 @@ class ChatRecallConfigWrapper(BaseModel):
     max_results: int = 10
     max_session_messages: int = 3
     min_similarity: float = 0.3
+    query_expand_max_msgs: int = 4
+    query_max_chars: int = 800
+    query_rewrite_enabled: bool = False
+    query_rewrite_max_msgs: int = 6
+    query_rewrite_max_chars: int = 800
+    query_rewrite_prompt: Optional[str] = None
+    use_semantic: bool = False
+    semantic_top_k: int = 20
+    use_rerank: bool = False
+    rerank_top_k: int = 10
+    rerank_threshold: float = 0.0
+    session_memory_enabled: bool = True
+    session_memory_use_llm: bool = False
+    session_summary_max_chars: int = 400
+    session_facts_max_items: int = 20
+    session_entities_max_items: int = 30
+    session_topics_max_items: int = 20
+
+class MemoryStoreConfigWrapper(BaseModel):
+    """Pydantic wrapper for memory store config."""
+    enabled: bool = True
+    store_type: str = "memory"
+    base_dir: str = "memories"
+    db_path: str = "memory_store.db"
+    memory_threshold: int = 10 * 1024
+    file_threshold: int = 100 * 1024
+    compression: bool = True
+    max_items: int = 50
+    max_size_bytes: int = 50 * 1024 * 1024
+    ttl: int = 86400
+    cleanup_interval: int = 3600
+    plugin_path: Optional[str] = None
+    plugin_settings: Dict[str, Any] = Field(default_factory=dict)
+
+class MemoryConfigWrapper(BaseModel):
+    """Pydantic wrapper for memory config."""
+    enabled: bool = True
+    store: MemoryStoreConfigWrapper = Field(default_factory=MemoryStoreConfigWrapper)
+    stores: Optional[Dict[str, MemoryStoreConfigWrapper]] = None
+    routing: Optional[Dict[str, str]] = None
+    chatrecall: ChatRecallConfigWrapper = Field(default_factory=ChatRecallConfigWrapper)
 
 # ==================== Hook Configuration Models ====================
 
@@ -116,6 +157,11 @@ class HooksConfig(RootModel[Dict[str, SingleHookConfig]]):
     def get(self, key: str, default: Any = None) -> Any:
         return self.root.get(key, default)
 
+class EventsConfigWrapper(BaseModel):
+    """Pydantic wrapper for events config."""
+    replay_cache_size: int = 64
+    replay_batch_size: int = 200
+
 class AppConfig(BaseModel):
     """
     Root configuration.
@@ -141,9 +187,11 @@ class AppConfig(BaseModel):
     # Hooks configuration
     hooks_config: HooksConfig = Field(default_factory=lambda: HooksConfig({}))
 
+    events: EventsConfigWrapper = Field(default_factory=EventsConfigWrapper)
 
     truncation: TruncationConfigWrapper = Field(default_factory=TruncationConfigWrapper)
     chatrecall: ChatRecallConfigWrapper = Field(default_factory=ChatRecallConfigWrapper)
+    memory: MemoryConfigWrapper = Field(default_factory=MemoryConfigWrapper)
     class Config:
         extra = "allow"
 

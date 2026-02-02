@@ -45,6 +45,11 @@ class AgentState(BaseModel):
         last_run_id: Last known run id for this session
         last_delivered_seq_id: Last delivered event seq_id for reconnect
         last_delivered_run_id: Run id associated with last_delivered_seq_id
+        session_summary: Short session summary
+        session_facts: Key-value facts for session
+        session_entities: Entities (people/places/objects)
+        session_topics: Recent topics
+        compressed_context: Compressed context summary from truncation
         updated_at: Last activity timestamp
         last_active: Human-readable last activity time
     """
@@ -67,9 +72,13 @@ class AgentState(BaseModel):
     last_run_id: Optional[str] = Field(default=None, description="Last known run id for this session")
     last_delivered_seq_id: Optional[int] = Field(default=None, description="Last delivered event seq_id")
     last_delivered_run_id: Optional[str] = Field(default=None, description="Run id for last delivered event")
+    session_summary: Optional[str] = Field(default=None, description="Short session summary")
+    session_facts: Dict[str, Any] = Field(default_factory=dict, description="Session key-value facts")
+    session_entities: List[str] = Field(default_factory=list, description="Session entities")
+    session_topics: List[str] = Field(default_factory=list, description="Session topics")
+    compressed_context: Optional[str] = Field(default=None, description="Compressed context summary")
     updated_at: float = Field(default_factory=lambda: datetime.now().timestamp())
     last_active: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
     
     def to_json(self) -> str:
         """Serialize to JSON."""

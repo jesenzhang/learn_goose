@@ -17,6 +17,7 @@ from .streamer import BaseStreamer, IStreamer
 from .bus import MemoryEventBus, IEventBus
 from .store import AsyncEventStore, IEventStore
 from .factory import StreamerFactory
+from .replay import EventReplayManager, ReplayMode
 
 # Unified exports for convenience
 # Event defaults to the wrapped Event for backward compatibility
@@ -34,4 +35,6 @@ __all__ = [
     "AsyncEventStore",
     "IEventStore",
     "StreamerFactory",
+    "EventReplayManager",
+    "ReplayMode",
 ]

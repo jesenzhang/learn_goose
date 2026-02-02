@@ -160,11 +160,54 @@ async def event_generator(
     async def streamer_to_queue():
         try:
             streamer = agent.get_streamer(session_id, current_task_id)
-            await streamer.subscribe(after_seq_id=last_event_id)
+            subscription = streamer.bus.subscribe(current_task_id, after_seq_id=last_event_id)
+
+            last_seq_id = last_event_id
+            if last_event_id is not None and last_event_id >= 0:
+                from ..events import EventReplayManager, ReplayMode
+
+                replay_cfg = agent.current_generation.config.events if agent.current_generation else None
+                replay_mgr = EventReplayManager(
+                    agent._store,
+                    cache_size=getattr(replay_cfg, "replay_cache_size", None),
+                    batch_size=getattr(replay_cfg, "replay_batch_size", None),
+                )
+                replay_queue = await replay_mgr.start_replay(
+                    session_id=str(session_id),
+                    mode=ReplayMode.REPLAY,
+                    run_id=current_task_id,
+                    after_seq_id=last_event_id,
+                )
+
+                while True:
+                    replay_event = await replay_queue.get()
+                    if not isinstance(replay_event, dict):
+                        continue
+                    replay_type = replay_event.get("type")
+                    if replay_type in {"replay_complete", "replay_error", "replay_stopped"}:
+                        break
+                    meta = {
+                        "run_id": replay_event.get("run_id"),
+                        "seq_id": replay_event.get("seq_id"),
+                        "session_id": replay_event.get("session_id"),
+                        "parent_run_id": replay_event.get("parent_run_id"),
+                        **(replay_event.get("metadata") or {}),
+                    }
+                    event = Event(
+                        id=replay_event.get("id"),
+                        type=replay_event.get("type"),
+                        data=replay_event.get("data"),
+                        timestamp=replay_event.get("timestamp"),
+                        meta=meta,
+                    )
+                    if isinstance(meta.get("seq_id"), int):
+                        last_seq_id = max(last_seq_id, meta["seq_id"])
+                    await q.put(event)
+
             if hasattr(handle, "start"):
                 handle.start()
             mismatch_logged = False
-            async for streamer_event in streamer.stream():
+            async for streamer_event in subscription:
                 if streamer_event.run_id != current_task_id:
                     if not mismatch_logged:
                         logger.error(
@@ -175,7 +218,10 @@ async def event_generator(
                         )
                         mismatch_logged = True
                     continue
+                if last_seq_id is not None and streamer_event.seq_id <= last_seq_id:
+                    continue
                 event = Event.from_streamer_event(streamer_event)
+                last_seq_id = max(last_seq_id, streamer_event.seq_id)
                 await q.put(event)
         except asyncio.CancelledError:
             pass

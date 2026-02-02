@@ -14,7 +14,7 @@ Authentication Module - 可插拔的用户认证系统
 from .protocol import (
     # Enums
     AuthMode,
-
+    UserRole,
     # Data Classes
     UserInfo,
     AuthConfig,

@@ -114,6 +114,13 @@ class RemoteDatabaseManager:
             headers["Authorization"] = dynamic_token
         elif self.api_key:
             headers["Authorization"] = self.api_key
+        auth_header = headers.get("Authorization")
+        logger.debug(
+            "remote_db auth token consistency: ctx=%s header=%s match=%s",
+            "set" if dynamic_token else "none",
+            "set" if auth_header else "none",
+            bool(dynamic_token and auth_header and dynamic_token == auth_header),
+        )
         return headers
 
     def _handle_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
@@ -151,7 +158,7 @@ class RemoteDatabaseManager:
         method: str,
         endpoint: str,
         json: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None
+        params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """执行 HTTP 请求"""
         url = f"{self.api_base_url}/{endpoint.lstrip('/')}"
@@ -178,7 +185,6 @@ class RemoteDatabaseManager:
             logger.error(f"Request Error: {e}")
             raise
         except APIError as e:
-            # 重新抛出 APIError，保持原有的错误信息
             logger.error(f"API Error [{e.code}]: {e.message}")
             raise
 
@@ -234,6 +240,7 @@ class RemoteDatabaseManager:
         except Exception as e:
             logger.error(f"Unexpected error in load_state: {e}")
             raise e
+
 
     async def delete_state(self, session_id: int) -> bool:
         """删除会话状态"""
@@ -423,7 +430,6 @@ class RemoteDatabaseManager:
             "content": content_str,
             "metadata": metadata_str
         }
-        print(payload)
         try:
             res = await self._request("POST", "/agent/handle/add_message", json=payload, params={"p":"w"})
             return res.get("code") == 200 or res.get("status") == 1

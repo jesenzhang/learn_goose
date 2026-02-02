@@ -22,7 +22,11 @@ class AuthMode(str, Enum):
     LOCAL = "local"       # 本地模式：使用内置数据库
     EXTERNAL = "external"   # 外置模式：通过外部系统认证
 
-
+class UserRole(str, Enum):
+    """认证模式"""
+    USER = "user"       # 本地模式：使用内置数据库
+    ADMIN = "admin"   # 外置模式：通过外部系统认证
+    GUEST = "guest"   # 外置模式：通过外部系统认证
 
 @dataclass
 class UserInfo:

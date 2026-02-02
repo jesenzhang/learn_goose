@@ -10,23 +10,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from starlette.status import HTTP_422_UNPROCESSABLE_ENTITY
+from fastapi import FastAPI
 import uvicorn
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-_log_handlers = [logging.StreamHandler()]
-_log_file = os.getenv("ASSISTANT_LOG_FILE", "museum_assistant.log")
-if _log_file and _log_file.lower() != "stdout":
-    _log_handlers.append(logging.FileHandler(_log_file, encoding="utf-8"))
+sys.path.insert(0, "/home/sd/workspace/assistant_services/assistant/src/")
 
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=_log_handlers,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('museum_assistant.log', encoding='utf-8')
+    ],
     encoding='utf-8'
 )
 
@@ -35,9 +30,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # 建议同时屏蔽 httpcore（httpx 的底层库），它有时也会打印大量日志
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-# OpenAI SDK 详细请求日志只保留 WARNING 及以上
-logging.getLogger("openai._base_client").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +42,7 @@ def create_app() -> FastAPI:
     """创建 FastAPI 应用"""
     from assistant.config.loader import ConfigLoader
     from assistant.db import configure_db
-    from assistant.core import MicroAgent
+    from assistant.core.agent import MicroAgent
     from assistant.api.routes import create_router, set_agent
     from assistant.api.middleware import AuthContextMiddleware
     
@@ -116,21 +108,6 @@ def create_app() -> FastAPI:
     
     app.add_middleware(AuthContextMiddleware)
 
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        # Log 422 details to pinpoint which parameter failed validation.
-        logger.warning(
-            "422 ValidationError: %s %s | query=%s | errors=%s",
-            request.method,
-            request.url.path,
-            dict(request.query_params),
-            exc.errors(),
-        )
-        return JSONResponse(
-            status_code=HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"detail": exc.errors()},
-        )
-
     # 主路由
     router = create_router()
     app.include_router(router)
@@ -192,7 +169,7 @@ def main():
     parser = argparse.ArgumentParser(description="Museum Assistant Server")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host address to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8400, help="Port to bind (default: 8400)")
-    parser.add_argument("--config", type=str, default="assistant_config.yaml", help="Config file path (default: assistant_config.yaml)")
+    parser.add_argument("--config", type=str, default="/home/sd/workspace/assistant_services/assistant/assistant_config.yaml", help="Config file path (default: assistant_config.yaml)")
     
     args = parser.parse_args()
     
@@ -211,7 +188,7 @@ def main():
     )
 
 
-def run_with_args(host="0.0.0.0", port=8400, config="assistant_config.yaml"):
+def run_with_args(host="0.0.0.0", port=8400, config="/home/sd/workspace/assistant_services/assistant/assistant_config.yaml"):
     """使用指定参数运行应用，用于模块导入场景"""
     # 更新全局配置路径
     os.environ['ASSISTANT_CONFIG'] = config
