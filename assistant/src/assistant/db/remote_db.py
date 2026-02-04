@@ -14,7 +14,7 @@ import httpx
 import json
 
 from .protocol import DatabaseProtocol, MemoryProtocol
-from ..utils.ctx_vars import get_auth_token
+from ..utils.ctx_vars import get_auth_header, get_auth_token
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,29 @@ class APIError(Exception):
         self.message = message
         self.detail = detail
         super().__init__(f"[{code}] {message}")
+
+
+class RemoteDBError(Exception):
+    """Remote DB request error with context."""
+    def __init__(
+        self,
+        message: str,
+        *,
+        method: str,
+        url: str,
+        status_code: Optional[int] = None,
+        detail: Optional[str] = None,
+    ):
+        self.method = method
+        self.url = url
+        self.status_code = status_code
+        self.detail = detail
+        parts = [f"{method} {url}"]
+        if status_code is not None:
+            parts.append(f"status={status_code}")
+        if detail:
+            parts.append(detail)
+        super().__init__(f"{message} ({' | '.join(parts)})")
 
 
 class RemoteDatabaseManager:
@@ -91,7 +114,6 @@ class RemoteDatabaseManager:
                     pool=1.0
                 ),
             )
-        self._session.headers.update(self._get_headers())
         return self._session
 
     async def __aenter__(self):
@@ -109,18 +131,26 @@ class RemoteDatabaseManager:
 
         # 获取 Token
         dynamic_token = get_auth_token()
+        auth_header = get_auth_header()
 
-        if dynamic_token:
+        if auth_header:
+            headers["Authorization"] = auth_header
+        elif dynamic_token:
             headers["Authorization"] = dynamic_token
         elif self.api_key:
             headers["Authorization"] = self.api_key
-        auth_header = headers.get("Authorization")
-        logger.debug(
-            "remote_db auth token consistency: ctx=%s header=%s match=%s",
-            "set" if dynamic_token else "none",
-            "set" if auth_header else "none",
-            bool(dynamic_token and auth_header and dynamic_token == auth_header),
-        )
+
+        # 记录上下文与请求头一致性（仅在两者同时存在且不一致时）
+        if auth_header and dynamic_token:
+            normalized_header = auth_header
+            if auth_header.startswith("Bearer "):
+                normalized_header = auth_header.replace("Bearer ", "", 1)
+            if normalized_header != dynamic_token:
+                logger.debug(
+                    "remote_db auth token consistency: ctx=%s header=%s match=False",
+                    "set" if dynamic_token else "none",
+                    "set" if auth_header else "none",
+                )
         return headers
 
     def _handle_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
@@ -168,7 +198,8 @@ class RemoteDatabaseManager:
                 method=method,
                 url=url,
                 json=json,
-                params=params
+                params=params,
+                headers=self._get_headers(),
             )
             response.raise_for_status()
 
@@ -179,14 +210,32 @@ class RemoteDatabaseManager:
             return self._handle_response(result)
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP Error: {e.response.status_code} - {e.response.text}")
-            raise
+            detail = (e.response.text or "")[:500]
+            logger.error(f"HTTP Error: {e.response.status_code} - {detail}")
+            raise RemoteDBError(
+                "Remote DB HTTP error",
+                method=method,
+                url=url,
+                status_code=e.response.status_code,
+                detail=detail,
+            )
         except httpx.RequestError as e:
             logger.error(f"Request Error: {e}")
-            raise
+            raise RemoteDBError(
+                "Remote DB request error",
+                method=method,
+                url=url,
+                detail=str(e),
+            )
         except APIError as e:
             logger.error(f"API Error [{e.code}]: {e.message}")
-            raise
+            raise RemoteDBError(
+                "Remote DB API error",
+                method=method,
+                url=url,
+                status_code=e.code,
+                detail=e.message,
+            )
 
         
     async def save_state(self, session_id: int, state: Dict, **kwargs) -> bool:

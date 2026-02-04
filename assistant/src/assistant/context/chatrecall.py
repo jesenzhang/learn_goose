@@ -1,5 +1,5 @@
 """
-ChatRecall Module for Assistant
+ChatRecall Module for Assistant (Context layer)
 
 聊天记录回忆功能：
 - 搜索历史会话中的消息
@@ -10,15 +10,17 @@ ChatRecall Module for Assistant
 """
 
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from difflib import SequenceMatcher
 import math
 import json
+import logging
 
-from .query_rewrite import QueryRewriter
-from .session_memory import SessionMemoryUpdater
+from ..memory.session_memory import SessionMemoryUpdater
+
+logger = logging.getLogger(__name__)
 
 
 class SearchMode(Enum):
@@ -58,22 +60,22 @@ class ChatRecallConfig:
     enabled: bool = True
     query_expand_max_msgs: int = 4
     query_max_chars: int = 800
-    query_rewrite_enabled: bool = False
-    query_rewrite_max_msgs: int = 6
-    query_rewrite_max_chars: int = 800
-    query_rewrite_prompt: Optional[str] = None
     use_semantic: bool = False
     semantic_top_k: int = 20
+    semantic_query_max_chars: int = 800
+    semantic_doc_max_chars: int = 2000
+    semantic_batch_size: int = 4
     use_rerank: bool = False
     rerank_top_k: int = 10
     rerank_threshold: float = 0.0
     session_memory_enabled: bool = True
     session_memory_use_llm: bool = False
+    session_memory_recent_msgs: int = 6
+    session_memory_max_chars: int = 800
     session_summary_max_chars: int = 400
     session_facts_max_items: int = 20
     session_entities_max_items: int = 30
     session_topics_max_items: int = 20
-
 
 
 class ChatRecallSearch:
@@ -281,9 +283,6 @@ class ChatRecall:
         self.session_memory_updater = SessionMemoryUpdater(
             self.config, message_builder=message_builder, llm_call=llm_call
         )
-        self.query_rewriter = QueryRewriter(
-            self.config, message_builder=message_builder, llm_call=llm_call
-        )
 
     async def search(
         self,
@@ -317,7 +316,7 @@ class ChatRecall:
                     sessions = await self.session_query_func()
                 for session_id, messages in sessions.items():
                     self.search_engine.index_session(session_id, messages)
-            except Exception as e:
+            except Exception:
                 pass
 
         return self.search_engine.search(
@@ -400,22 +399,21 @@ class ChatRecall:
             max_chars=max_chars or self.config.query_max_chars
         )
         query_for_search = expanded_query
-        if self.config.query_rewrite_enabled and llm:
-            rewritten = await self.query_rewriter.rewrite(
-                user_input=user_input,
-                history=history,
-                session_memory=session_memory or {},
-                llm=llm,
-            )
-            if rewritten:
-                query_for_search = rewritten
+        # query rewrite has moved to Context; keep expanded query only
+        query_for_search = self._truncate_text(
+            query_for_search,
+            self.config.semantic_query_max_chars or self.config.query_max_chars,
+        )
         if self.config.use_semantic and self.embedding_client:
-            return await self._semantic_search_from_history(
-                query_for_search,
-                history,
-                session_id=session_id,
-                limit=limit,
-            )
+            try:
+                return await self._semantic_search_from_history(
+                    query_for_search,
+                    history,
+                    session_id=session_id,
+                    limit=limit,
+                )
+            except Exception as e:
+                logger.warning("ChatRecall semantic search failed, fallback to lexical: %s", e)
         results = self.search_from_messages(
             query=query_for_search,
             messages=history,
@@ -427,7 +425,6 @@ class ChatRecall:
         if self.config.use_rerank and self.reranker_client and results:
             return await self._rerank_results(query_for_search, results)
         return results
-
 
     @staticmethod
     def _extract_message_text(msg: Dict[str, Any]) -> str:
@@ -457,12 +454,25 @@ class ChatRecall:
         session_id: str,
         limit: int = 10
     ) -> List[ChatRecallResultConfig]:
-        texts = [self._extract_message_text(m) for m in history]
+        if self.config.max_session_messages:
+            history = history[-self.config.max_session_messages:]
+        texts = [
+            self._truncate_text(self._extract_message_text(m), self.config.semantic_doc_max_chars)
+            for m in history
+        ]
         if not texts:
             return []
 
         query_vec = await self.embedding_client.aembed_query(query)
-        doc_vecs = await self.embedding_client.aembed_documents(texts)
+        doc_vecs: List[List[float]] = []
+        batch_size = max(1, int(self.config.semantic_batch_size))
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            try:
+                doc_vecs.extend(await self.embedding_client.aembed_documents(batch))
+            except Exception as e:
+                logger.warning("ChatRecall embedding batch failed (size=%s): %s", len(batch), e)
+                doc_vecs.extend([[] for _ in batch])
 
         scored = []
         for msg, vec in zip(history, doc_vecs):
@@ -486,6 +496,14 @@ class ChatRecall:
         if self.config.use_rerank and self.reranker_client:
             return await self._rerank_results(query, results)
         return results
+
+    @staticmethod
+    def _truncate_text(text: str, max_chars: int) -> str:
+        if not text:
+            return ""
+        if max_chars and len(text) > max_chars:
+            return text[:max_chars]
+        return text
 
     async def _rerank_results(
         self,

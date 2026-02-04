@@ -108,13 +108,13 @@ class InputValidatorHook(AgentHook):
         if len(user_input) > self.max_length:
             return HookResult.intercept(
                 response=f"抱歉，您的输入太长了（{len(user_input)} 字符），请控制在 {self.max_length} 字符以内。",
-                data={"reason": "too_long", "length": len(user_input)}
+                response_data={"reason": "too_long", "length": len(user_input)}
             )
 
         if len(user_input) < self.min_length and not self.allow_empty:
             return HookResult.intercept(
                 response=f"抱歉，您的输入太短了（{len(user_input)} 字符），请至少输入 {self.min_length} 字符。",
-                data={"reason": "too_short", "length": len(user_input)}
+                response_data={"reason": "too_short", "length": len(user_input)}
             )
 
         return None

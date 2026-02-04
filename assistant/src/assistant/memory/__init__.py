@@ -1,11 +1,10 @@
 """Memory module."""
 
 from .manager import MemoryManager, MemoryConfig, init_manager, get_manager
+from .adapters.session_memory_provider import MemorySessionMemoryProvider
 from .session_memory import SessionMemoryUpdater
 from .llm_adapter import MessageBuilder, LLMCall, default_message_builder
 from .adapters.store_adapter import StoreModuleAdapter, create_store_module_adapter
-from .chatrecall import ChatRecall, ChatRecallConfig, ChatRecallSearch, ChatRecallResultConfig, SessionSummaryConfig, SearchMode, create_chat_recall
-from .query_rewrite import QueryRewriter
 from .store import (
     MemoryStore,
     MemoryRef,
@@ -24,14 +23,7 @@ __all__ = [
     "MemoryStore",
     "MemoryRef",
     "StoreType",
-    "QueryRewriter",
-    "ChatRecall",
-    "ChatRecallConfig",
-    "ChatRecallSearch",
-    "ChatRecallResultConfig",
-    "SessionSummaryConfig",
-    "SearchMode",
-    "create_chat_recall",
     "init_manager",
     "get_manager",
+    "MemorySessionMemoryProvider",
 ]

@@ -8,13 +8,13 @@ from .message import (
     ActionRequired, SystemNotification
 )
 
-# 导入 Truncation Mixin
+# 导入 Context Mixin
 try:
-    from ..truncation.conversation_integration import ConversationTruncationMixin
-    _TRUNCATION_AVAILABLE = True
+    from ..context.conversation_integration import ConversationContextMixin
+    _CONTEXT_AVAILABLE = True
 except ImportError:
-    _TRUNCATION_AVAILABLE = False
-    ConversationTruncationMixin = object  # 降级为空类
+    _CONTEXT_AVAILABLE = False
+    ConversationContextMixin = object  # 降级为空类
 
 class InvalidConversation(Exception):
     def __init__(self, reason: str, conversation: "Conversation"):
@@ -22,7 +22,7 @@ class InvalidConversation(Exception):
         self.conversation = conversation
         super().__init__(reason)
 
-class Conversation(ConversationTruncationMixin, BaseModel):
+class Conversation(ConversationContextMixin, BaseModel):
     """
     增强版 Conversation 类，支持双流消息管理：
 

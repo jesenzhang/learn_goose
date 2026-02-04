@@ -13,10 +13,10 @@ from .models import AppConfig
 # Import directly from single source of truth
 from ..intent.models import IntentDefinition, SlotSchema
 # Import module configuration classes
-from ..truncation import TruncationConfig as TruncationModuleConfig
-from ..chatrecall import ChatRecallConfig as ChatRecallModuleConfig
+from ..context.chatrecall import ChatRecallConfig as ChatRecallModuleConfig
 from ..memory import MemoryConfig as MemoryModuleConfig
 from ..store import StoreConfig as StoreModuleConfig
+from ..context import ContextConfig as ContextModuleConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ class ConfigLoader:
 
         # 1. Load Raw YAML (Preserved for flexible execution configs)
         self.raw_data: Dict[str, Any] = self._load_raw_yaml()
+        self._apply_context_profile()
 
         # 2. Validate Core Config (Pydantic)
         self.config: AppConfig = self._validate_core_config()
@@ -52,6 +53,33 @@ class ConfigLoader:
         except yaml.YAMLError as e:
             logger.error(f"YAML error: {e}")
             raise
+
+    def _apply_context_profile(self) -> None:
+        profile_name = self.raw_data.get("context_profile")
+        profiles = self.raw_data.get("context_profiles") or {}
+        if not profile_name:
+            return
+        profile = profiles.get(profile_name)
+        if not isinstance(profile, dict):
+            logger.warning("context_profile '%s' not found or invalid.", profile_name)
+            return
+        force = bool(self.raw_data.get("context_profile_force", False))
+        self._deep_apply_defaults(self.raw_data, profile, force=force)
+
+    @staticmethod
+    def _deep_apply_defaults(target: Dict[str, Any], defaults: Dict[str, Any], *, force: bool = False) -> None:
+        for key, value in defaults.items():
+            if isinstance(value, dict):
+                target_val = target.get(key)
+                if not isinstance(target_val, dict):
+                    if force or key not in target:
+                        target[key] = {}
+                    target_val = target.get(key)
+                if isinstance(target_val, dict):
+                    ConfigLoader._deep_apply_defaults(target_val, value, force=force)
+            else:
+                if force or key not in target or target.get(key) is None:
+                    target[key] = value
 
     def _validate_core_config(self) -> AppConfig:
         try:
@@ -131,19 +159,6 @@ class ConfigLoader:
         return self.config.skills_config.root
 
     @property
-    def truncation(self) -> TruncationModuleConfig:
-        """Get truncation configuration as dataclass."""
-        config = self.config.truncation
-        return TruncationModuleConfig(
-            enabled=config.enabled,
-            threshold=config.threshold,
-            auto_compact=config.auto_compact,
-            max_messages_before_compact=config.max_messages_before_compact,
-            keep_recent_messages=config.keep_recent_messages,
-            check_interval=config.check_interval,
-        )
-
-    @property
     def chatrecall(self) -> ChatRecallModuleConfig:
         """Get chatrecall configuration as dataclass."""
         config = self.config.chatrecall
@@ -157,17 +172,18 @@ class ConfigLoader:
             min_similarity=config.min_similarity,
             query_expand_max_msgs=config.query_expand_max_msgs,
             query_max_chars=config.query_max_chars,
-            query_rewrite_enabled=config.query_rewrite_enabled,
-            query_rewrite_max_msgs=config.query_rewrite_max_msgs,
-            query_rewrite_max_chars=config.query_rewrite_max_chars,
-            query_rewrite_prompt=config.query_rewrite_prompt,
             use_semantic=config.use_semantic,
             semantic_top_k=config.semantic_top_k,
+            semantic_query_max_chars=getattr(config, "semantic_query_max_chars", config.query_max_chars),
+            semantic_doc_max_chars=getattr(config, "semantic_doc_max_chars", 2000),
+            semantic_batch_size=getattr(config, "semantic_batch_size", 4),
             use_rerank=config.use_rerank,
             rerank_top_k=config.rerank_top_k,
             rerank_threshold=config.rerank_threshold,
             session_memory_enabled=config.session_memory_enabled,
             session_memory_use_llm=config.session_memory_use_llm,
+            session_memory_recent_msgs=getattr(config, "session_memory_recent_msgs", 6),
+            session_memory_max_chars=getattr(config, "session_memory_max_chars", 800),
             session_summary_max_chars=config.session_summary_max_chars,
             session_facts_max_items=config.session_facts_max_items,
             session_entities_max_items=config.session_entities_max_items,
@@ -188,6 +204,52 @@ class ConfigLoader:
         )
 
     @property
+    def context(self) -> ContextModuleConfig:
+        """Get context configuration as dataclass."""
+        cfg = self.config.context
+        provider_context_limit = None
+        if self.config.provider.llm and self.config.provider.llm.config:
+            provider_context_limit = self.config.provider.llm.config.get("context_limit")
+        return ContextModuleConfig(
+            input_segment_max_tokens=cfg.input_segment_max_tokens,
+            input_overlap_ratio=cfg.input_overlap_ratio,
+            reserved_tokens=cfg.reserved_tokens,
+            context_limit=cfg.context_limit or provider_context_limit,
+            threshold=cfg.threshold,
+            auto_compact=cfg.auto_compact,
+            max_messages_before_compact=cfg.max_messages_before_compact,
+            keep_recent_messages=cfg.keep_recent_messages,
+            check_interval=cfg.check_interval,
+            requirement_classifier_enabled=cfg.requirement_classifier_enabled,
+            requirement_classifier_threshold=cfg.requirement_classifier_threshold,
+            requirement_classifier_max_segments=cfg.requirement_classifier_max_segments,
+            requirement_classifier_max_chars=cfg.requirement_classifier_max_chars,
+            requirement_classifier_prompt=cfg.requirement_classifier_prompt,
+            requirement_scan_front=cfg.requirement_scan_front,
+            requirement_scan_back=cfg.requirement_scan_back,
+            requirement_extraction_enabled=cfg.requirement_extraction_enabled,
+            requirement_extraction_prompt=cfg.requirement_extraction_prompt,
+            requirement_extraction_max_chars=cfg.requirement_extraction_max_chars,
+            recall_summary_max_items=cfg.recall_summary_max_items,
+            recall_summary_format=cfg.recall_summary_format,
+            recall_max_msgs=cfg.recall_max_msgs,
+            recall_max_chars=cfg.recall_max_chars,
+            query_rewrite_enabled=cfg.query_rewrite_enabled,
+            query_rewrite_max_msgs=cfg.query_rewrite_max_msgs,
+            query_rewrite_max_chars=cfg.query_rewrite_max_chars,
+            query_rewrite_prompt=cfg.query_rewrite_prompt,
+            cache_enabled=cfg.cache_enabled,
+            cache_size=cfg.cache_size,
+            cache_ttl_seconds=cfg.cache_ttl_seconds,
+            metrics_enabled=cfg.metrics_enabled,
+            summarize_max_concurrency=cfg.summarize_max_concurrency,
+            summarize_fuse_enabled=cfg.summarize_fuse_enabled,
+            summarize_fuse_max_chars=cfg.summarize_fuse_max_chars,
+            summarize_max_segments=cfg.summarize_max_segments,
+            payload_history_keep=cfg.payload_history_keep,
+        )
+
+    @property
     def memory_store(self) -> StoreModuleConfig:
         """Get store configuration for memory module."""
         mem_cfg = self.config.memory
@@ -197,7 +259,6 @@ class ConfigLoader:
     def _build_memory_store_profiles(self, mem_cfg) -> tuple[Dict[str, StoreModuleConfig], Dict[str, str], str]:
         stores_cfg = getattr(mem_cfg, "stores", None)
         routing_cfg = getattr(mem_cfg, "routing", None)
-        legacy_artifact_cfg = self.raw_data.get("artifact_manager") if isinstance(self.raw_data, dict) else None
         profiles: Dict[str, StoreModuleConfig] = {}
         routing: Dict[str, str] = {}
 
@@ -222,8 +283,6 @@ class ConfigLoader:
                 )
         else:
             store_cfg = getattr(mem_cfg, "store", None)
-            if legacy_artifact_cfg:
-                store_cfg = legacy_artifact_cfg
             if store_cfg is None:
                 store_cfg = {}
             store_data = store_cfg.model_dump() if hasattr(store_cfg, "model_dump") else dict(store_cfg)

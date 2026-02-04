@@ -7,6 +7,7 @@ from email import message
 import json
 import uuid
 import asyncio
+from threading import RLock
 import logging
 import inspect
 import time
@@ -33,14 +34,11 @@ from ..skills.context import create_context, ServiceContext
 
 from .executor import ToolExecutor
 # Artifact Storage Import
-from ..memory import init_manager, get_manager
+from ..memory import init_manager, get_manager, MemorySessionMemoryProvider
+from ..context import ContextManager, DefaultTruncationProvider, create_token_counter
 from ..memory.adapters.store_adapter import create_store_module_adapter
-
-
-
-# [NEW] 导入 Truncation 和 ChatRecall 模块
-from ..truncation import TruncationManager
-from ..chatrecall import ChatRecall
+# [NEW] 导入 ChatRecall 模块（Context）
+from ..context.chatrecall import ChatRecall
 
     # 需要引入的依赖 (放在文件头部)
 from ..intent.models import IntentResult
@@ -178,16 +176,17 @@ class MicroAgent:
         # Memory Manager initialized after config load.
         self.memory_manager = None
 
-        # Initialize Truncation Manager
-        self.truncation_manager: Optional[TruncationManager] = None
+        # Context-only mode: no legacy truncation manager
 
         # Initialize ChatRecall
         self.chat_recall: Optional[ChatRecall] = None
+        # Initialize Context Manager (stage 1: probe only)
+        self.context_manager: Optional[ContextManager] = None
 
-        # 状态保存管理器 - 延迟批量保存
-        self._pending_state_save = False
-        self._state_save_task: Optional[asyncio.Task] = None
-        self._pending_save_state: Optional[AgentState] = None  # 待保存的 state 引用
+        # 状态保存管理器 - 延迟批量保存（按 session 维度）
+        self._pending_state_save: Dict[int, bool] = {}
+        self._state_save_task: Dict[int, asyncio.Task] = {}
+        self._pending_save_state: Dict[int, AgentState] = {}  # 待保存的 state 引用
 
         # 1. 初始构建
         initial_config = ConfigLoader(config_path)
@@ -212,21 +211,22 @@ class MicroAgent:
         self._init_hooks(initial_config)
 
         self._streamers = {}
+        self._streamers_lock = RLock()
 
         # 任务管理：session_id -> TaskHandle
         self._running_tasks: Dict[int, TaskHandle] = {}
+        self._running_tasks_lock = RLock()
 
         logger.info("MicroAgent initialized")
 
     def get_streamer(self, session_id: int, run_id: str) -> "BaseStreamer":
         """获取指定会话的事件流"""
-        if session_id not in self._streamers:
-            self._streamers[session_id] ={}
-        
-        if run_id not in self._streamers[session_id]:
-            self._streamers[session_id][run_id] = self._factory.create(session_id, str(run_id))
-            
-        return self._streamers[session_id][run_id]
+        with self._streamers_lock:
+            if session_id not in self._streamers:
+                self._streamers[session_id] = {}
+            if run_id not in self._streamers[session_id]:
+                self._streamers[session_id][run_id] = self._factory.create(session_id, str(run_id))
+            return self._streamers[session_id][run_id]
 
     def get_task_handle(self, session_id: int) -> Optional[TaskHandle]:
         """
@@ -238,7 +238,8 @@ class MicroAgent:
         Returns:
             TaskHandle 对象，如果会话没有运行中的任务则返回 None
         """
-        return self._running_tasks.get(session_id)
+        with self._running_tasks_lock:
+            return self._running_tasks.get(session_id)
 
     async def cancel_running_task(self, session_id: int) -> bool:
         """
@@ -250,10 +251,12 @@ class MicroAgent:
         Returns:
             是否成功取消
         """
-        handle = self._running_tasks.get(session_id)
+        with self._running_tasks_lock:
+            handle = self._running_tasks.get(session_id)
         if handle and handle.is_running:
             handle.task.cancel()
-            del self._running_tasks[session_id]
+            with self._running_tasks_lock:
+                self._running_tasks.pop(session_id, None)
             logger.info(f"Cancelled running task for session {session_id}")
             return True
         return False
@@ -287,11 +290,14 @@ class MicroAgent:
 
     async def _flush_state_save(self, session_id: int):
         """立即执行待保存的状态"""
-        if self._pending_state_save and self._pending_save_state:
+        if self._pending_state_save.get(session_id) and session_id in self._pending_save_state:
             try:
-                await self.db.save_state(session_id, self._pending_save_state.model_dump(exclude_none=True))
-                self._pending_state_save = False
-                self._pending_save_state = None
+                await self.db.save_state(
+                    session_id,
+                    self._pending_save_state[session_id].model_dump(exclude_none=True)
+                )
+                self._pending_state_save[session_id] = False
+                self._pending_save_state.pop(session_id, None)
             except Exception as e:
                 logger.error(f"Failed to flush state save: {e}", exc_info=True)
 
@@ -304,26 +310,36 @@ class MicroAgent:
             state: 要保存的 AgentState 对象
             delay: 延迟时间（秒），默认 0.5 秒
         """
-        self._pending_state_save = True
-        self._pending_save_state = state
+        self._pending_state_save[session_id] = True
+        self._pending_save_state[session_id] = state
 
         # 取消之前的任务（如果存在）
-        if self._state_save_task and not self._state_save_task.done():
-            self._state_save_task.cancel()
+        prior_task = self._state_save_task.get(session_id)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
 
         # 创建新的延迟保存任务
         async def save_delayed():
-            await asyncio.sleep(delay)
-            await self._flush_state_save(session_id)
+            try:
+                await asyncio.sleep(delay)
+                await self._flush_state_save(session_id)
+            except asyncio.CancelledError:
+                return
 
-        self._state_save_task = asyncio.create_task(save_delayed())
+        self._state_save_task[session_id] = asyncio.create_task(save_delayed())
 
     async def _ensure_state_saved(self, session_id: int, state: AgentState):
         """确保所有待保存的状态都已保存"""
         # 先保存当前 state
-        self._pending_state_save = True
-        self._pending_save_state = state
+        self._pending_state_save[session_id] = True
+        self._pending_save_state[session_id] = state
         await self._flush_state_save(session_id)
+
+    async def _flush_all_state_saves(self) -> None:
+        """关闭前尽量冲刷所有 session 的待保存状态"""
+        session_ids = list(self._pending_save_state.keys())
+        for sid in session_ids:
+            await self._flush_state_save(sid)
 
     def _build_generation(self, config: ConfigLoader) -> AgentGeneration:
         """构建新一代资源"""
@@ -351,22 +367,59 @@ class MicroAgent:
             )
             
             
-        # Initialize Truncation Manager
+        # Initialize Context Manager (fullstack only)
+        llm_provider = None
         if config.provider.llm:
-            # 直接使用 config.truncation 属性获取 dataclass 配置
-            truncation_config = config.truncation
-            # 使用 LLM provider 创建 Truncation Manager
             llm_provider = ProviderFactory.create_llm(
                 config.provider.llm.provider,
                 config.provider.llm.config
             )
-            self.truncation_manager = TruncationManager(
-                provider=llm_provider,
-                config=truncation_config
+        context_cfg = config.context
+        if not getattr(context_cfg, "enabled", False):
+            logger.warning("Context disabled in config; fullstack mode required. Enabling context by default.")
+            context_cfg.enabled = True
+        if getattr(context_cfg, "mode", "fullstack") != "fullstack":
+            logger.warning("Context mode is not fullstack; forcing fullstack.")
+            context_cfg.mode = "fullstack"
+        if llm_provider:
+            model_name = None
+            try:
+                if isinstance(config.provider.llm.config, dict):
+                    model_name = config.provider.llm.config.get("model_name")
+                else:
+                    model_name = getattr(config.provider.llm.config, "model_name", None)
+            except Exception:
+                model_name = None
+            token_counter = create_token_counter(model_name or "default")
+            truncation_provider = DefaultTruncationProvider(
+                llm=llm,
+                config=context_cfg,
+                token_counter=token_counter,
+                message_builder=lambda system_prompt, user_text: [
+                    Message.system(system_prompt),
+                    Message.user(user_text),
+                ],
+                context_limit=context_cfg.context_limit,
             )
-            logger.info("Truncation Manager initialized")
+            session_memory_provider = MemorySessionMemoryProvider(self.memory_manager) if self.memory_manager else None
+            self.context_manager = ContextManager(
+                config=context_cfg,
+                token_counter=token_counter,
+                llm=llm,
+                message_builder=lambda system_prompt, user_text: [
+                    Message.system(system_prompt),
+                    Message.user(user_text),
+                ],
+                truncation_provider=truncation_provider,
+                recall_provider=self.chat_recall,
+                rerank_provider=ai_services.get("reranker"),
+                session_memory_provider=session_memory_provider,
+            )
+            logger.info("Context Manager initialized (fullstack)")
         else:
-            self.truncation_manager = None
+            self.context_manager = None
+
+        # Context Manager is initialized in the block above.
 
         # Initialize ChatRecall
         # 直接使用 config.chatrecall 属性获取 dataclass 配置
@@ -407,6 +460,9 @@ class MicroAgent:
             reranker_client=ai_services.get("reranker"),
         )
         logger.info("ChatRecall initialized")
+        if self.context_manager:
+            self.context_manager.recaller.recall_provider = self.chat_recall
+            self.context_manager.builder.recall_provider = self.chat_recall
 
         # 提取 SkillsConfig (它是 Pydantic 对象)
         skills_cfg = config.skills_config
@@ -483,18 +539,28 @@ class MicroAgent:
     def _get_conversation(self, state: AgentState) -> Conversation:
         """获取或初始化 Conversation 对象"""
         if not hasattr(state, '_conversation') or state._conversation is None:
-            messages = [Message.model_validate(h) for h in state.history] if state.history else []
+            history = state.history or []
+            history_before = len(history)
+            history = self._prune_history_for_rebuild(state, history)
+            history_after = len(history)
+            if history_after != history_before:
+                logger.info(
+                    "history pruned for rebuild: session_id=%s before=%s after=%s boundary_id=%s",
+                    state.session_id,
+                    history_before,
+                    history_after,
+                    state.compacted_until_message_id,
+                )
+            messages = [Message.model_validate(h) for h in history] if history else []
             messages.reverse()
             messages.sort(key=lambda x: x.created_at)
             state._conversation = Conversation(messages=messages)
 
-        # 设置 Truncation Manager（如果已初始化）
-        if self.truncation_manager and hasattr(state._conversation, 'set_truncation_manager'):
-            if state._conversation.get_truncation_manager() is None:
-                state._conversation.set_truncation_manager(self.truncation_manager)
-
-        # 注入压缩后的上下文（不进入 history）
-        self._ensure_compressed_context_message(state, state._conversation)
+        # 设置 Truncation Provider（如果已初始化）
+        if hasattr(state._conversation, 'set_truncation_provider'):
+            if self.context_manager and self.context_manager.truncation_provider:
+                if state._conversation.get_truncation_provider() is None:
+                    state._conversation.set_truncation_provider(self.context_manager.truncation_provider)
 
         return state._conversation
 
@@ -509,33 +575,23 @@ class MicroAgent:
                 filtered.append(m.model_dump(exclude_none=True, by_alias=True))
             state.history = filtered
 
-    def _ensure_compressed_context_message(self, state: AgentState, conv: Conversation) -> None:
-        """Inject compressed context into ephemeral messages for LLM, without persisting to history."""
-        summary = state.compressed_context
-        if not summary or not hasattr(conv, "_ephemeral_messages"):
-            return
+    def _prune_history_for_rebuild(self, state: AgentState, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep only recent messages or those after compaction boundary when rebuilding."""
+        if not history:
+            return history
 
-        existing = []
-        for msg in conv._ephemeral_messages:
-            meta = msg.metadata or {}
-            if meta.get("is_compacted_context"):
-                existing.append(msg)
+        boundary_id = state.compacted_until_message_id
+        if boundary_id:
+            for idx, msg in enumerate(history):
+                if msg.get("id") == boundary_id:
+                    return history[idx:]
 
-        if existing and existing[-1].metadata.get("compressed_context") == summary:
-            return
-
-        if existing:
-            conv._ephemeral_messages = [
-                msg for msg in conv._ephemeral_messages
-                if not (msg.metadata or {}).get("is_compacted_context")
-            ]
-
-        ctx_msg = Message.user(summary).with_visibility(user_visible=False, agent_visible=True)
-        ctx_msg.metadata = {
-            "is_compacted_context": True,
-            "compressed_context": summary,
-        }
-        conv.push(ctx_msg, ephemeral=True)
+        if self.context_manager and self.context_manager.window_manager:
+            return self.context_manager.window_manager.prune_history(
+                history,
+                compacted_until_message_id=state.compacted_until_message_id,
+            )
+        return history
 
     async def _maybe_update_session_memory(
         self,
@@ -988,7 +1044,11 @@ Generate the content/response now.
                     },
                     storage_type="memory",
                 )
-                state.shared_memory[artifact.id] = ref.to_dict()
+                if hasattr(ref, "to_dict"):
+                    state.shared_memory[artifact.id] = ref.to_dict()
+                else:
+                    # Fallback for older MemoryRef implementations
+                    state.shared_memory[artifact.id] = getattr(ref, "__dict__", {"id": artifact.id})
                 artifact.metadata.update({
                     "size": ref.size,
                     "storage_type": ref.storage_type.value,
@@ -1168,7 +1228,7 @@ Generate the content/response now.
                     # 提取 artifacts
                     tool_artifacts = self._extract_artifacts_from_result(tool_result, name)
 
-                    # 存储 artifacts 到 ArtifactManager
+                    # 存储 artifacts 到会话共享内存
                     await self._store_artifacts_to_manager(tool_artifacts, state)
 
                     # 格式化返回给 LLM 的文本
@@ -1250,7 +1310,7 @@ Generate the content/response now.
                     # 发送错误事件
                     await self._emit_event(
                         EventType.ERROR,
-                        {"error": f"保存状态失败: {str(e)}", "error_type": type(e).__name__},
+                        {"error": f"保存状态失败: {str(e)}", "type": type(e).__name__},
                         session_id=state.session_id,
                         run_id=run_id,
                         user_id=user_id,
@@ -1301,8 +1361,8 @@ Generate the content/response now.
             "faq_interceptor": FAQHook,
             "sensitive_word_filter": SensitiveWordHook,
             "prompt_injection_detector": PromptInjectionHook,
-            "input_validator": InputValidatorHook,
             "request_logger": RequestLoggerHook,
+            "input_validator": InputValidatorHook,
             "statistics_collector": StatisticsCollectorHook,
         }
 
@@ -1679,42 +1739,124 @@ Generate the content/response now.
                         session_id,
                         len(user_input) if isinstance(user_input, str) else "n/a",
                     )
-                    # --- ChatRecall (before intent) ---
-                    if self.chat_recall:
+                    # --- Long input segmentation ---
+                    if isinstance(user_input, str):
+                        max_segment_chars = None
+                        # Use context budget (rough) to tune max tokens per segment.
+                        budget_prompt = self._build_system_prompt(state, gen, req_ctx)
+                        budget_tools = self._get_tools_schema(state, gen)
+                        if self.context_manager:
+                            budget = self.context_manager.build_context_budget(budget_prompt, budget_tools)
+                        else:
+                            budget = {"available": 0}
+                        max_segment_tokens = None
+                        if hasattr(budget, "available_tokens"):
+                            available = int(getattr(budget, "available_tokens", 0))
+                        else:
+                            available = int(budget.get("available", 0))
+                        if available > 0:
+                            max_segment_tokens = max(256, available - 1000)
+                        handled_by_context = False
+                        if self.context_manager and getattr(self.current_generation.config.context, "enabled", False):
+                            try:
+                                context_mode = getattr(self.current_generation.config.context, "mode", "fullstack")
+                                if context_mode in ("input_only", "fullstack"):
+                                    result = await self.context_manager.classify_and_summarize(
+                                        user_input,
+                                        max_tokens=max_segment_tokens,
+                                    )
+                                    extraction = result.extraction
+                                    req_indices = result.requirement_segments or []
+                                    segments = result.segments or [user_input]
+                                    logger.info(
+                                        "context probe: session_id=%s segments=%s req_segments=%s clarification=%s",
+                                        session_id,
+                                        len(segments),
+                                        req_indices,
+                                        getattr(extraction, "need_clarification", False) if extraction else False,
+                                    )
+                                    if result.summary:
+                                        state.compressed_context = result.summary
+                                        conv = self._get_conversation(state)
+                                    req_text = result.requirement_text or user_input
+                                    if extraction and extraction.need_clarification:
+                                        questions = extraction.questions or []
+                                        if questions:
+                                            user_input = "需要澄清：\n" + "\n".join(f"- {q}" for q in questions)
+                                        else:
+                                            user_input = "需要澄清：请补充具体目标、范围、约束和期望输出。"
+                                    else:
+                                        user_input = self.context_manager.build_normalized_input(
+                                            req_text,
+                                            state.compressed_context,
+                                            extraction,
+                                        )
+                                    handled_by_context = True
+                            except Exception as e:
+                                logger.warning("context probe failed: session_id=%s err=%s", session_id, e)
+                        if handled_by_context:
+                            pass
+                    # --- Context Recall & Query Rewrite (before intent) ---
+                    context_payload = None
+                    if self.context_manager and getattr(self.current_generation.config.context, "enabled", False):
                         try:
-                            recall_results = await self.chat_recall.search_with_history(
+                            recall_bundle = await self.context_manager.recall_and_rewrite(
                                 user_input,
                                 state.history or [],
                                 session_id=str(session_id),
-                                max_msgs=self.chat_recall.config.query_expand_max_msgs,
-                                max_chars=self.chat_recall.config.query_max_chars,
+                                user_id=user_id,
+                                run_id=task_id,
                                 llm=gen.llm,
-                                session_memory={
-                                    "summary": state.session_summary,
-                                    "facts": state.session_facts,
-                                    "entities": state.session_entities,
-                                    "topics": state.session_topics,
+                            )
+                            if recall_bundle.rewritten_query and recall_bundle.rewritten_query != user_input:
+                                logger.info(
+                                    "query rewritten by context: session_id=%s len=%s",
+                                    session_id,
+                                    len(recall_bundle.rewritten_query),
+                                )
+                                user_input = recall_bundle.rewritten_query
+                            recall_results = recall_bundle.summary.results
+                            recall_summary = recall_bundle.summary.summary_text
+                            context_payload = self.context_manager.build_context(
+                                normalized_input=user_input,
+                                compressed_context=state.compressed_context,
+                                recall_summary=recall_summary,
+                                recent_history=state.history or [],
+                                metadata={
+                                    "session_id": session_id,
+                                    "rewritten": recall_bundle.rewritten_query is not None,
                                 },
                             )
+                            if "context_payload" not in state.turn_structured_info:
+                                state.turn_structured_info["context_payload"] = []
+                            if hasattr(context_payload, "model_dump"):
+                                state.turn_structured_info["context_payload"].append(
+                                    context_payload.model_dump(exclude_none=True)
+                                )
+                            else:
+                                state.turn_structured_info["context_payload"].append(context_payload)
+                            if self.context_manager:
+                                keep = int(self.context_manager.config.payload_history_keep or 1)
+                                if keep > 0:
+                                    state.turn_structured_info["context_payload"] = state.turn_structured_info[
+                                        "context_payload"
+                                    ][-keep:]
                             logger.debug(
                                 "chatrecall results: session_id=%s count=%s",
                                 session_id,
                                 len(recall_results),
                             )
-                            if recall_results:
-                                recall_text = "\n".join(
-                                    [f"- {r.session_id}: {len(r.messages)} matches (score={r.score:.2f})"
-                                     for r in recall_results[:3]]
-                                )
-                                await self.add_message(
-                                    session_id,
-                                    Message.system(f"ChatRecall Summary:\n{recall_text}"),
-                                    state,
-                                    ephemeral=True,
-                                )
-                                logger.debug(f"ChatRecall Summary:\n{recall_text}", )
+                            # context payload will be injected before LLM call
+                            if self.context_manager:
+                                metrics = self.context_manager.get_metrics()
+                                if metrics:
+                                    logger.info(
+                                        "context metrics: session_id=%s %s",
+                                        session_id,
+                                        metrics,
+                                    )
                         except Exception as e:
-                            logger.warning(f"ChatRecall failed: {e}")
+                            logger.warning(f"Context recall failed: {e}")
                     # --- Hook Pipeline ---
                     hook_ctx = HookContext(user_input=user_input, state=state, gen=gen, req_ctx=req_ctx)
                     if self.hook_manager:
@@ -1767,34 +1909,6 @@ Generate the content/response now.
                 while state.status == AgentStatus.RUNNING:
                     await asyncio.sleep(0.01)
 
-                    # ==============================
-                    # [Truncation Integration] 检查并应用消息压缩
-                    # ==============================
-                    conv = self._get_conversation(state)
-                    if self.truncation_manager and hasattr(conv, 'check_and_apply_truncation'):
-                        # 构建 system prompt 用于 Truncation 估算
-                        system_prompt = self._build_system_prompt(state, gen, req_ctx)
-                        tools = self._get_tools_schema(state, gen)
-
-                        # 执行 Truncation 检查
-                        truncated = await conv.check_and_apply_truncation(
-                            system_prompt=system_prompt,
-                            tools=tools
-                        )
-
-                        if truncated:
-                            # 如果执行了压缩，记录压缩摘要并更新 history
-                            if hasattr(conv, "get_last_compaction_summary"):
-                                summary = conv.get_last_compaction_summary()
-                                if summary:
-                                    state.compressed_context = summary
-                                    self._ensure_compressed_context_message(state, conv)
-                                    logger.info("Truncation summary stored in AgentState.compressed_context")
-                            self._sync_history_from_conversation(state)
-                            logger.info("✅ Truncation applied and conversation compacted")
-                        else:
-                            logger.debug("Truncation skipped (no compaction)")
-
                     # 1. Build System Prompt & Update Conversation
                     # ==============================================
                     prompt = self._build_system_prompt(state, gen, req_ctx)
@@ -1802,6 +1916,75 @@ Generate the content/response now.
                     # 使用 Conversation 的 update_system_prompt 方法更新系统提示词（临时消息）
                     conv = self._get_conversation(state)
                     conv.update_system_prompt(prompt)
+
+                    # Hard guard: enforce context budget before compaction/LLM call.
+                    tools = self._get_tools_schema(state, gen)
+                    if self.context_manager:
+                        trim_info = self.context_manager.enforce_budget_on_conversation(
+                            conv,
+                            prompt,
+                            tools,
+                        )
+                        usage = trim_info.usage or {}
+                        if usage.get("removed"):
+                            self.context_manager.update_compaction_boundary(state, conv)
+                            self._sync_history_from_conversation(state)
+                            logger.warning(
+                                "context hard-trim applied: session_id=%s removed=%s total_tokens=%s limit=%s available=%s boundary_id=%s",
+                                state.session_id,
+                                usage.get("removed"),
+                                usage.get("usage", {}).get("total_tokens"),
+                                usage.get("limit"),
+                                usage.get("available"),
+                                state.compacted_until_message_id,
+                            )
+                        if usage.get("truncated_user"):
+                            logger.warning(
+                                "last user message truncated to fit context: target_limit=%s",
+                                usage.get("available"),
+                            )
+                        if usage.get("usage", {}).get("total_tokens", 0) > int(usage.get("available", 0)):
+                            logger.error(
+                                "context still exceeds limit after truncation: total_tokens=%s target_limit=%s",
+                                usage.get("usage", {}).get("total_tokens"),
+                                usage.get("available"),
+                            )
+
+                    # ==============================
+                    # [Compaction Integration] 预算裁剪后再检查压缩
+                    # ==============================
+                    if self.context_manager:
+                        truncated = await self.context_manager.check_and_apply_truncation(
+                            conv,
+                            system_prompt=prompt,
+                            tools=tools,
+                        )
+
+                        if truncated:
+                            if hasattr(conv, "get_last_compaction_summary"):
+                                summary = conv.get_last_compaction_summary()
+                                if summary:
+                                    state.compressed_context = summary
+                                    logger.info(
+                                        "truncation summary stored: session_id=%s summary_len=%s",
+                                        session_id,
+                                        len(summary),
+                                    )
+                            else:
+                                logger.info(
+                                    "truncation applied but no summary available: session_id=%s",
+                                    session_id,
+                                )
+                            self.context_manager.update_compaction_boundary(state, conv)
+                            logger.info(
+                                "compaction boundary updated: session_id=%s boundary_id=%s",
+                                session_id,
+                                state.compacted_until_message_id,
+                            )
+                            self._sync_history_from_conversation(state)
+                            logger.info("✅ Truncation applied and conversation compacted")
+                        else:
+                            logger.debug("Truncation skipped (no compaction)")
                     
                     # 2. 准备 LLM 推理消息
                     # ==============================
@@ -1809,6 +1992,10 @@ Generate the content/response now.
                     deep_thinking_instruction = DEEP_THINKING_INSTRUCTION if req_ctx.deep_thinking else None
 
                     # 使用 Conversation 的 for_llm 方法生成用于 LLM 的消息列表
+                    if self.context_manager:
+                        self.context_manager.ensure_compressed_context_message(state, conv)
+                        if context_payload:
+                            self.context_manager.ensure_context_payload_message(state, conv, context_payload)
                     input_messages = conv.for_llm(
                         deep_thinking=req_ctx.deep_thinking,
                         deep_thinking_instruction=deep_thinking_instruction
@@ -1835,7 +2022,6 @@ Generate the content/response now.
                     
                     # 3. 获取工具 schema
                     # ==============================
-                    tools = self._get_tools_schema(state, gen)
                     logger.info(f"🔧 Available tools count: {len(tools) if tools else 0}, active_skill: {state.active_skill}")
                     
                     # 4. Call BaseLLM
@@ -2069,7 +2255,7 @@ Generate the content/response now.
                     logger.error(f"LLM Error [{error_type}]: {error_msg}")
                     await self._emit_event(
                         EventType.ERROR,
-                        {"error": error_msg, "error_type": error_type},
+                        {"error": error_msg, "type": error_type},
                         **emit_kwargs,
                     )
                     state.status = AgentStatus.ERROR
@@ -2148,6 +2334,19 @@ Generate the content/response now.
         if self.watcher:
             self.watcher.stop()
 
+        # 尽量冲刷待保存状态
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._flush_all_state_saves())
+            else:
+                loop.run_until_complete(self._flush_all_state_saves())
+        except Exception:
+            try:
+                asyncio.run(self._flush_all_state_saves())
+            except Exception:
+                pass
+
         # 尝试关闭当前 generation
         if self.current_generation:
             asyncio.create_task(self.current_generation.drain_and_close())
@@ -2212,6 +2411,9 @@ Generate the content/response now.
         if self.memory_manager:
             await self.memory_manager.shutdown()
             logger.info("Memory Manager shut down.")
+
+        # 冲刷所有待保存状态
+        await self._flush_all_state_saves()
 
         # 关闭数据库连接
         if self.db:

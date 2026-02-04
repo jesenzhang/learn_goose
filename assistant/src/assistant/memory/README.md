@@ -2,8 +2,6 @@
 
 本模块提供统一的 memory 管理能力，包含：
 - 会话记忆（summary / facts / entities / topics）
-- ChatRecall（上下文召回）
-- Query Rewrite（独立模块）
 - Memory Store（存储后端）
 
 ## 1) Store 类型与注册机制
@@ -83,9 +81,7 @@ memory:
     max_size_bytes: 52428800
     plugin_path: null
     plugin_settings: {}
-  chatrecall:
-    enabled: true
-    ...
+  # chatrecall 已迁移至 context 模块配置
 ```
 
 ## 3) 外部注入 Store
@@ -120,19 +116,7 @@ store = RemoteMemoryStore(
 )
 ```
 
-## 4) Query Rewrite
-
-独立模块：`assistant/memory/query_rewrite.py`  
-ChatRecall 会使用 `QueryRewriter`。
-
-如需单独调用：
-
-```python
-from assistant.memory import QueryRewriter
-rewriter = QueryRewriter(config)
-```
-
-## 5) 远程 Store（API + WAL）
+## 4) 远程 Store（API + WAL）
 
 内置 `RemoteMemoryStore`，通过 `plugin_path` 使用：
 

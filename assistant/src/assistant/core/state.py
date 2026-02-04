@@ -50,6 +50,7 @@ class AgentState(BaseModel):
         session_entities: Entities (people/places/objects)
         session_topics: Recent topics
         compressed_context: Compressed context summary from truncation
+        compacted_until_message_id: History compaction boundary (message id)
         updated_at: Last activity timestamp
         last_active: Human-readable last activity time
     """
@@ -77,6 +78,7 @@ class AgentState(BaseModel):
     session_entities: List[str] = Field(default_factory=list, description="Session entities")
     session_topics: List[str] = Field(default_factory=list, description="Session topics")
     compressed_context: Optional[str] = Field(default=None, description="Compressed context summary")
+    compacted_until_message_id: Optional[str] = Field(default=None, description="Compaction boundary message id")
     updated_at: float = Field(default_factory=lambda: datetime.now().timestamp())
     last_active: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     

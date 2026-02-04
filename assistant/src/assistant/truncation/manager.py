@@ -6,6 +6,7 @@ Central manager for context truncation and compaction.
 """
 
 import asyncio
+import re
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -32,6 +33,19 @@ class TruncationConfig:
     max_messages_before_compact: int = 50  # Hard limit
     keep_recent_messages: int = 5  # Keep N recent messages after compact
     check_interval: int = 5  # Check every N messages
+    reserved_tokens: int = 4000  # Reserve for response
+    input_overlap_ratio: float = 0.08  # Sliding window overlap
+    input_segment_max_tokens: Optional[int] = None  # Hard cap for input segments
+    requirement_classifier_enabled: bool = False
+    requirement_classifier_threshold: float = 0.6
+    requirement_classifier_max_segments: int = 8
+    requirement_classifier_max_chars: int = 1200
+    requirement_classifier_prompt: Optional[str] = None
+    requirement_scan_front: int = 2
+    requirement_scan_back: int = 2
+    requirement_extraction_enabled: bool = False
+    requirement_extraction_prompt: Optional[str] = None
+    requirement_extraction_max_chars: int = 2000
 
 
 @dataclass
@@ -99,6 +113,181 @@ class TruncationManager:
             config = self.provider.get_model_config()
             return getattr(config, 'context_limit', 128000)
         return 128000  # Default fallback
+
+    def build_context_budget(
+        self,
+        system_prompt: str,
+        tools: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        budget = create_context_budget(
+            provider=self.provider,
+            system_prompt=system_prompt,
+            tools=tools or [],
+            token_counter=self.token_counter,
+            reserved_for_response=self.config.reserved_tokens,
+        )
+        return {
+            "limit": budget.total_limit,
+            "available": budget.available_for_messages,
+            "reserved": budget.reserved_for_response,
+            "system_cost": budget.system_prompt_cost,
+            "tools_cost": budget.tools_cost,
+        }
+
+    def split_long_input(
+        self,
+        text: str,
+        max_chars: Optional[int],
+        *,
+        max_tokens: Optional[int] = None,
+        overlap_ratio: Optional[float] = None,
+    ) -> List[str]:
+        """Token-aware split with sentence/paragraph preference and overlap."""
+        if not text:
+            return [text]
+
+        if max_tokens is None:
+            max_tokens = self.config.input_segment_max_tokens
+        if max_tokens is None:
+            if max_chars:
+                max_tokens = max(1, int(max_chars / 4))
+            else:
+                max_tokens = max(1, int(self.token_counter.count_text_tokens(text)))
+        if self.config.input_segment_max_tokens is not None:
+            max_tokens = min(max_tokens, self.config.input_segment_max_tokens)
+        text_tokens = self.token_counter.count_text_tokens(text)
+        if (max_chars is None or len(text) <= max_chars) and text_tokens <= max_tokens:
+            return [text]
+        if overlap_ratio is None:
+            overlap_ratio = self.config.input_overlap_ratio
+        overlap_tokens = max(0, int(max_tokens * overlap_ratio))
+
+        paragraphs = [p for p in text.split("\n\n") if p.strip()]
+        sentence_split = re.compile(r"(?<=[。！？.!?])\s+")
+
+        chunks: List[str] = []
+        current: List[str] = []
+        current_tokens = 0
+
+        def flush_current():
+            nonlocal current, current_tokens
+            if current:
+                chunks.append("".join(current).strip())
+            current = []
+            current_tokens = 0
+
+        for para in paragraphs:
+            sentences = sentence_split.split(para)
+            for sent in sentences:
+                if not sent:
+                    continue
+                sent_tokens = self.token_counter.count_text_tokens(sent)
+                if current_tokens + sent_tokens <= max_tokens:
+                    current.append(sent)
+                    current_tokens += sent_tokens
+                    continue
+
+                flush_current()
+
+                if sent_tokens <= max_tokens:
+                    current.append(sent)
+                    current_tokens = sent_tokens
+                else:
+                    step = max(1, int(len(sent) / max(1, int(sent_tokens / max_tokens))))
+                    for i in range(0, len(sent), step):
+                        part = sent[i:i + step]
+                        if part.strip():
+                            chunks.append(part)
+
+        flush_current()
+
+        if overlap_tokens and len(chunks) > 1:
+            overlapped = []
+            for idx, chunk in enumerate(chunks):
+                if idx == 0:
+                    overlapped.append(chunk)
+                    continue
+                prefix = chunks[idx - 1]
+                prefix_tokens = self.token_counter.count_text_tokens(prefix)
+                if prefix_tokens <= overlap_tokens:
+                    carry = prefix
+                else:
+                    ratio = overlap_tokens / max(1, prefix_tokens)
+                    tail_len = max(200, int(len(prefix) * ratio))
+                    carry = prefix[-tail_len:]
+                overlapped.append(carry + "\n" + chunk)
+            chunks = overlapped
+
+        return [c for c in chunks if c and c.strip()]
+
+    def enforce_budget_on_conversation(
+        self,
+        conv: Any,
+        system_prompt: str,
+        tools: Optional[List[Dict[str, Any]]],
+        *,
+        reserved_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Hard fallback: remove oldest messages and truncate last user message to fit budget."""
+        from ..conversation import TextContent
+
+        if reserved_tokens is None:
+            reserved_tokens = self.config.reserved_tokens
+
+        budget = self.build_context_budget(system_prompt, tools)
+        limit = int(budget.get("limit", 0))
+        available = int(budget.get("available", 0))
+        target_limit = max(0, available)
+
+        usage = self.estimate_context_usage(
+            messages=conv.messages_to_dict(),
+            tools=tools or [],
+            system_prompt=system_prompt,
+        )
+
+        removed = 0
+        while usage.get("total_tokens", 0) > target_limit and len(conv.messages) > 1:
+            conv.messages.pop(0)
+            removed += 1
+            usage = self.estimate_context_usage(
+                messages=conv.messages_to_dict(),
+                tools=tools or [],
+                system_prompt=system_prompt,
+            )
+
+        truncated_user = False
+        if usage.get("total_tokens", 0) > target_limit and conv.messages:
+            last_msg = conv.messages[-1]
+            text_parts = []
+            for c in last_msg.content:
+                if isinstance(c, TextContent) and c.text:
+                    text_parts.append(c.text)
+            text = "\n".join(text_parts)
+            if text:
+                total_tokens = max(usage.get("total_tokens", 1), 1)
+                ratio = max(0.1, min(1.0, target_limit / total_tokens))
+                new_len = max(200, int(len(text) * ratio))
+                truncated = text[:new_len].rstrip()
+                if truncated != text:
+                    for c in last_msg.content:
+                        if isinstance(c, TextContent):
+                            c.text = truncated
+                            truncated_user = True
+                            break
+                usage = self.estimate_context_usage(
+                    messages=conv.messages_to_dict(),
+                    tools=tools or [],
+                    system_prompt=system_prompt,
+                )
+
+        return {
+            "removed": removed,
+            "truncated_user": truncated_user,
+            "usage": usage,
+            "limit": limit,
+            "available": available,
+            "reserved": budget.get("reserved", reserved_tokens),
+        }
 
     async def check_and_compact(
         self,
@@ -276,6 +465,7 @@ def create_context_budget(
     system_prompt: str,
     tools: List[Dict[str, Any]],
     token_counter: TokenCounter,
+    reserved_for_response: int = 4000,
 ) -> ContextBudget:
     """Create a context budget from provider and configuration"""
     context_limit = 128000  # Default
@@ -294,6 +484,7 @@ def create_context_budget(
         total_limit=context_limit,
         system_prompt_cost=system_cost,
         tools_cost=tools_cost,
+        reserved_for_response=reserved_for_response,
     )
 
 

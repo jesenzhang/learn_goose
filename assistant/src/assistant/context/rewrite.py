@@ -1,45 +1,32 @@
-"""
-Query rewrite module for memory.
-"""
+from typing import Any, Dict, List, Optional
 
-from __future__ import annotations
-
-from typing import Any, Callable, Dict, List, Optional
-
-from .llm_adapter import default_message_builder, default_llm_call
-
-DEFAULT_QUERY_REWRITE_PROMPT = (
-    "You are a query rewriting assistant. Rewrite the user query to be explicit and "
-    "self-contained using the provided conversation context and session memory. "
-    "Keep it short and focused. Output ONLY the rewritten query text, no quotes, no extra text."
-)
+from .config import ContextConfig
+from .prompts import DEFAULT_QUERY_REWRITE_PROMPT
 
 
 class QueryRewriter:
     def __init__(
         self,
-        config: Any,
+        config: ContextConfig,
         *,
-        message_builder: Optional[Callable[[str, str], List[Any]]] = None,
-        llm_call: Optional[Callable[[Any, List[Any]], Any]] = None,
-    ):
+        message_builder: Optional[Any] = None,
+    ) -> None:
         self.config = config
-        self._message_builder = message_builder or default_message_builder
-        self._llm_call = llm_call or default_llm_call
+        self.message_builder = message_builder
 
     async def rewrite(
         self,
         *,
         user_input: str,
         history: List[Dict[str, Any]],
-        session_memory: Dict[str, Any],
-        llm: Any,
+        session_memory: Optional[Dict[str, Any]] = None,
+        llm: Any = None,
     ) -> str:
-        if not getattr(self.config, "query_rewrite_enabled", False) or not llm:
+        if not self.config.query_rewrite_enabled or not llm:
             return user_input
-        prompt = getattr(self.config, "query_rewrite_prompt", None) or DEFAULT_QUERY_REWRITE_PROMPT
-        snippets = self._build_context_snippets(history, getattr(self.config, "query_rewrite_max_msgs", 6))
-        memory_text = self._format_session_memory(session_memory)
+        prompt = self.config.query_rewrite_prompt or DEFAULT_QUERY_REWRITE_PROMPT
+        snippets = self._build_context_snippets(history, self.config.query_rewrite_max_msgs)
+        memory_text = self._format_session_memory(session_memory or {})
         context_parts = []
         if memory_text:
             context_parts.append(f"SessionMemory:\n{memory_text}")
@@ -47,18 +34,25 @@ class QueryRewriter:
             context_parts.append("RecentMessages:\n" + "\n".join(snippets))
         context_parts.append(f"UserQuery:\n{user_input}")
         context_blob = "\n\n".join(context_parts)
-        max_chars = getattr(self.config, "query_rewrite_max_chars", 800)
+        max_chars = self.config.query_rewrite_max_chars
         if max_chars and len(context_blob) > max_chars:
             context_blob = context_blob[:max_chars]
+        messages = self._build_messages(prompt, context_blob)
         try:
-            messages = self._message_builder(prompt, context_blob)
-            resp, _usage = await self._llm_call(llm, messages)
-            payload = resp if isinstance(resp, dict) else resp.model_dump()
-            rewritten = self._extract_message_text(payload)
-            rewritten = rewritten.strip().strip('"').strip("'")
+            resp = await llm.agenerate(messages=messages, tools=None)
+            rewritten = resp.text.strip() if resp else ""
+            rewritten = rewritten.strip('"').strip("'")
             return rewritten or user_input
         except Exception:
             return user_input
+
+    def _build_messages(self, system_prompt: str, user_text: str) -> List[Dict[str, str]]:
+        if self.message_builder:
+            return self.message_builder(system_prompt, user_text)
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ]
 
     @staticmethod
     def _build_context_snippets(history: List[Dict[str, Any]], max_msgs: int) -> List[str]:

@@ -55,14 +55,50 @@ class ToolsConfig(RootModel[Dict[str, ToolConfig]]):
 
 # Truncation and ChatRecall configuration
 # Note: These use Pydantic wrapping for YAML parsing, then convert to module dataclass at runtime
-class TruncationConfigWrapper(BaseModel):
-    """Pydantic wrapper for TruncationConfig (for YAML parsing)"""
-    enabled: bool = True
+
+class ContextConfigWrapper(BaseModel):
+    """Pydantic wrapper for ContextConfig (for YAML parsing)"""
+    enabled: bool = False
+    mode: str = "fullstack"
+    input_segment_max_tokens: Optional[int] = None
+    input_overlap_ratio: float = 0.08
+    reserved_tokens: int = 4000
+    context_limit: Optional[int] = None
     threshold: float = 0.8
     auto_compact: bool = True
     max_messages_before_compact: int = 50
     keep_recent_messages: int = 5
     check_interval: int = 5
+    requirement_classifier_enabled: bool = False
+    requirement_classifier_threshold: float = 0.6
+    requirement_classifier_max_segments: int = 8
+    requirement_classifier_max_chars: int = 1200
+    requirement_classifier_prompt: Optional[str] = None
+    requirement_scan_front: int = 2
+    requirement_scan_back: int = 2
+    requirement_extraction_enabled: bool = False
+    requirement_extraction_prompt: Optional[str] = None
+    requirement_extraction_max_chars: int = 2000
+    recall_summary_max_items: int = 3
+    recall_summary_format: str = "- {session_id}: {count} matches (score={score:.2f})"
+    recall_max_msgs: int = 6
+    recall_max_chars: int = 800
+    query_rewrite_enabled: bool = False
+    query_rewrite_max_msgs: int = 6
+    query_rewrite_max_chars: int = 800
+    query_rewrite_prompt: Optional[str] = None
+    cache_enabled: bool = False
+    cache_size: int = 128
+    cache_ttl_seconds: int = 300
+    metrics_enabled: bool = True
+    summarize_max_concurrency: int = 4
+    summarize_fuse_enabled: bool = True
+    summarize_fuse_max_chars: int = 2000
+    summarize_max_segments: int = 20
+    summarize_fallback_strategy: str = "heuristic"
+    summarize_fallback_max_chars: int = 2000
+    summarize_fallback_max_segments: int = 12
+    payload_history_keep: int = 1
 
 class ChatRecallConfigWrapper(BaseModel):
     """Pydantic wrapper for ChatRecallConfig (for YAML parsing)"""
@@ -72,17 +108,18 @@ class ChatRecallConfigWrapper(BaseModel):
     min_similarity: float = 0.3
     query_expand_max_msgs: int = 4
     query_max_chars: int = 800
-    query_rewrite_enabled: bool = False
-    query_rewrite_max_msgs: int = 6
-    query_rewrite_max_chars: int = 800
-    query_rewrite_prompt: Optional[str] = None
     use_semantic: bool = False
     semantic_top_k: int = 20
+    semantic_query_max_chars: int = 800
+    semantic_doc_max_chars: int = 2000
+    semantic_batch_size: int = 4
     use_rerank: bool = False
     rerank_top_k: int = 10
     rerank_threshold: float = 0.0
     session_memory_enabled: bool = True
     session_memory_use_llm: bool = False
+    session_memory_recent_msgs: int = 6
+    session_memory_max_chars: int = 800
     session_summary_max_chars: int = 400
     session_facts_max_items: int = 20
     session_entities_max_items: int = 30
@@ -189,9 +226,9 @@ class AppConfig(BaseModel):
 
     events: EventsConfigWrapper = Field(default_factory=EventsConfigWrapper)
 
-    truncation: TruncationConfigWrapper = Field(default_factory=TruncationConfigWrapper)
     chatrecall: ChatRecallConfigWrapper = Field(default_factory=ChatRecallConfigWrapper)
     memory: MemoryConfigWrapper = Field(default_factory=MemoryConfigWrapper)
+    context: ContextConfigWrapper = Field(default_factory=ContextConfigWrapper)
     class Config:
         extra = "allow"
 

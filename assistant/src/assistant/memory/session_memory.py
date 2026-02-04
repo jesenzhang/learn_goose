@@ -97,7 +97,7 @@ class SessionMemoryUpdater:
         )
         snippets = self._build_context_snippets(
             history,
-            max(2, getattr(self.config, "query_rewrite_max_msgs", 6)),
+            max(2, getattr(self.config, "session_memory_recent_msgs", 6)),
         )
         content_parts = []
         if memory_text:
@@ -107,7 +107,7 @@ class SessionMemoryUpdater:
         content_parts.append(f"User:\n{user_input}")
         content_parts.append(f"Assistant:\n{assistant_output}")
         content = "\n\n".join(content_parts)
-        max_chars = getattr(self.config, "query_rewrite_max_chars", 800)
+        max_chars = getattr(self.config, "session_memory_max_chars", 800)
         if max_chars and len(content) > max_chars:
             content = content[:max_chars]
         try:

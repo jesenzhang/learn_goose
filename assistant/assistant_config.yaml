@@ -4,6 +4,44 @@ system:
   timezone: "Asia/Shanghai"
   hot_reload_enabled: false
 
+# ================= 上下文长度配置（可选） =================
+# 选择内置上下文配置档位，若不设置则使用各模块自身配置。
+context_profile: "32k"
+context_profile_force: false  # true 时强制覆盖已有配置
+context_profiles:
+  "8k":
+    provider:
+      llm:
+        config:
+          context_limit: 8192
+    context:
+      reserved_tokens: 1500
+      input_segment_max_tokens: 1200
+  "16k":
+    provider:
+      llm:
+        config:
+          context_limit: 16384
+    context:
+      reserved_tokens: 2500
+      input_segment_max_tokens: 2000
+  "32k":
+    provider:
+      llm:
+        config:
+          context_limit: 32768
+    context:
+      reserved_tokens: 3000
+      input_segment_max_tokens: 2500
+  "128k":
+    provider:
+      llm:
+        config:
+          context_limit: 128000
+    context:
+      reserved_tokens: 6000
+      input_segment_max_tokens: 6000
+
 # ================= 模型配置 =================
 provider:
   llm:
@@ -76,13 +114,47 @@ agent:
 
     现在，请根据用户的输入开始工作。
 
-truncation:
-  enabled: true
+context:
+  enabled: false
+  mode: "fullstack"
+  input_segment_max_tokens: null
+  input_overlap_ratio: 0.08
+  reserved_tokens: 4000
   threshold: 0.8
   auto_compact: true
   max_messages_before_compact: 50
   keep_recent_messages: 5
   check_interval: 5
+  requirement_classifier_enabled: false
+  requirement_classifier_threshold: 0.6
+  requirement_classifier_max_segments: 8
+  requirement_classifier_max_chars: 1200
+  requirement_classifier_prompt: null
+  requirement_scan_front: 2
+  requirement_scan_back: 2
+  requirement_extraction_enabled: false
+  requirement_extraction_prompt: null
+  requirement_extraction_max_chars: 2000
+  recall_summary_max_items: 3
+  recall_summary_format: "- {session_id}: {count} matches (score={score:.2f})"
+  recall_max_msgs: 6
+  recall_max_chars: 800
+  query_rewrite_enabled: false
+  query_rewrite_max_msgs: 6
+  query_rewrite_max_chars: 800
+  query_rewrite_prompt: null
+  cache_enabled: false
+  cache_size: 128
+  cache_ttl_seconds: 300
+  metrics_enabled: true
+  summarize_max_concurrency: 4
+  summarize_fuse_enabled: true
+  summarize_fuse_max_chars: 2000
+  summarize_max_segments: 20
+  summarize_fallback_strategy: "heuristic"  # heuristic | truncate | none
+  summarize_fallback_max_chars: 2000
+  summarize_fallback_max_segments: 12
+  payload_history_keep: 1
 
 
 memory:
@@ -139,17 +211,18 @@ memory:
     min_similarity: 0.3
     query_expand_max_msgs: 4
     query_max_chars: 800
-    query_rewrite_enabled: false
-    query_rewrite_max_msgs: 6
-    query_rewrite_max_chars: 800
-    query_rewrite_prompt: null
-    use_semantic: false
+    use_semantic: true
     semantic_top_k: 20
-    use_rerank: false
+    semantic_query_max_chars: 800
+    semantic_doc_max_chars: 2000
+    semantic_batch_size: 4
+    use_rerank: true
     rerank_top_k: 10
     rerank_threshold: 0.0
     session_memory_enabled: true
-    session_memory_use_llm: false
+    session_memory_use_llm: true
+    session_memory_recent_msgs: 6
+    session_memory_max_chars: 800
     session_summary_max_chars: 400
     session_facts_max_items: 20
     session_entities_max_items: 30
@@ -318,7 +391,7 @@ hooks_config:
 
     # 输入验证 - 优先级 50
     input_validator:
-      enabled: true
+      enabled: false
       priority: 50
       hook_type: "validator"
       params:

@@ -25,6 +25,7 @@ from ..core.events import EventType
 from ..events.event_wrapper import Event
 from ..core.state import AgentState
 from ..db import get_db
+from ..db.remote_db import RemoteDBError
 from ..core import MicroAgent
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class ChatRequest(BaseModel):
     server_type : Optional[str] = 'show'
     page_content: Optional[str] = None
     deep_thinking: Optional[bool] = False
+    use_web_search: Optional[bool] = False
     is_deep_research: Optional[bool] = False
 
 class ApprovalRequest(BaseModel):
@@ -87,8 +89,18 @@ def _generate_run_id(session_id: int) -> str:
 
 async def get_agent_state(session_id: int) -> AgentState:
     db = get_db()
-    data = await db.load_state(session_id)
-    return AgentState(**data) if data else AgentState(session_id=session_id)
+    try:
+        data = await db.load_state(session_id)
+        return AgentState(**data) if data else AgentState(session_id=session_id)
+    except RemoteDBError as e:
+        logger.error(f"Load state failed (remote): {e}")
+        state = AgentState(session_id=session_id)
+        state.shared_memory["_state_load_error"] = {
+            "code": e.status_code,
+            "message": str(e),
+            "detail": e.detail,
+        }
+        return state
 
 
 def _format_sse(data: Dict[str, Any], event_type: Optional[str] = None) -> str:
@@ -294,13 +306,37 @@ async def event_generator(
         # 注意：不要 cancel agent_trigger_task，除非你希望用户一关网页 Agent 就停止工作
         logger.info(f"Stream connection closed for session {session_id}")
 
-def _format_error_event(msg: str, format: str) -> str:
-    data = {"type": "error", "data": msg}
+def _format_error_event(
+    msg: str,
+    format: str,
+    code: Optional[int] = None,
+    error_type: Optional[str] = None,
+) -> str:
+    payload: Dict[str, Any] = {
+        "error": msg,
+        "type": error_type or "Error",
+    }
+    if code is not None:
+        payload["code"] = code
+    data = {"type": "error", "data": payload}
     return (
         f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
         if format == "sse"
         else json.dumps(data, ensure_ascii=False) + "\n"
     )
+
+
+async def _error_only_generator(
+    format: str,
+    code: Optional[int],
+    message: str,
+    error_type: Optional[str] = None,
+):
+    yield _format_error_event(message, format, code, error_type=error_type)
+    if format == "sse":
+        yield "event: done\ndata: {}\n\n"
+    else:
+        yield json.dumps({"type": "done", "data": {}}, ensure_ascii=False) + "\n"
 
 
 def _validate_request_identity(
@@ -565,6 +601,18 @@ def create_router() -> APIRouter:
             req.model_dump(),
         )
         media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
+        state_error = (state.shared_memory or {}).get("_state_load_error")
+        if state_error:
+            return StreamingResponse(
+                _error_only_generator(
+                    format,
+                    state_error.get("code"),
+                    state_error.get("message", "state load failed"),
+                    error_type="RemoteDBError",
+                ),
+                media_type=media_type,
+                headers=STREAMING_HEADERS,
+            )
         if resume:
             run_id = _resolve_run_id_for_resume(state, run_id)
             if not run_id:
@@ -607,6 +655,19 @@ def create_router() -> APIRouter:
             Streaming response with continuation events
         """
         logger.info(f"Approval received for {session_id}: {req.approved}")
+        state_error = (state.shared_memory or {}).get("_state_load_error")
+        media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
+        if state_error:
+            return StreamingResponse(
+                _error_only_generator(
+                    format,
+                    state_error.get("code"),
+                    state_error.get("message", "state load failed"),
+                    error_type="RemoteDBError",
+                ),
+                media_type=media_type,
+                headers=STREAMING_HEADERS,
+            )
         run_id = _resolve_run_id_for_resume(state, run_id)
         if not run_id:
             raise HTTPException(status_code=400, detail="run_id is required for approval")
@@ -618,7 +679,6 @@ def create_router() -> APIRouter:
             run_id=run_id,
             user_id=state.user_id,
         )
-        media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
             event_generator(state, run_id, session_id, resume=True, last_event_id=last_event_id, approval_data=req, format=format),
             media_type=media_type,
@@ -644,6 +704,19 @@ def create_router() -> APIRouter:
         """
         approval = ApprovalRequest(approved=True, feedback="")
         last_event_id = -1
+        state_error = (state.shared_memory or {}).get("_state_load_error")
+        media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
+        if state_error:
+            return StreamingResponse(
+                _error_only_generator(
+                    format,
+                    state_error.get("code"),
+                    state_error.get("message", "state load failed"),
+                    error_type="RemoteDBError",
+                ),
+                media_type=media_type,
+                headers=STREAMING_HEADERS,
+            )
         run_id = _resolve_run_id_for_resume(state, run_id)
         if not run_id:
             raise HTTPException(status_code=400, detail="run_id is required for approval")
@@ -656,7 +729,6 @@ def create_router() -> APIRouter:
             run_id=run_id,
             user_id=state.user_id,
         )
-        media_type = "text/event-stream" if format == "sse" else "application/x-ndjson"
         return StreamingResponse(
             event_generator(
                 state,

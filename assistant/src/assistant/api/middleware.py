@@ -1,7 +1,7 @@
 # assistant/api/middleware.py
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from ..utils.ctx_vars import set_auth_token, reset_auth_token
+from ..utils.ctx_vars import set_auth_context, reset_auth_context
 
 class AuthContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -18,9 +18,10 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
         if not token_str:
             token_str = request.query_params.get("token")
 
-        # 3. 注入上下文
+        # 3. 注入上下文（保留原始 Authorization 头以便一致转发）
         if token_str:
-            token_ctx = set_auth_token(token_str)
+            header_value = auth_header or token_str
+            token_ctx = set_auth_context(token_str, header_value)
             
         try:
             # 4. 放行请求，进入具体的 API 路由
@@ -29,4 +30,4 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
         finally:
             # 5. 清理上下文 (非常重要，防止内存泄漏或污染)
             if token_ctx:
-                reset_auth_token(token_ctx)
+                reset_auth_context(token_ctx)
